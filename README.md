@@ -1,5 +1,7 @@
 # Hermes LifeEngine Plugin
 
+GitHub: <https://github.com/Iris526/hermes-life-engine>
+
 LifeEngine is an optional Hermes plugin that gives an agent identity a persistent life state across sessions and platforms.
 
 Current package contents:
