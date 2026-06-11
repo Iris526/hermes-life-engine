@@ -102,8 +102,8 @@ function renderMeters(resources, state, sleepDay){
     ['fatigue','疲劳', byKey.fatigue?.current_value ?? body.fatigue ?? sleepDay.fatigue_delta, 100],
   ];
   $('meters').innerHTML = entries.map(([key,label,value,max])=>{
-    const n = num(value); const missing = n == null; const width = key==='mood' ? pct((n??0)+100,200) : pct(n,max);
-    return `<div class="metric ${missing ? 'metric-missing' : ''}"><span>${label}</span><b>${missing?'未记录':Math.round(n)}</b><div class="meter-bar"><i style="width:${missing ? 0 : width}%"></i></div></div>`;
+    const n = num(value); const width = key==='mood' ? pct((n??0)+100,200) : pct(n,max);
+    return `<div class="metric"><span>${label}</span><b>${n==null?'--':Math.round(n)}</b><div class="meter-bar"><i style="width:${width}%"></i></div></div>`;
   }).join('');
   $('sleepDebt').textContent = `${sleepDay.cumulative_sleep_debt_minutes ?? body.sleep_debt_minutes ?? 0} min`;
   $('recoveryPressure').textContent = `${sleepDay.recovery_pressure ?? body.recovery_pressure ?? 0}`;

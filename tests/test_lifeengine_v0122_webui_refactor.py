@@ -58,7 +58,7 @@ def _make_detail_db(tmp_path: Path) -> Path:
 
 
 def test_webui_v0122_version():
-    assert PLUGIN_VERSION == "0.12.4"
+    assert PLUGIN_VERSION == "0.12.5"
 
 
 def test_reader_event_detail_and_trace_explain(tmp_path):
@@ -79,7 +79,7 @@ def test_reader_event_detail_and_trace_explain(tmp_path):
 def test_server_detail_endpoints(tmp_path):
     db = _make_detail_db(tmp_path)
     client = TestClient(create_app(str(db)))
-    assert client.get("/api/health").json()["webui_version"] == "0.12.4"
+    assert client.get("/api/health").json()["webui_version"] == "0.12.5"
     event = client.get("/api/event/event_work").json()
     assert event["found"] is True
     dream = client.get("/api/dream/dream1").json()
@@ -98,15 +98,17 @@ def test_reader_hides_internal_and_stale_duplicate_review_items(tmp_path):
 
 def test_webui_refactor_assets_and_human_layout_exist():
     root = Path(__file__).resolve().parents[1]
-    package_root = root / "lifeengine" if (root / "lifeengine" / "webui").exists() else root
-    assets = package_root / "webui" / "static" / "assets"
+    assets = root / "webui" / "static" / "assets"
+    if not assets.exists():
+        assets = root / "lifeengine" / "webui" / "static" / "assets"
     assert (assets / "agent-cover.jpg").exists()
     assert (assets / "sprite-idle.png").exists()
     assert (assets / "sprite-sleep.png").exists()
     assert (assets / "sprite-dream.png").exists()
-    html = (package_root / "webui" / "static" / "index.html").read_text(encoding="utf-8")
-    css = (package_root / "webui" / "static" / "styles.css").read_text(encoding="utf-8")
-    js = (package_root / "webui" / "static" / "app.js").read_text(encoding="utf-8")
+    static_root = assets.parent
+    html = (static_root / "index.html").read_text(encoding="utf-8")
+    css = (static_root / "styles.css").read_text(encoding="utf-8")
+    js = (static_root / "app.js").read_text(encoding="utf-8")
     assert "portrait-img" in html
     assert "avatarSprite" in html
     assert "object-fit:cover" in css

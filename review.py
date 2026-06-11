@@ -18,6 +18,7 @@ from .sleep_effects import get_sleep_day_state
 from .sleep_reply_dream_policy import get_policy, validate_policy, explain_policy
 from .canon import get_active_canon
 from .settings_check import check_required_settings
+from .living import canon_consistency_check
 
 
 def _row_dict(row) -> dict[str, Any] | None:
@@ -201,6 +202,14 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
     summary["required_settings"] = {"ok": required_settings.get("ok"), "missing_count": required_settings.get("missing_count", 0)}
     if required_settings.get("ok") is False:
         items.append(_item("required_settings", "warning", "LifeEngine 必选设定还不完整", f"还缺 {required_settings.get('missing_count')} 项核心设定。", section="settings", action_hint={"command": "/life config"}))
+    if owner_kind == "agent":
+        try:
+            consistency = canon_consistency_check(conn, owner_kind, owner_id, persist=False)
+            summary["canon_consistency"] = {"status": consistency.get("status"), "warnings": consistency.get("warning_count", 0), "conflicts": consistency.get("conflict_count", 0)}
+            if consistency.get("status") in {"warning", "error"}:
+                items.append(_item("canon_consistency", "warning" if consistency.get("status") == "warning" else "error", "Canon 设定存在轻微不一致", "例如时区、货币、天气来源或旧标记需要整理。", section="settings", action_hint={"tool": "life_living", "action": "consistency"}))
+        except Exception:
+            pass
 
     summary["engine_state"] = (control or {}).get("engine_state") or "unknown"
     summary["realtime_mode"] = realtime.get("mode")
@@ -368,6 +377,11 @@ def _overall_severity(items: list[dict[str, Any]]) -> str:
 
 
 def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) -> str:
+    """Render a human-first review inbox.
+
+    Internal technical noise is grouped separately; the first page tells a human
+    what happened, what Agent can handle itself, and what actually needs a user.
+    """
     lines = ["LifeEngine Review", "================="]
     lines.append(f"状态：{summary.get('engine_state')} / realtime={summary.get('realtime_mode')}")
     sleep = summary.get("sleep") or {}
@@ -376,6 +390,9 @@ def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) ->
     req = summary.get("required_settings") or {}
     if req:
         lines.append(f"必选设定：{'已满足' if req.get('ok') else '还缺 ' + str(req.get('missing_count')) + ' 项'}")
+    cc = summary.get("canon_consistency") or {}
+    if cc:
+        lines.append(f"Canon 一致性：{cc.get('status')}，冲突 {cc.get('conflicts', 0)}，提醒 {cc.get('warnings', 0)}")
     pol = summary.get("policy") or {}
     lines.append(f"策略：{pol.get('profile')}，冲突 {pol.get('conflicts', 0)}，提醒 {pol.get('warnings', 0)}")
     managed = summary.get("managed_review") or {}
@@ -390,24 +407,44 @@ def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) ->
     if summary.get("doctor"):
         lines.append(f"Doctor：{'ok' if summary['doctor'].get('ok') else '有提醒'}，issues={summary['doctor'].get('issue_count')}")
     lines.append("")
+
     if not items:
         lines.append("没有需要人类处理的项目。Agent 会按当前策略自行处理低风险维护项。")
     else:
         lines.append("待处理 / 建议：")
-        for idx, it in enumerate(items[:12], start=1):
-            when = it.get("when") or "最近"
-            item_id = it.get("id") or "未持久化"
-            lines.append(f"{idx}. id={item_id} · {when} · [{it.get('severity')}] {it.get('title')} — {it.get('message')}")
-            hint = it.get("action_hint") or {}
-            if hint:
-                if hint.get("command"):
-                    lines.append(f"   建议：{hint.get('command')}")
-                elif hint.get("tool"):
-                    lines.append(f"   建议工具：{hint.get('tool')} action={hint.get('action')}")
-            lines.append(f"   操作：/life review preview {item_id}；执行安全项：/life review apply {item_id}；忽略：/life review dismiss {item_id}")
-    lines.append("")
-    lines.append("常用：/life call 立刻叫醒；/life dream 查看梦；/life policy conflicts 查策略；/life doctor 深度检查；/life advanced 看高级命令。")
+        def bucket(it: dict[str, Any]) -> str:
+            if it.get("item_type") in {"user_confirmation", "required_settings", "policy_conflict", "canon_consistency"}:
+                return "需要用户决定 / 设定补齐"
+            if it.get("section") in {"sleep", "reply", "dream", "proactive", "policy"} and it.get("item_type") not in {"proactive_outbox"}:
+                return "Agent 可自行处理 / 可预览执行"
+            if it.get("item_type") in {"doctor_warning", "final_gate_feedback", "final_gate_report"} or it.get("section") in {"doctor", "final_gate"}:
+                return "系统维护 / 开发者可见"
+            return "其他提醒"
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for it in items:
+            groups.setdefault(bucket(it), []).append(it)
+        order = ["需要用户决定 / 设定补齐", "Agent 可自行处理 / 可预览执行", "系统维护 / 开发者可见", "其他提醒"]
+        idx = 1
+        for group in order:
+            group_items = groups.get(group) or []
+            if not group_items:
+                continue
+            lines.append(group)
+            lines.append("-" * len(group))
+            for it in group_items[:8]:
+                when = it.get("when") or "最近"
+                lines.append(f"{idx}. {when} · [{it.get('severity')}] {it.get('title')} — {it.get('message')}")
+                hint = it.get("action_hint") or {}
+                if hint:
+                    if hint.get("command"):
+                        lines.append(f"   建议：{hint.get('command')}")
+                    elif hint.get("tool"):
+                        lines.append(f"   建议工具：{hint.get('tool')} action={hint.get('action')}")
+                idx += 1
+            lines.append("")
+    lines.append("常用：/life schedule 看日程；/life living 看生活节律和小纸条；/life call 立刻叫醒；/life config 查设定；/life advanced 看高级命令。")
     return "\n".join(lines)
+
 
 
 def list_review_runs(conn, owner_kind: str, owner_id: str, limit: int = 20) -> list[dict[str, Any]]:

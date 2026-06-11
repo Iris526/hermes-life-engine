@@ -23,10 +23,10 @@ def _merge_media_attributes(
 ) -> dict[str, Any]:
     """Normalize item image/media references into attributes.media.
 
-    Inventory items intentionally keep a flexible attributes_json column.  This
-    helper gives wardrobe/tools a stable convention without requiring a DB
-    migration: callers may pass image_path/image_url or a media object, and the
-    item stores the result under attributes["media"].
+    Inventory items intentionally keep a flexible attributes_json column. This
+    helper gives wardrobe/tools a stable media convention without a DB migration:
+    callers may pass image_path/image_url or a media object, and the item stores
+    the result under attributes["media"].
     """
     attrs = dict(attributes or {})
     existing = attrs.get("media")

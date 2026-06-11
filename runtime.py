@@ -2632,6 +2632,142 @@ class LifeEngineRuntime:
         from .interface import run as run_interface
         return run_interface(self, action, owner_kind, owner_id, session_id=session_id, turn_id=turn_id, **payload)
 
+
+    def living(self, action: str = "summary", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+               session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """Concrete living layer: consistency doctor, day rhythm, inventory presets, paper notes."""
+        from .living import (
+            canon_consistency_check, inventory_preset_ops, rhythm_templates, abstract_goal_children,
+            is_abstract_goal_event, list_paper_notes, diary_draft_content,
+        )
+        action_l = str(action or "summary").strip().lower()
+        if action_l in {"summary", "status", "help"}:
+            with transaction(self.conn):
+                consistency = canon_consistency_check(self.conn, owner_kind, owner_id, persist=False)
+                notes = list_paper_notes(self.conn, owner_id, limit=int(payload.get("limit", 5))) if owner_kind == "agent" else {"notes": [], "rendered": "仅 Agent 自我生活有 proactive 小纸条。"}
+                rendered = "LifeEngine 生活层\n================\n" + consistency.get("rendered", "") + "\n\n" + notes.get("rendered", "")
+                return {"ok": True, "consistency": consistency, "paper_notes": notes.get("notes", []), "rendered": rendered}
+        if action_l in {"canon_consistency", "consistency", "doctor", "check"}:
+            with transaction(self.conn):
+                return canon_consistency_check(self.conn, owner_kind, owner_id, persist=bool(payload.get("persist", True)))
+        if action_l in {"init_inventory", "inventory_preset", "bootstrap_inventory"}:
+            preset = str(payload.get("preset") or "default")
+            ops = inventory_preset_ops(preset)
+            commit = self.commit_ops(ops, owner_kind, owner_id, "living_inventory_preset", session_id, turn_id)
+            item_names = [op["payload"].get("name") for op in ops if op["type"] == "CREATE_INVENTORY_ITEM"]
+            resource_keys = [op["payload"].get("key") for op in ops if op["type"] == "RESOURCE_DEFINE"]
+            rendered = "生活库存预设已写入\n==================\n资源：" + "、".join(resource_keys) + "\n物品：" + "、".join(item_names)
+            with transaction(self.conn):
+                run_id = new_id("invpreset")
+                self.conn.execute(
+                    """INSERT INTO living_inventory_preset_runs(id, owner_kind, owner_id, preset, status, resource_keys_json, item_names_json, transaction_id, receipt_id, rendered_text)
+                         VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (run_id, owner_kind, owner_id, preset, "committed", dumps(resource_keys), dumps(item_names), commit.get("transaction_id"), (commit.get("receipt") or {}).get("receipt_id"), rendered),
+                )
+                append_journal(self.conn, owner_kind, owner_id, "living_inventory_preset_applied", {"run_id": run_id, "preset": preset, "resources": resource_keys, "items": item_names}, "living")
+            return {"ok": True, "run_id": run_id, "commit": commit, "resource_keys": resource_keys, "item_names": item_names, "rendered": rendered}
+        if action_l in {"day_rhythm", "rhythm", "plan_day", "generate_day", "living_day"}:
+            # Concrete daily rhythm: create specific events and schedule blocks instead of abstract "推进目标" placeholders.
+            preset = str(payload.get("preset") or "default")
+            date_key = payload.get("date") or payload.get("date_key")
+            tz = payload.get("timezone") or "Asia/Tokyo"
+            templates = rhythm_templates(date_key=date_key, tz=tz, preset=preset)
+            event_ids: list[str] = []
+            block_ids: list[str] = []
+            tx_ids: list[str] = []
+            receipts: list[str] = []
+            for item in templates:
+                event_payload = {
+                    "title": item["title"],
+                    "description": f"生活节律引擎为 {preset} 生成的具体日常事项。",
+                    "event_type": item.get("event_type") or "routine",
+                    "event_category": item.get("event_category") or "maintenance",
+                    "activity_domain": item.get("activity_domain"),
+                    "source": "life_rhythm_engine",
+                    "status": "planned",
+                    "priority": int(item.get("priority", 55)),
+                    "importance": int(item.get("importance", 55)),
+                    "tags": item.get("tags") or [],
+                    "attributes": {"generated_by": "life_rhythm_engine", "preset": preset, "worth_diary": item.get("worth_diary", False), "worth_proactive": item.get("worth_proactive", False)},
+                    "resource_costs": item.get("resource_costs") or {},
+                }
+                c1 = self.commit_ops([{"type": "CREATE_EVENT", "payload": event_payload}], owner_kind, owner_id, "life_rhythm_engine", session_id, turn_id)
+                ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
+                if ev_id:
+                    event_ids.append(ev_id); tx_ids.append(c1.get("transaction_id")); receipts.append((c1.get("receipt") or {}).get("receipt_id"))
+                    c2 = self.commit_ops([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": ev_id, "start": item["start"], "end": item["end"], "block_type": "planned_event", "timezone_name": tz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 20}}}], owner_kind, owner_id, "life_rhythm_engine", session_id, turn_id)
+                    bid = (((c2.get("results") or [{}])[0].get("result") or {}).get("id"))
+                    if bid: block_ids.append(bid)
+                    tx_ids.append(c2.get("transaction_id")); receipts.append((c2.get("receipt") or {}).get("receipt_id"))
+            if owner_kind == "agent" and any(i.get("worth_proactive") for i in templates):
+                summary = "我给今天折了几张生活节律小纸条：晨巡、香案、工具包、小委托和傍晚记账。"
+                if str(preset).lower() in {"temple_life", "temple_life"}:
+                    summary = "我给今天折了几张小道观的小日程纸条：晨巡、香案、工具包、小委托和傍晚记账。"
+                self.commit_ops([{"type": "CREATE_PROACTIVE_INTENT", "payload": {"target_type": "self_journal", "intent_type": "report_progress", "summary": summary, "emotional_tone": "calm", "importance": 62, "urgency": 25, "novelty": 45, "relationship_relevance": 45, "privacy_level": "safe_to_share", "status": "generated"}}], owner_kind, owner_id, "life_rhythm_engine", session_id, turn_id)
+            rendered = "今日生活节律已生成\n================\n" + "\n".join([f"- {t['start'][11:16]}-{t['end'][11:16]} {t['title']}" for t in templates])
+            with transaction(self.conn):
+                run_id = new_id("rhythm")
+                self.conn.execute(
+                    """INSERT INTO life_rhythm_runs(id, owner_kind, owner_id, date_key, preset, action, status, event_ids_json, schedule_block_ids_json, transaction_ids_json, receipt_ids_json, rendered_text)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (run_id, owner_kind, owner_id, (date_key or templates[0]["start"][:10] if templates else None), preset, action_l, "committed", dumps(event_ids), dumps(block_ids), dumps(tx_ids), dumps(receipts), rendered),
+                )
+                for t, eid, bid in zip(templates, event_ids, block_ids):
+                    self.conn.execute(
+                        """INSERT INTO life_rhythm_items(id, run_id, owner_kind, owner_id, title, category, activity_domain, start, end, event_id, schedule_block_id, status, payload_json)
+                             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (new_id("rhythmitem"), run_id, owner_kind, owner_id, t["title"], t.get("event_category"), t.get("activity_domain"), t.get("start"), t.get("end"), eid, bid, "planned", dumps(t)),
+                    )
+                append_journal(self.conn, owner_kind, owner_id, "life_rhythm_day_generated", {"run_id": run_id, "event_ids": event_ids, "schedule_block_ids": block_ids}, "living")
+            return {"ok": True, "run_id": run_id, "event_ids": event_ids, "schedule_block_ids": block_ids, "rendered": rendered}
+        if action_l in {"decompose_abstract", "decompose_goal_event", "expand_goal"}:
+            event_id = payload.get("event_id")
+            with transaction(self.conn):
+                if not event_id:
+                    row = self.conn.execute("""SELECT e.*, g.id AS linked_goal_id, g.goal_type, g.title AS goal_title FROM events e
+                         LEFT JOIN event_goal_links l ON l.event_id=e.id AND l.owner_kind=e.owner_kind AND l.owner_id=e.owner_id
+                         LEFT JOIN goals g ON g.id=l.goal_id
+                         WHERE e.owner_kind=? AND e.owner_id=? AND e.status IN ('planned','scheduled','ready')
+                         ORDER BY e.updated_at DESC LIMIT 20""", (owner_kind, owner_id)).fetchall()
+                    selected = None
+                    for r in row:
+                        d = dict(r); goal = {"id": d.get("linked_goal_id"), "goal_type": d.get("goal_type"), "title": d.get("goal_title")}
+                        if is_abstract_goal_event(d, goal): selected = (d, goal); break
+                    if not selected:
+                        return {"ok": False, "error": "no abstract goal event found", "rendered": "没有找到需要分解的抽象目标事件。"}
+                    event, goal = selected
+                else:
+                    erow = self.conn.execute("SELECT * FROM events WHERE id=? AND owner_kind=? AND owner_id=?", (event_id, owner_kind, owner_id)).fetchone()
+                    if not erow:
+                        return {"ok": False, "error": "abstract event not found", "event_id": event_id}
+                    event = dict(erow)
+                    grow = self.conn.execute("SELECT g.* FROM event_goal_links l JOIN goals g ON g.id=l.goal_id WHERE l.event_id=? LIMIT 1", (event_id,)).fetchone()
+                    goal = dict(grow) if grow else {}
+                goal_id = goal.get("id") or event.get("goal_id")
+            if not goal_id:
+                return {"ok": False, "error": "abstract event has no linked goal"}
+            children = abstract_goal_children(date_key=payload.get("date"), tz=payload.get("timezone") or "Asia/Tokyo", preset=str(payload.get("preset") or "default"))
+            commit = self.commit_ops([{"type": "DECOMPOSE_EVENT", "payload": {"parent_event_id": event["id"], "goal_id": goal_id, "children": children, "decomposition_type": "life_rhythm", "strategy": "concrete_daily_children", "source": "life_rhythm_decomposer", "link_children_to_goal": True}}], owner_kind, owner_id, "life_rhythm_decomposer", session_id, turn_id)
+            rendered = "抽象目标事件已分解为具体日常\n==============================\n" + "\n".join([f"- {c['title']}" for c in children])
+            return {"ok": True, "parent_event_id": event["id"], "goal_id": goal_id, "commit": commit, "rendered": rendered}
+        if action_l in {"paper_notes", "notes", "proactive_notes"}:
+            with transaction(self.conn):
+                return list_paper_notes(self.conn, owner_id, int(payload.get("limit", 20))) if owner_kind == "agent" else {"ok": True, "notes": [], "rendered": "用户工作区没有 Agent 小纸条。"}
+        if action_l in {"create_note", "note", "paper_note"}:
+            summary = payload.get("summary") or payload.get("text") or "我有一件小事想之后告诉你。"
+            commit = self.commit_ops([{"type": "CREATE_PROACTIVE_INTENT", "payload": {"target_type": payload.get("target_type") or "user", "target_id": payload.get("target_id") or "anonymous-user", "intent_type": payload.get("intent_type") or "share_interesting", "summary": summary, "emotional_tone": payload.get("emotional_tone") or "calm", "importance": int(payload.get("importance", 55)), "urgency": int(payload.get("urgency", 20)), "novelty": int(payload.get("novelty", 50)), "relationship_relevance": int(payload.get("relationship_relevance", 60)), "privacy_level": payload.get("privacy_level") or "safe_to_share", "status": "generated"}}], owner_kind, owner_id, "paper_note", session_id, turn_id)
+            return {"ok": True, "commit": commit, "rendered": "小纸条已放入 pending proactive：" + summary}
+        if action_l in {"diary_draft", "draft_diary"}:
+            with transaction(self.conn):
+                today = now_iso()[:10]
+                exists = self.conn.execute("SELECT 1 FROM diary_entries WHERE owner_kind=? AND owner_id=? AND date=? AND diary_type IN ('daily_draft','daily') LIMIT 1", (owner_kind, owner_id, today)).fetchone()
+            if exists and not payload.get("force"):
+                return {"ok": True, "skipped": True, "rendered": "今天已经有日记草稿。"}
+            content = diary_draft_content(self.conn, owner_kind, owner_id)
+            commit = self.commit_ops([{"type": "CREATE_DIARY", "payload": {"diary_type": "daily_draft", "date": today, "content": content, "privacy": "agent_private"}}], owner_kind, owner_id, "daily_diary_draft", session_id, turn_id)
+            return {"ok": True, "commit": commit, "rendered": content}
+        raise ValueError(f"Unknown living action: {action}")
+
     def startup_check(self, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID, *, source: str = "startup") -> dict[str, Any]:
         with transaction(self.conn):
             control = ensure_control(self.conn, owner_kind, owner_id)

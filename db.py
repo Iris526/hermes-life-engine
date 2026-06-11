@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 39
+_SCHEMA_VERSION = 40
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -219,6 +219,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 39:
         _create_schema_v39(conn)
         _record_schema_migration(conn, 39, "human_readable_schedule_review_and_settings")
+    if current < 40:
+        _create_schema_v40(conn)
+        _record_schema_migration(conn, 40, "living_rhythm_canon_consistency_and_paper_notes")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -2933,3 +2936,77 @@ def _create_schema_v39(conn: sqlite3.Connection) -> None:
         """
     )
 
+
+
+
+def _create_schema_v40(conn: sqlite3.Connection) -> None:
+    """v0.12.5 living layer: Canon consistency, concrete day rhythm, paper notes."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS canon_consistency_reports (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'ok',
+          conflict_count INTEGER NOT NULL DEFAULT 0,
+          warning_count INTEGER NOT NULL DEFAULT 0,
+          issues_json TEXT NOT NULL DEFAULT '[]',
+          rendered_text TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_canon_consistency_owner_time
+          ON canon_consistency_reports(owner_kind, owner_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS life_rhythm_runs (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          date_key TEXT,
+          preset TEXT NOT NULL DEFAULT 'default',
+          action TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'created',
+          event_ids_json TEXT NOT NULL DEFAULT '[]',
+          schedule_block_ids_json TEXT NOT NULL DEFAULT '[]',
+          transaction_ids_json TEXT NOT NULL DEFAULT '[]',
+          receipt_ids_json TEXT NOT NULL DEFAULT '[]',
+          rendered_text TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_life_rhythm_runs_owner_time
+          ON life_rhythm_runs(owner_kind, owner_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS life_rhythm_items (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          category TEXT,
+          activity_domain TEXT,
+          start TEXT,
+          end TEXT,
+          event_id TEXT,
+          schedule_block_id TEXT,
+          status TEXT NOT NULL DEFAULT 'planned',
+          payload_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_life_rhythm_items_run ON life_rhythm_items(run_id);
+
+        CREATE TABLE IF NOT EXISTS living_inventory_preset_runs (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          preset TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'created',
+          resource_keys_json TEXT NOT NULL DEFAULT '[]',
+          item_names_json TEXT NOT NULL DEFAULT '[]',
+          transaction_id TEXT,
+          receipt_id TEXT,
+          rendered_text TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_living_inventory_preset_owner_time
+          ON living_inventory_preset_runs(owner_kind, owner_id, created_at DESC);
+        """
+    )

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 PLUGIN_NAME = "lifeengine"
-PLUGIN_VERSION = "0.12.4"
+PLUGIN_VERSION = "0.12.5"
 DB_FILENAME = "lifeengine.db"
 VECTOR_DIM = 384
 
@@ -41,7 +41,7 @@ DEFAULT_MODULE_GATES = {
     "proactive": "pending_only",
     "execution": "auto",
     "serendipity": "low",
-    "diary": "manual",
+    "diary": "auto_draft",
     "truth_sources": "auto",
     "user_life": "off",
     "relationship_memory": "auto",

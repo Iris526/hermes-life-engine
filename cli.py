@@ -22,6 +22,15 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_interface.add_argument("view_or_intent", nargs="?")
     p_interface.add_argument("--payload", default="{}", help="JSON payload for interface action")
 
+    p_living = sub.add_parser("living", help="Concrete living layer: rhythm, Canon consistency, inventory presets, paper notes")
+    p_living.add_argument("action", nargs="?", default="summary", choices=["summary", "consistency", "init_inventory", "day_rhythm", "decompose_abstract", "paper_notes", "create_note", "diary_draft"])
+    p_living.add_argument("text", nargs="*", help="Optional note text or additional args")
+    p_living.add_argument("--preset", default="default")
+    p_living.add_argument("--date")
+    p_living.add_argument("--timezone", default="Asia/Tokyo")
+    p_living.add_argument("--event-id")
+    p_living.add_argument("--limit", type=int, default=20)
+
     p_webui = sub.add_parser("webui", help="Run LifeEngine WebUI / Observatory")
     p_webui.add_argument("--life-dir", default=None, help="LifeEngine directory or lifeengine.db path")
     p_webui.add_argument("--host", default="127.0.0.1")
@@ -381,6 +390,12 @@ def handle_cli(args) -> None:
                     payload["path"] = args.path
                     payload["value"] = " ".join(getattr(args, "value", []) or [])
             print(format_result(rt.required_settings(caction, **payload)))
+        elif action == "living":
+            payload = {"preset": args.preset, "date": args.date, "timezone": args.timezone, "event_id": args.event_id, "limit": args.limit}
+            if args.text:
+                payload["summary"] = " ".join(args.text)
+                payload["text"] = " ".join(args.text)
+            print(format_result(rt.living(args.action, **{k:v for k,v in payload.items() if v is not None})))
         elif action == "doctor":
             print(format_result(rt.doctor(level=args.level, include_samples=args.include_samples)))
         elif action == "review":
@@ -850,6 +865,25 @@ def slash_life(raw_args: str) -> str:
                 f"打开地址：http://{host}:{port}\n\n"
                 "WebUI 会显示：像素小人实时状态、今天/本周日程、Review 列表、资源、梦境、流水。"
             )
+        if cmd in {"living", "生活", "节律", "小日子"}:
+            action = rest[0] if rest else "summary"
+            payload = {"preset": "default"}
+            if action in {"day", "daily", "today"}:
+                action = "day_rhythm"
+            if action in {"inventory", "库存初始化"}:
+                action = "init_inventory"
+            if action in {"notes", "纸条", "小纸条"}:
+                action = "paper_notes"
+            if action in {"note", "写纸条"}:
+                action = "create_note"
+                payload["summary"] = " ".join(rest[1:]) or "我有一件小事想之后告诉你。"
+            if action in {"consistency", "canon", "一致性"}:
+                action = "consistency"
+            if action in {"decompose", "分解"}:
+                action = "decompose_abstract"
+                if len(rest) > 1:
+                    payload["event_id"] = rest[1]
+            return format_result(rt.living(action, **payload))
         if cmd in {"run", "推进"}:
             return format_result(rt.tick())
         if cmd in {"backup", "备份"}:

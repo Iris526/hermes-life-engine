@@ -22,7 +22,7 @@ LIFE_INTERFACE = {
         "properties": {
             **OWNER_PROPS,
             "action": {"type": "string", "description": "catalog/read/write."},
-            "domain": {"type": "string", "description": "config/schedule/event/resource/inventory/sleep/dream/review/truth/trace."},
+            "domain": {"type": "string", "description": "config/schedule/event/resource/inventory/sleep/dream/review/truth/living/trace."},
             "view": {"type": "string", "description": "Read view, e.g. today/week/check/list/get."},
             "intent": {"type": "string", "description": "Write intent, e.g. patch/schedule_event/reschedule/create/delta."},
             "payload": {"type": "object", "description": "Optional nested payload; flat fields are also accepted."},
@@ -797,4 +797,34 @@ LIFE_WEBUI = {
         },
         "required": []
     }
+}
+
+LIFE_LIVING = {
+    "name": "life_living",
+    "description": (
+        "Concrete self-life layer for agents: Canon consistency doctor, concrete daily rhythm generation, "
+        "abstract goal event decomposition, living inventory presets, proactive paper notes, and low-frequency diary drafts. "
+        "Use this when the agent needs to turn broad goals into real day-to-day life."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            **OWNER_PROPS,
+            "action": {"type": "string", "description": "summary/consistency/init_inventory/day_rhythm/decompose_abstract/paper_notes/create_note/diary_draft."},
+            "preset": {"type": "string", "description": "Living preset, e.g. default, temple_life, or an explicit persona preset such as temple_life."},
+            "date": {"type": "string", "description": "YYYY-MM-DD date for rhythm/decomposition."},
+            "timezone": {"type": "string", "description": "IANA timezone, default Asia/Tokyo."},
+            "event_id": {"type": "string", "description": "Abstract parent event id to decompose."},
+            "summary": {"type": "string", "description": "Proactive paper note summary."},
+            "text": {"type": "string", "description": "Alias for summary."},
+            "target_id": {"type": "string"},
+            "target_type": {"type": "string"},
+            "intent_type": {"type": "string"},
+            "emotional_tone": {"type": "string"},
+            "importance": {"type": "integer"},
+            "limit": {"type": "integer"},
+            "force": {"type": "boolean"},
+        },
+        "required": [],
+    },
 }

@@ -66,6 +66,12 @@ DOMAINS: dict[str, dict[str, Any]] = {
         "write": ["observe", "bind"],
         "rule": "真实来源和虚拟规则都通过 Canon binding 管理。",
     },
+    "living": {
+        "label": "生活节律 / Living Rhythm",
+        "read": ["summary", "consistency", "paper_notes"],
+        "write": ["init_inventory", "day_rhythm", "decompose_abstract", "create_note", "diary_draft"],
+        "rule": "把抽象目标变成具体日常；写入走 LifeOps 或 Canon/trace，不直接 SQL。",
+    },
     "trace": {
         "label": "Trace / 审计",
         "read": ["latest", "explain", "verify", "audit"],
@@ -122,6 +128,8 @@ def read(rt: Any, owner_kind: str, owner_id: str, domain: str, view: str | None 
         return rt.review(view if view != "summary" else "summary", owner_kind, owner_id, None, None, **p)
     if domain == "truth":
         return rt.truth(view if view != "summary" else "list", owner_kind, owner_id, None, None, **p)
+    if domain == "living":
+        return rt.living(view if view != "summary" else "summary", owner_kind, owner_id, None, None, **p)
     if domain == "trace":
         return rt.traces(view if view != "summary" else "latest", owner_kind, owner_id, **p)
     raise ValueError(f"unknown LifeEngine interface domain: {domain}")
@@ -155,6 +163,8 @@ def write(rt: Any, owner_kind: str, owner_id: str, domain: str, intent: str | No
         return rt.review(intent, owner_kind, owner_id, session_id, turn_id, **p)
     if domain == "truth":
         return rt.truth(intent, owner_kind, owner_id, session_id, turn_id, **p)
+    if domain == "living":
+        return rt.living(intent, owner_kind, owner_id, session_id, turn_id, **p)
     raise ValueError(f"unknown or read-only LifeEngine interface domain: {domain}")
 
 

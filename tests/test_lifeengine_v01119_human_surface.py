@@ -17,8 +17,8 @@ def hermes_home(monkeypatch):
 
 
 def test_version_schema_and_defaults_are_agent_managed():
-    assert PLUGIN_VERSION == "0.12.4"
-    assert _SCHEMA_VERSION == 39
+    assert PLUGIN_VERSION == "0.12.5"
+    assert _SCHEMA_VERSION == 40
     assert DEFAULT_MODULE_GATES["autonomy"] == "full"
     assert DEFAULT_MODULE_GATES["managed_review_loop"] == "auto"
 
