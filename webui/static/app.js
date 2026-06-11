@@ -96,7 +96,10 @@ function renderOverview(snap){
   const mind = (snap.state && (snap.state.mind_state || {})) || {};
   const resources = Object.fromEntries((snap.resources||[]).map(r=>[r.resource_key, r.current_value]));
   const meters = [['energy','精力', resources.energy ?? body.energy],['fatigue','疲劳', resources.fatigue ?? body.fatigue],['focus','专注', resources.focus ?? mind.focus],['mood','心情', resources.mood ?? mind.mood]];
-  $('meters').innerHTML = meters.map(([key,label,val])=>`<div class="meter"><div>${label} <b>${val ?? '--'}</b></div><div class="bar"><div class="fill" style="width:${pct(val)}%"></div></div></div>`).join('');
+  $('meters').innerHTML = meters.map(([key,label,val])=>{
+    const missing = val == null || val === '';
+    return `<div class="meter ${missing ? 'meter-missing' : ''}"><div>${label} <b>${missing ? '未记录' : esc(val)}</b></div><div class="bar"><div class="fill" style="width:${missing ? 0 : pct(val)}%"></div></div></div>`;
+  }).join('');
   const sd = snap.sleep_day_state || {};
   $('sleepDebt').textContent = sd.cumulative_sleep_debt_minutes != null ? `${sd.cumulative_sleep_debt_minutes}min` : '--';
   $('recoveryPressure').textContent = sd.recovery_pressure ?? '--';

@@ -44,6 +44,8 @@ def _make_detail_db(tmp_path: Path) -> Path:
         INSERT INTO resource_accounts VALUES('agent','iris','energy',50,'points',100,'available');
         CREATE TABLE delayed_replies(id TEXT, owner_kind TEXT, owner_id TEXT, status TEXT, message_text TEXT, created_at TEXT);
         CREATE TABLE human_review_items(id TEXT, owner_kind TEXT, owner_id TEXT, item_type TEXT, severity TEXT, title TEXT, message TEXT, source_table TEXT, source_id TEXT, action_hint_json TEXT, status TEXT, created_at TEXT);
+        INSERT INTO human_review_items VALUES('old_doc_1','agent','iris','doctor_warning','error','Doctor: event_transition_coverage','1 event(s) without transition history',NULL,NULL,'{}','open','2026-06-11T09:00:00');
+        INSERT INTO human_review_items VALUES('old_doc_2','agent','iris','doctor_warning','error','Doctor: event_transition_coverage','1 event(s) without transition history',NULL,NULL,'{}','open','2026-06-11T09:05:00');
         CREATE TABLE dream_entries(id TEXT, owner_kind TEXT, owner_id TEXT, title TEXT, summary TEXT, content TEXT, share_text TEXT, truth_layer TEXT, emotional_tone TEXT, symbols_json TEXT, source_event_ids_json TEXT, created_at TEXT);
         INSERT INTO dream_entries VALUES('dream1','agent','iris','雨棚巷回潮','梦见旧节点回潮。','梦里我又检查了一遍雨棚巷。','醒来想说这个梦。','dream_symbolic','calm','["雨棚"]','["event_work"]','2026-06-12T07:30:00');
         CREATE TABLE proactive_intents(owner_kind TEXT, owner_id TEXT, summary TEXT, status TEXT, created_at TEXT);
@@ -83,3 +85,10 @@ def test_server_detail_endpoints(tmp_path):
     assert dream["dream"]["truth_layer"] == "dream_symbolic"
     trace = client.get("/api/trace/explain/tx1").json()
     assert trace["kind"] == "transaction"
+
+
+def test_reader_hides_stale_duplicate_doctor_review_items(tmp_path):
+    db = _make_detail_db(tmp_path)
+    reader = LifeEngineReader(str(db))
+    items = reader.review_items("agent", "iris")
+    assert [i for i in items if i["title"] == "Doctor: event_transition_coverage"] == []

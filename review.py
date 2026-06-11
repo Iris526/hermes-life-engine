@@ -315,6 +315,33 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
             it["id"] = new_id("reviewitem")
     rendered = render_human_review(summary, items)
     if persist:
+        # Keep the persisted review inbox current. Older versions inserted a
+        # fresh open row for the same generated warning every time review ran,
+        # which made the WebUI look like many separate problems. Resolve stale
+        # generated rows and supersede duplicate rows before inserting the new
+        # snapshot.
+        current_keys = {(it.get("item_type"), it.get("title"), it.get("message"), it.get("source_id")) for it in items}
+        managed_types = {
+            "required_settings", "sleep_state", "policy_conflict", "policy_warning",
+            "user_confirmation", "delayed_reply", "dream_audit_finding",
+            "proactive_intent", "proactive_outbox", "doctor_warning", "final_gate_feedback",
+        }
+        open_rows = conn.execute(
+            """SELECT id, item_type, title, message, source_id FROM human_review_items
+                 WHERE owner_kind=? AND owner_id=? AND COALESCE(status,'open')='open'""",
+            (owner_kind, owner_id),
+        ).fetchall()
+        for row in open_rows:
+            key = (row["item_type"], row["title"], row["message"], row["source_id"])
+            if row["item_type"] in managed_types and key not in current_keys:
+                conn.execute("UPDATE human_review_items SET status='resolved', resolved_at=datetime('now') WHERE id=?", (row["id"],))
+        for it in items:
+            conn.execute(
+                """UPDATE human_review_items SET status='resolved', resolved_at=datetime('now')
+                     WHERE owner_kind=? AND owner_id=? AND COALESCE(status,'open')='open'
+                       AND item_type=? AND title=? AND message=? AND COALESCE(source_id,'')=COALESCE(?, '')""",
+                (owner_kind, owner_id, it.get("item_type"), it.get("title"), it.get("message"), it.get("source_id")),
+            )
         conn.execute(
             """INSERT INTO human_review_runs(id, owner_kind, owner_id, status, severity, summary_json, section_counts_json, item_count, rendered_text)
                  VALUES(?,?,?,?,?,?,?,?,?)""",

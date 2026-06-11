@@ -243,9 +243,40 @@ class LifeEngineReader:
                 ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, created_at DESC
                 LIMIT ?
             """, (owner_kind, owner_id, limit))
+            missing_event_transitions = None
             for r in rows:
                 r["action_hint"] = _safe_json(r.get("action_hint_json"), {})
-            return rows
+            out: list[dict[str, Any]] = []
+            seen: set[tuple[str, str, str, str]] = set()
+            for r in rows:
+                # FinalGate feedback is an internal model-audit queue for the
+                # Agent. It should not leak into the human-facing observatory.
+                if r.get("item_type") == "final_gate_feedback":
+                    continue
+                # Review items are persisted each time /life review runs. The
+                # WebUI should be an inbox, not a historical log, so collapse
+                # identical open items and hide doctor warnings whose invariant
+                # has already been repaired.
+                if r.get("item_type") == "doctor_warning" and r.get("title") == "Doctor: event_transition_coverage":
+                    if missing_event_transitions is None:
+                        if self._table_exists(conn, "events") and self._table_exists(conn, "event_state_transitions"):
+                            row = conn.execute(
+                                """SELECT COUNT(*) FROM events e
+                                     LEFT JOIN event_state_transitions t ON t.event_id=e.id
+                                     WHERE e.owner_kind=? AND e.owner_id=? AND t.id IS NULL""",
+                                (owner_kind, owner_id),
+                            ).fetchone()
+                            missing_event_transitions = int(row[0] if row else 0)
+                        else:
+                            missing_event_transitions = 0
+                    if missing_event_transitions == 0:
+                        continue
+                key = (str(r.get("item_type") or ""), str(r.get("title") or ""), str(r.get("message") or ""), str(r.get("source_id") or ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(r)
+            return out
 
     def delayed_replies(self, owner_kind: str, owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
         with self._connect() as conn:
