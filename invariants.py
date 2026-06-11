@@ -123,76 +123,16 @@ def check_wake_jobs(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
     return {"ok": status == "ok", "status": status, "issues": issues, "checked_wake_jobs": len(rows)}
 
 
-
-def check_trace_coverage(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
-    """Verify every committed LifeOps transaction has trace/journal/receipt evidence."""
-    issues: list[dict[str, Any]] = []
-    tx_rows = conn.execute(
-        "SELECT * FROM life_transactions WHERE owner_kind=? AND owner_id=? ORDER BY created_at",
-        (owner_kind, owner_id),
-    ).fetchall()
-    checked_ops = 0
-    checked_receipts = 0
-    for tx in tx_rows:
-        txid = tx["id"]
-        if tx["status"] == "committed":
-            if not tx["trace_id"]:
-                issues.append(_issue("transaction_trace", "error", "committed transaction missing trace_id", transaction_id=txid))
-            else:
-                tr = conn.execute("SELECT id,status FROM trace_runs WHERE id=?", (tx["trace_id"],)).fetchone()
-                if not tr:
-                    issues.append(_issue("transaction_trace", "error", "transaction trace_id not found in trace_runs", transaction_id=txid, trace_id=tx["trace_id"]))
-                elif tr["status"] in {"running", "pending"}:
-                    issues.append(_issue("transaction_trace", "warning", "transaction trace still running", transaction_id=txid, trace_id=tx["trace_id"], trace_status=tr["status"]))
-            ops = conn.execute("SELECT id,status,validator_report_json FROM life_ops WHERE transaction_id=?", (txid,)).fetchall()
-            if not ops:
-                issues.append(_issue("transaction_ops", "error", "committed transaction has no life_ops", transaction_id=txid))
-            for op in ops:
-                checked_ops += 1
-                if op["status"] != "committed":
-                    issues.append(_issue("op_status", "error", "life_op in committed transaction is not committed", transaction_id=txid, op_id=op["id"], op_status=op["status"]))
-                if not op["validator_report_json"]:
-                    issues.append(_issue("op_validator", "warning", "life_op missing validator report", transaction_id=txid, op_id=op["id"]))
-                j = conn.execute("SELECT id FROM life_journal WHERE transaction_id=? AND op_id=?", (txid, op["id"])).fetchone()
-                if not j:
-                    issues.append(_issue("op_journal", "error", "life_op missing journal entry", transaction_id=txid, op_id=op["id"]))
-            receipt = conn.execute("SELECT id FROM commit_receipts WHERE transaction_id=?", (txid,)).fetchone()
-            if not receipt:
-                issues.append(_issue("receipt", "error", "committed transaction missing receipt", transaction_id=txid))
-            else:
-                checked_receipts += 1
-                fact = conn.execute("SELECT id FROM commit_receipt_facts WHERE transaction_id=? LIMIT 1", (txid,)).fetchone()
-                if not fact:
-                    issues.append(_issue("receipt_facts", "error", "commit receipt has no facts", transaction_id=txid, receipt_id=receipt["id"]))
-    # Failed commit attempts should be visible through life_commit_failed traces
-    failed_traces = conn.execute(
-        "SELECT COUNT(*) AS c FROM trace_runs WHERE owner_kind=? AND owner_id=? AND trace_type='life_commit_failed'",
-        (owner_kind, owner_id),
-    ).fetchone()["c"]
-    status = "ok" if not any(i["severity"] == "error" for i in issues) else "failed"
-    report_id = new_id("tracecov")
-    try:
-        conn.execute(
-            """INSERT INTO trace_coverage_reports(id, owner_kind, owner_id, status, checked_transactions, checked_ops, checked_receipts, issues_json)
-                  VALUES(?,?,?,?,?,?,?,?)""",
-            (report_id, owner_kind, owner_id, status, len(tx_rows), checked_ops, checked_receipts, dumps(issues)),
-        )
-    except Exception:
-        pass
-    return {"ok": status == "ok", "status": status, "report_id": report_id, "issues": issues, "checked_transactions": len(tx_rows), "checked_ops": checked_ops, "checked_receipts": checked_receipts, "failed_commit_traces": failed_traces}
-
 def run_doctor(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
     journal = verify_journal_hash_chain(conn, owner_kind, owner_id)
     resources = reconcile_resources(conn, owner_kind, owner_id)
     lifecycle = check_event_lifecycle(conn, owner_kind, owner_id)
     wake_jobs = check_wake_jobs(conn, owner_kind, owner_id)
-    trace_coverage = check_trace_coverage(conn, owner_kind, owner_id)
     checks = {
         "journal_hash_chain": journal,
         "resources": resources,
         "event_lifecycle": lifecycle,
         "wake_jobs": wake_jobs,
-        "trace_coverage": trace_coverage,
     }
     ok = all(bool(v.get("ok")) for v in checks.values())
     issues: list[dict[str, Any]] = []

@@ -24,6 +24,13 @@ def life_status(args: dict, **kwargs) -> str:
     return _run(lambda rt: rt.status(owner_kind, owner_id))
 
 
+def life_review(args: dict, **kwargs) -> str:
+    owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
+    action = args.get("action", "summary")
+    payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action"}}
+    return _run(lambda rt: rt.review(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
+
+
 
 
 def life_doctor(args: dict, **kwargs) -> str:
@@ -85,6 +92,14 @@ def life_event(args: dict, **kwargs) -> str:
     action = args.get("action")
     payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action"}}
     return _run(lambda rt: rt.event_tool(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
+
+
+
+def life_sleep(args: dict, **kwargs) -> str:
+    owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
+    action = args.get("action", "status")
+    payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action"}}
+    return _run(lambda rt: rt.sleep(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
 
 
 def life_memory(args: dict, **kwargs) -> str:
@@ -176,3 +191,37 @@ def life_upgrade(args: dict, **kwargs) -> str:
     action = args.get("action", "check")
     payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action"}}
     return _run(lambda rt: rt.upgrade(action, owner_kind, owner_id, **payload))
+
+
+def life_reply(args: dict, **kwargs) -> str:
+    owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
+    action = args.get("action", "status")
+    payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action", "session_id", "turn_id"}}
+    session_id = args.get("session_id") or kwargs.get("session_id")
+    turn_id = args.get("turn_id") or kwargs.get("turn_id")
+    return _run(lambda rt: rt.reply(action, owner_kind, owner_id, session_id, turn_id, **payload))
+
+
+
+def life_dream(args: dict, **kwargs) -> str:
+    owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
+    action = args.get("action", "status")
+    payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action", "session_id", "turn_id"}}
+    session_id = args.get("session_id") or kwargs.get("session_id")
+    turn_id = args.get("turn_id") or kwargs.get("turn_id")
+    return _run(lambda rt: rt.dream(action, owner_kind, owner_id, session_id, turn_id, **payload))
+
+def life_call(args: dict, **kwargs) -> str:
+    owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
+    payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "session_id", "turn_id"}}
+    session_id = args.get("session_id") or kwargs.get("session_id")
+    turn_id = args.get("turn_id") or kwargs.get("turn_id")
+    payload.setdefault("user_id", args.get("user_id") or kwargs.get("sender_id"))
+    return _run(lambda rt: rt.call(owner_kind, owner_id, session_id=session_id, turn_id=turn_id, **payload))
+
+
+def life_policy(args: dict, **kwargs) -> str:
+    owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
+    action = args.get("action", "get")
+    payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action"}}
+    return _run(lambda rt: rt.policy(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))

@@ -16,6 +16,21 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
 
     sub.add_parser("status", help="Show LifeEngine status")
 
+    p_review = sub.add_parser("review", help="Show one-page human LifeEngine review")
+    p_review.add_argument("action", nargs="?", default="summary", choices=["summary", "run", "review", "runs", "history", "get", "dismiss", "preview", "apply", "actions", "get_action", "policy", "set_policy", "batch_preview", "apply_all", "batch_runs", "get_batch", "undo_preview", "undo", "undo_runs", "get_undo", "batch_undo_preview", "batch_undo", "managed_preview", "managed_run", "managed_runs", "get_managed_run", "managed_state", "managed_acceptance", "managed_acceptance_runs", "get_managed_acceptance", "managed_stress", "managed_stress_runs", "get_managed_stress", "managed_observability", "managed_observability_reports", "get_managed_observability", "managed_readiness", "managed_readiness_reports", "get_managed_readiness"] )
+    p_review.add_argument("target", nargs="?", help="review_run_id for get, item_id for dismiss/apply/preview, action_run_id for get_action")
+    p_review.add_argument("--choice", help="explicit choice for ambiguous actions: confirm/reject or send/suppress")
+    p_review.add_argument("--dry-run", action="store_true")
+    p_review.add_argument("--allow-policy-patch", action="store_true")
+    p_review.add_argument("--section")
+    p_review.add_argument("--safe-only", action="store_true", default=True)
+    p_review.add_argument("--policy-patch", help="JSON review action policy patch")
+    p_review.add_argument("--limit", type=int, default=5)
+    p_review.add_argument("--count", type=int, default=25)
+    p_review.add_argument("--stress-count", type=int, default=12)
+    p_review.add_argument("--no-doctor", action="store_true")
+    p_review.add_argument("--json", action="store_true", dest="as_json")
+
     p_doctor = sub.add_parser("doctor", help="Run LifeEngine health checks")
     p_doctor.add_argument("--level", choices=["quick", "full"], default="full")
     p_doctor.add_argument("--include-samples", action="store_true")
@@ -29,14 +44,23 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
             "export", "exports", "inspect_export", "import", "restore",
             "package_check", "large_smoke", "maintenance", "cron_test",
             "release_check", "all",
-            "surface", "surface_check", "integration_check", "integration_smoke", "integration_acceptance", "hermes_integration",
-            "api_freeze", "api_freeze_snapshot", "freeze_snapshot", "api_freeze_status", "freeze_status",
-            "release_readiness", "v1_rc_check", "v1_rc_acceptance", "mandatory_gate_patch", "core_patch", "core_patch_draft", "core_patches", "patches",
+            "surface", "integration_check", "api_freeze", "api_freeze_status",
+            "release_readiness", "v1_rc_check", "mandatory_gate_patch",
             "concurrency_smoke", "schedule_overlap_smoke",
             "heartbeat_idempotency_smoke", "lifeops_stress",
             "acceptance", "acceptance_suite", "v1_rc_acceptance",
             "acceptance_reports", "acceptance_report", "acceptance_runs",
-            "v1_rc_checklists",
+            "v1_rc_checklists", "sleep_reply_dream_acceptance",
+            "srd_acceptance", "sleep_dream_acceptance",
+            "sleep_reply_dream_acceptance_runs", "srd_acceptance_runs",
+            "sleep_reply_dream_acceptance_get", "srd_acceptance_get",
+            "sleep_autonomy_execution_acceptance", "sae_acceptance",
+            "sleep_autonomy_execution_acceptance_runs", "sae_acceptance_runs",
+            "sleep_autonomy_execution_acceptance_get", "sae_acceptance_get",
+            "sleep_reply_dream_conversation_acceptance", "crd_acceptance",
+            "conversation_acceptance", "srd_conversation_acceptance",
+            "sleep_reply_dream_conversation_acceptance_runs", "crd_acceptance_runs",
+            "sleep_reply_dream_conversation_acceptance_get", "crd_acceptance_get",
         ],
     )
     p_upgrade.add_argument("--include-details", action="store_true")
@@ -144,7 +168,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_goal.add_argument("--limit", type=int, default=20)
 
     p_autonomy = sub.add_parser("autonomy", help="Autonomy Planner operations")
-    p_autonomy.add_argument("action", choices=["list", "get", "plan", "run"])
+    p_autonomy.add_argument("action", choices=["list", "get", "plan", "run", "sleep_context", "sleep_adjustments"])
     p_autonomy.add_argument("--decision-id")
     p_autonomy.add_argument("--now", default=None)
     p_autonomy.add_argument("--manual", action="store_true")
@@ -172,11 +196,82 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
 
 
     p_execution = sub.add_parser("execution", help="Narrative execution simulator and serendipity")
-    p_execution.add_argument("action", choices=["list", "decisions", "get", "run", "simulate", "execute", "serendipity"])
+    p_execution.add_argument("action", choices=["list", "decisions", "get", "run", "simulate", "execute", "serendipity", "sleep_context", "sleep_adjustments"])
     p_execution.add_argument("--decision-id")
     p_execution.add_argument("--schedule-block-id")
     p_execution.add_argument("--now", default=None)
     p_execution.add_argument("--limit", type=int, default=20)
+
+
+    p_policy = sub.add_parser("policy", help="Sleep/Reply/Dream policy UX configuration")
+    p_policy.add_argument("action", choices=["get", "status", "summary", "explain", "set", "patch", "preset", "profile", "reset", "suggestions", "suggest", "audits", "history", "conflicts", "check_conflicts", "conflict_reports", "export", "exports", "inspect_import", "inspect_export", "import", "imports", "acceptance", "acceptance_runs", "acceptance_get"])
+    p_policy.add_argument("--preset", "--profile", dest="preset")
+    p_policy.add_argument("--patch", "--policy-patch", dest="policy_patch", default=None, help="JSON object deep-merge patch")
+    p_policy.add_argument("--status")
+    p_policy.add_argument("--limit", type=int, default=20)
+    p_policy.add_argument("--no-record", action="store_true")
+    p_policy.add_argument("--destination")
+    p_policy.add_argument("--path")
+    p_policy.add_argument("--apply", action="store_true")
+    p_policy.add_argument("--acceptance-run-id")
+
+    p_sleep = sub.add_parser("sleep", help="Sleep plans and sleep sessions")
+    p_sleep.add_argument("action", choices=["status", "plan", "plan_day", "nap", "start", "wake", "skip", "plans", "sessions", "get_plan", "get_session"])
+    p_sleep.add_argument("--sleep-plan-id")
+    p_sleep.add_argument("--sleep-session-id")
+    p_sleep.add_argument("--schedule-block-id")
+    p_sleep.add_argument("--date")
+    p_sleep.add_argument("--planned-start")
+    p_sleep.add_argument("--planned-end")
+    p_sleep.add_argument("--bedtime", default="23:30")
+    p_sleep.add_argument("--wake-time", default="07:00")
+    p_sleep.add_argument("--timezone-name", default="UTC")
+    p_sleep.add_argument("--sleep-type", default="core_sleep")
+    p_sleep.add_argument("--wake-policy", default="natural")
+    p_sleep.add_argument("--alarm-at")
+    p_sleep.add_argument("--now")
+    p_sleep.add_argument("--wake-cause", default="natural")
+    p_sleep.add_argument("--interrupted-by-user", action="store_true")
+    p_sleep.add_argument("--quality-score", type=int)
+    p_sleep.add_argument("--reason", default="manual CLI")
+    p_sleep.add_argument("--status")
+    p_sleep.add_argument("--limit", type=int, default=20)
+
+    p_dream = sub.add_parser("dream", help="DreamRun, DreamAudit, dream entries, and wake-share intents")
+    p_dream.add_argument("action", choices=["status", "run", "audit", "repair_plan", "repair", "repairs", "list", "runs", "entries", "findings", "get", "get_entry", "create_entry"])
+    p_dream.add_argument("--dream-run-id")
+    p_dream.add_argument("--dream-entry-id")
+    p_dream.add_argument("--sleep-session-id")
+    p_dream.add_argument("--force", action="store_true")
+    p_dream.add_argument("--allow-nap", action="store_true")
+    p_dream.add_argument("--no-share", action="store_true")
+    p_dream.add_argument("--target-user-id")
+    p_dream.add_argument("--content")
+    p_dream.add_argument("--summary")
+    p_dream.add_argument("--share-text")
+    p_dream.add_argument("--status")
+    p_dream.add_argument("--severity")
+    p_dream.add_argument("--limit", type=int, default=20)
+    p_dream.add_argument("--dry-run", action="store_true")
+
+    p_reply = sub.add_parser("reply", help="ReplyGate, delayed replies, and call override")
+    p_reply.add_argument("action", choices=["status", "assess", "gate", "defer", "queue", "release", "list", "delayed", "calls", "doctor", "call"] )
+    p_reply.add_argument("--message-text", "--text", dest="message_text")
+    p_reply.add_argument("--user-id")
+    p_reply.add_argument("--session-id")
+    p_reply.add_argument("--turn-id")
+    p_reply.add_argument("--gate-decision-id")
+    p_reply.add_argument("--reason", default="manual CLI")
+    p_reply.add_argument("--force-call", action="store_true")
+    p_reply.add_argument("--status", default=None)
+    p_reply.add_argument("--limit", type=int, default=20)
+
+    p_call = sub.add_parser("call", help="Emergency wake/interrupt call override")
+    p_call.add_argument("--reason", default="manual CLI call override")
+    p_call.add_argument("--message-text", "--text", dest="message_text")
+    p_call.add_argument("--user-id")
+    p_call.add_argument("--session-id")
+    p_call.add_argument("--turn-id")
 
     p_confirm = sub.add_parser("confirmation", help="User Life confirmation flow")
     p_confirm.add_argument("action", choices=["list", "get", "propose", "confirm", "reject"])
@@ -226,6 +321,83 @@ def handle_cli(args) -> None:
             print(format_result(rt.status()))
         elif action == "doctor":
             print(format_result(rt.doctor(level=args.level, include_samples=args.include_samples)))
+        elif action == "review":
+            if args.action in {"runs", "history"}:
+                print(format_result(rt.review("runs", limit=args.limit)))
+            elif args.action == "get":
+                print(format_result(rt.review("get_run", review_run_id=args.target)))
+            elif args.action == "dismiss":
+                print(format_result(rt.review("dismiss", item_id=args.target)))
+            elif args.action == "preview":
+                print(format_result(rt.review("preview_action", item_id=args.target, choice=args.choice, dry_run=True)))
+            elif args.action == "apply":
+                print(format_result(rt.review("apply", item_id=args.target, choice=args.choice, dry_run=args.dry_run, allow_policy_patch=args.allow_policy_patch)))
+            elif args.action == "actions":
+                print(format_result(rt.review("action_runs", item_id=args.target, limit=args.limit)))
+            elif args.action == "get_action":
+                print(format_result(rt.review("get_action", action_run_id=args.target)))
+            elif args.action == "policy":
+                print(format_result(rt.review("policy")))
+            elif args.action == "set_policy":
+                patch = json.loads(args.policy_patch or "{}")
+                print(format_result(rt.review("set_policy", policy_patch=patch)))
+            elif args.action == "batch_preview":
+                print(format_result(rt.review("batch_preview", review_run_id=args.target, section=args.section, safe_only=args.safe_only, limit=args.limit, dry_run=True)))
+            elif args.action == "apply_all":
+                print(format_result(rt.review("apply_all", review_run_id=args.target, section=args.section, safe_only=args.safe_only, limit=args.limit, dry_run=args.dry_run)))
+            elif args.action == "batch_runs":
+                print(format_result(rt.review("batch_runs", limit=args.limit)))
+            elif args.action == "get_batch":
+                print(format_result(rt.review("get_batch", batch_run_id=args.target)))
+            elif args.action == "undo_preview":
+                print(format_result(rt.review("undo_preview", action_run_id=args.target)))
+            elif args.action == "undo":
+                print(format_result(rt.review("undo", action_run_id=args.target, dry_run=args.dry_run, reason="CLI review undo")))
+            elif args.action == "undo_runs":
+                print(format_result(rt.review("undo_runs", limit=args.limit)))
+            elif args.action == "get_undo":
+                print(format_result(rt.review("get_undo", undo_run_id=args.target)))
+            elif args.action == "batch_undo_preview":
+                print(format_result(rt.review("batch_undo_preview", batch_run_id=args.target)))
+            elif args.action == "batch_undo":
+                print(format_result(rt.review("batch_undo", batch_run_id=args.target, dry_run=args.dry_run, safe_only=args.safe_only, reason="CLI review batch undo")))
+            elif args.action == "managed_preview":
+                print(format_result(rt.review("managed_preview", trigger_source="cli", dry_run=True, force=args.dry_run)))
+            elif args.action == "managed_run":
+                print(format_result(rt.review("managed_run", trigger_source="cli", dry_run=args.dry_run, force=True)))
+            elif args.action == "managed_runs":
+                print(format_result(rt.review("managed_runs", limit=args.limit)))
+            elif args.action == "get_managed_run":
+                print(format_result(rt.review("get_managed_run", managed_run_id=args.target)))
+            elif args.action == "managed_state":
+                print(format_result(rt.review("managed_state")))
+            elif args.action == "managed_acceptance":
+                print(format_result(rt.review("managed_acceptance", stress_count=args.stress_count)))
+            elif args.action == "managed_acceptance_runs":
+                print(format_result(rt.review("managed_acceptance_runs", limit=args.limit)))
+            elif args.action == "get_managed_acceptance":
+                print(format_result(rt.review("get_managed_acceptance", acceptance_run_id=args.target)))
+            elif args.action == "managed_stress":
+                print(format_result(rt.review("managed_stress", count=args.count, limit=args.limit)))
+            elif args.action == "managed_stress_runs":
+                print(format_result(rt.review("managed_stress_runs", limit=args.limit)))
+            elif args.action == "get_managed_stress":
+                print(format_result(rt.review("get_managed_stress", stress_run_id=args.target)))
+            elif args.action == "managed_observability":
+                print(format_result(rt.review("managed_observability")))
+            elif args.action == "managed_observability_reports":
+                print(format_result(rt.review("managed_observability_reports", limit=args.limit)))
+            elif args.action == "get_managed_observability":
+                print(format_result(rt.review("get_managed_observability", report_id=args.target)))
+            elif args.action == "managed_readiness":
+                print(format_result(rt.review("managed_release_readiness")))
+            elif args.action == "managed_readiness_reports":
+                print(format_result(rt.review("managed_release_readiness_reports", limit=args.limit)))
+            elif args.action == "get_managed_readiness":
+                print(format_result(rt.review("get_managed_release_readiness", report_id=args.target)))
+            else:
+                out = rt.review("summary", include_doctor=not args.no_doctor, limit=args.limit)
+                print(format_result(out) if args.as_json else out.get("rendered", format_result(out)))
         elif action == "upgrade":
             _handle_upgrade_cli(rt, args)
         elif action == "setup":
@@ -264,6 +436,16 @@ def handle_cli(args) -> None:
             _handle_proactive_cli(rt, args)
         elif action == "execution":
             _handle_execution_cli(rt, args)
+        elif action == "policy":
+            _handle_policy_cli(rt, args)
+        elif action == "sleep":
+            _handle_sleep_cli(rt, args)
+        elif action == "dream":
+            _handle_dream_cli(rt, args)
+        elif action == "reply":
+            _handle_reply_cli(rt, args)
+        elif action == "call":
+            print(format_result(rt.call(reason=args.reason, message_text=args.message_text, user_id=args.user_id, session_id=args.session_id, turn_id=args.turn_id)))
         elif action == "confirmation":
             _handle_confirmation_cli(rt, args)
         elif action == "truth":
@@ -430,6 +612,83 @@ def _handle_execution_cli(rt: LifeEngineRuntime, args: Any) -> None:
     print(format_result(rt.execution(args.action, **payload)))
 
 
+
+def _handle_policy_cli(rt: LifeEngineRuntime, args: Any) -> None:
+    payload = {
+        "preset": args.preset,
+        "policy_patch": json.loads(args.policy_patch) if args.policy_patch else None,
+        "status": args.status,
+        "limit": args.limit,
+        "record": not args.no_record,
+        "destination": getattr(args, "destination", None),
+        "path": getattr(args, "path", None),
+        "apply": getattr(args, "apply", False),
+        "acceptance_run_id": getattr(args, "acceptance_run_id", None),
+    }
+    payload = {k: v for k, v in payload.items() if v not in (None, "")}
+    print(format_result(rt.policy(args.action, **payload)))
+
+def _handle_sleep_cli(rt: LifeEngineRuntime, args: Any) -> None:
+    payload = {
+        "sleep_plan_id": args.sleep_plan_id,
+        "sleep_session_id": args.sleep_session_id,
+        "schedule_block_id": args.schedule_block_id,
+        "date": args.date,
+        "planned_start": args.planned_start,
+        "planned_end": args.planned_end,
+        "bedtime": args.bedtime,
+        "wake_time": args.wake_time,
+        "timezone_name": args.timezone_name,
+        "sleep_type": args.sleep_type,
+        "wake_policy": args.wake_policy,
+        "alarm_at": args.alarm_at,
+        "now": args.now,
+        "wake_cause": args.wake_cause,
+        "interrupted_by_user": args.interrupted_by_user,
+        "quality_score": args.quality_score,
+        "reason": args.reason,
+        "status": args.status,
+        "limit": args.limit,
+    }
+    payload = {k: v for k, v in payload.items() if v not in (None, "")}
+    print(format_result(rt.sleep_tool(args.action, **payload)))
+
+
+def _handle_dream_cli(rt: LifeEngineRuntime, args: Any) -> None:
+    payload = {
+        "dream_run_id": args.dream_run_id,
+        "dream_entry_id": args.dream_entry_id,
+        "sleep_session_id": args.sleep_session_id,
+        "force": args.force,
+        "allow_nap": args.allow_nap,
+        "create_share_intent": not args.no_share,
+        "target_user_id": args.target_user_id,
+        "content": args.content,
+        "summary": args.summary,
+        "share_text": args.share_text,
+        "status": args.status,
+        "severity": args.severity,
+        "limit": args.limit,
+        "dry_run": getattr(args, "dry_run", False),
+    }
+    payload = {k: v for k, v in payload.items() if v not in (None, "")}
+    print(format_result(rt.dream(args.action, **payload)))
+
+
+def _handle_reply_cli(rt: LifeEngineRuntime, args: Any) -> None:
+    payload = {
+        "message_text": args.message_text,
+        "user_id": args.user_id,
+        "gate_decision_id": args.gate_decision_id,
+        "reason": args.reason,
+        "force_call": args.force_call,
+        "status": args.status,
+        "limit": args.limit,
+    }
+    payload = {k: v for k, v in payload.items() if v not in (None, "")}
+    print(format_result(rt.reply(args.action, session_id=args.session_id, turn_id=args.turn_id, **payload)))
+
+
 def _handle_confirmation_cli(rt: LifeEngineRuntime, args: Any) -> None:
     if args.action == "list":
         print(format_result(rt.confirmation("list", "user", "anonymous-user", status=args.status, limit=args.limit)))
@@ -466,7 +725,10 @@ def _simple_help() -> str:
         "  /life pause          暂停生活推进\n"
         "  /life resume         恢复运行\n"
         "  /life run            手动推进一次 heartbeat\n"
-        "  /life review         查看待确认、主动消息、FinalGate 提醒\n"
+        "  /life call           紧急叫醒/打断，释放延迟回复\n"
+        "  /life dream          查看/运行 Dream 自检与梦境分享意图\n"
+        "  /life policy         查看睡眠/回复/梦分享策略（含冲突检查/导入导出/验收）\n"
+        "  /life review         查看待办/建议；/life review apply <item_id> 可执行安全建议\n"
         "  /life doctor         健康检查\n"
         "  /life backup         导出备份\n"
         "  /life advanced       显示高级命令。\n\n"
@@ -479,8 +741,8 @@ def _advanced_help() -> str:
         "Advanced /life commands:\n"
         "  heartbeat <mode|install|status|run-script|test> | tick | module <key> <value>\n"
         "  resource list/add <key> | inventory list/add/meals | goal list/create/decompose/progress\n"
-        "  autonomy list/plan/run | proactive list/create/evaluate/outbox/send/suppress\n"
-        "  execution list/run/serendipity | confirmation list/confirm/reject <id>\n"
+        "  autonomy list/plan/run/sleep_context | proactive list/create/evaluate/outbox/send/suppress\n"
+        "  execution list/run/serendipity | sleep status/plan/start/wake/plans/sessions | dream status/run/entries/findings | reply status/list/release/doctor | call | confirmation list/confirm/reject <id>\n"
         "  truth list/resolve/observe/bind | final_gate check/reports/get\n"
         "  upgrade [check|backup|export|import|restore|package_check|rebuild|verify|large_smoke|cron_test]\n"
         "  upgrade [integration_check|surface|api_freeze|release_readiness|acceptance|v1_rc_check]\n"
@@ -504,12 +766,113 @@ def slash_life(raw_args: str) -> str:
         if cmd in {"backup", "备份"}:
             return format_result(rt.upgrade("export"))
         if cmd in {"review", "inbox", "待办", "查看"}:
-            return format_result({
-                "ok": True,
-                "status": rt.status(),
-                "final_gate_reports": rt.final_gate("reports", limit=5).get("reports", []),
-                "proactive": rt.proactive("list", limit=5),
-            })
+            if rest and rest[0] in {"runs", "history"}:
+                return format_result(rt.review("runs"))
+            if rest and rest[0] in {"get", "explain"} and len(rest) >= 2:
+                return format_result(rt.review("get_run", review_run_id=rest[1]))
+            if rest and rest[0] in {"dismiss", "resolve"} and len(rest) >= 2:
+                return format_result(rt.review("dismiss", item_id=rest[1], reason="/life review dismiss"))
+            if rest and rest[0] in {"preview", "plan"} and len(rest) >= 2:
+                choice = rest[2] if len(rest) >= 3 else None
+                return format_result(rt.review("preview_action", item_id=rest[1], choice=choice, dry_run=True))
+            if rest and rest[0] in {"apply", "do", "执行"} and len(rest) >= 2:
+                choice = rest[2] if len(rest) >= 3 else None
+                return format_result(rt.review("apply", item_id=rest[1], choice=choice))
+            if rest and rest[0] in {"actions", "applied"}:
+                return format_result(rt.review("action_runs"))
+            if rest and rest[0] == "get_action" and len(rest) >= 2:
+                return format_result(rt.review("get_action", action_run_id=rest[1]))
+            if rest and rest[0] in {"policy", "action_policy"}:
+                return format_result(rt.review("policy"))
+            if rest and rest[0] in {"batch_preview", "preview_all", "dry_run_all"}:
+                section = rest[1] if len(rest) >= 2 else None
+                return format_result(rt.review("batch_preview", section=section, dry_run=True))
+            if rest and rest[0] in {"apply_all", "apply_safe"}:
+                section = rest[1] if len(rest) >= 2 else None
+                return format_result(rt.review("apply_all", section=section, safe_only=True))
+            if rest and rest[0] in {"batch_runs", "batches"}:
+                return format_result(rt.review("batch_runs"))
+            if rest and rest[0] == "get_batch" and len(rest) >= 2:
+                return format_result(rt.review("get_batch", batch_run_id=rest[1]))
+            if rest and rest[0] in {"undo_preview", "preview_undo"} and len(rest) >= 2:
+                return format_result(rt.review("undo_preview", action_run_id=rest[1]))
+            if rest and rest[0] in {"undo", "rollback"} and len(rest) >= 2:
+                return format_result(rt.review("undo", action_run_id=rest[1], reason="slash review undo"))
+            if rest and rest[0] in {"batch_undo_preview", "preview_batch_undo"} and len(rest) >= 2:
+                return format_result(rt.review("batch_undo_preview", batch_run_id=rest[1]))
+            if rest and rest[0] in {"batch_undo", "undo_batch", "rollback_batch"} and len(rest) >= 2:
+                return format_result(rt.review("batch_undo", batch_run_id=rest[1], reason="slash review batch undo"))
+            if rest and rest[0] in {"undo_runs", "undos"}:
+                return format_result(rt.review("undo_runs"))
+            if rest and rest[0] == "get_undo" and len(rest) >= 2:
+                return format_result(rt.review("get_undo", undo_run_id=rest[1]))
+            if rest and rest[0] in {"managed_preview", "agent_preview"}:
+                return format_result(rt.review("managed_preview", trigger_source="slash", dry_run=True, force=True))
+            if rest and rest[0] in {"managed_run", "agent_run"}:
+                return format_result(rt.review("managed_run", trigger_source="slash", force=True))
+            if rest and rest[0] in {"managed_runs", "agent_runs"}:
+                return format_result(rt.review("managed_runs"))
+            if rest and rest[0] == "get_managed_run" and len(rest) >= 2:
+                return format_result(rt.review("get_managed_run", managed_run_id=rest[1]))
+            if rest and rest[0] in {"managed_state", "agent_state"}:
+                return format_result(rt.review("managed_state"))
+            if rest and rest[0] in {"managed_acceptance", "acceptance"}:
+                return format_result(rt.review("managed_acceptance"))
+            if rest and rest[0] in {"managed_acceptance_runs", "acceptance_runs"}:
+                return format_result(rt.review("managed_acceptance_runs"))
+            if rest and rest[0] in {"get_managed_acceptance", "acceptance_get"} and len(rest) >= 2:
+                return format_result(rt.review("get_managed_acceptance", acceptance_run_id=rest[1]))
+            if rest and rest[0] in {"managed_stress", "stress"}:
+                count = int(rest[1]) if len(rest) >= 2 and rest[1].isdigit() else 25
+                return format_result(rt.review("managed_stress", count=count))
+            if rest and rest[0] in {"managed_stress_runs", "stress_runs"}:
+                return format_result(rt.review("managed_stress_runs"))
+            if rest and rest[0] in {"get_managed_stress", "stress_get"} and len(rest) >= 2:
+                return format_result(rt.review("get_managed_stress", stress_run_id=rest[1]))
+            if rest and rest[0] in {"managed_observability", "observability"}:
+                return format_result(rt.review("managed_observability"))
+            if rest and rest[0] in {"managed_observability_reports", "observability_reports"}:
+                return format_result(rt.review("managed_observability_reports"))
+            if rest and rest[0] in {"get_managed_observability", "get_observability"} and len(rest) >= 2:
+                return format_result(rt.review("get_managed_observability", report_id=rest[1]))
+            if rest and rest[0] in {"managed_readiness", "release_readiness", "readiness"}:
+                return format_result(rt.review("managed_release_readiness"))
+            if rest and rest[0] in {"managed_readiness_reports", "readiness_reports"}:
+                return format_result(rt.review("managed_release_readiness_reports"))
+            if rest and rest[0] in {"get_managed_readiness", "get_readiness"} and len(rest) >= 2:
+                return format_result(rt.review("get_managed_release_readiness", report_id=rest[1]))
+            out = rt.review("summary")
+            return out.get("rendered") or format_result(out)
+        if cmd in {"policy", "策略", "规则"}:
+            if not rest or rest[0] in {"get", "status", "summary"}:
+                return format_result(rt.policy("get"))
+            if rest[0] in {"explain", "说明"}:
+                return format_result(rt.policy("explain"))
+            if rest[0] in {"suggest", "suggestions", "review", "建议"}:
+                return format_result(rt.policy("suggestions"))
+            if rest[0] in {"preset", "profile"} and len(rest) >= 2:
+                return format_result(rt.policy("preset", preset=rest[1]))
+            if rest[0] in {"reset", "defaults"}:
+                return format_result(rt.policy("reset"))
+            if rest[0] in {"audits", "history"}:
+                return format_result(rt.policy("audits"))
+            if rest[0] in {"conflicts", "check", "validate", "冲突"}:
+                return format_result(rt.policy("conflicts"))
+            if rest[0] in {"conflict_reports", "reports"}:
+                return format_result(rt.policy("conflict_reports"))
+            if rest[0] in {"export", "导出"}:
+                return format_result(rt.policy("export"))
+            if rest[0] in {"exports"}:
+                return format_result(rt.policy("exports"))
+            if rest[0] in {"import"} and len(rest) >= 2:
+                return format_result(rt.policy("import", path=rest[1], apply=("--apply" in rest or "apply" in rest)))
+            if rest[0] in {"acceptance", "验收"}:
+                return format_result(rt.policy("acceptance"))
+            if rest[0] in {"acceptance_runs"}:
+                return format_result(rt.policy("acceptance_runs"))
+            if rest[0] in {"acceptance_get"} and len(rest) >= 2:
+                return format_result(rt.policy("acceptance_get", acceptance_run_id=rest[1]))
+            return format_result(rt.policy("get"))
         if cmd in {"doctor", "check", "health", "诊断"}:
             return format_result(rt.doctor(include_samples=("samples" in rest or "--samples" in rest)))
         if cmd in {"upgrade", "维护", "升级"}:
@@ -565,6 +928,24 @@ def slash_life(raw_args: str) -> str:
                 return format_result(rt.upgrade("acceptance_runs", acceptance_run_id=(rest[1] if len(rest) > 1 else None)))
             if action in {"v1_rc_checklists", "v1_rc_checklist"}:
                 return format_result(rt.upgrade("v1_rc_checklists"))
+            if action in {"sleep_reply_dream_acceptance", "srd_acceptance", "sleep_dream_acceptance"}:
+                return format_result(rt.upgrade("sleep_reply_dream_acceptance"))
+            if action in {"sleep_reply_dream_acceptance_runs", "srd_acceptance_runs"}:
+                return format_result(rt.upgrade("sleep_reply_dream_acceptance_runs"))
+            if action in {"sleep_reply_dream_acceptance_get", "srd_acceptance_get"} and len(rest) > 1:
+                return format_result(rt.upgrade("sleep_reply_dream_acceptance_get", acceptance_run_id=rest[1]))
+            if action in {"sleep_autonomy_execution_acceptance", "sae_acceptance", "sleep_execution_acceptance"}:
+                return format_result(rt.upgrade("sleep_autonomy_execution_acceptance"))
+            if action in {"sleep_autonomy_execution_acceptance_runs", "sae_acceptance_runs"}:
+                return format_result(rt.upgrade("sleep_autonomy_execution_acceptance_runs"))
+            if action in {"sleep_autonomy_execution_acceptance_get", "sae_acceptance_get"} and len(rest) > 1:
+                return format_result(rt.upgrade("sleep_autonomy_execution_acceptance_get", acceptance_run_id=rest[1]))
+            if action in {"sleep_reply_dream_conversation_acceptance", "crd_acceptance", "conversation_acceptance", "srd_conversation_acceptance"}:
+                return format_result(rt.upgrade("sleep_reply_dream_conversation_acceptance"))
+            if action in {"sleep_reply_dream_conversation_acceptance_runs", "crd_acceptance_runs", "srd_conversation_acceptance_runs"}:
+                return format_result(rt.upgrade("sleep_reply_dream_conversation_acceptance_runs"))
+            if action in {"sleep_reply_dream_conversation_acceptance_get", "crd_acceptance_get", "srd_conversation_acceptance_get"} and len(rest) > 1:
+                return format_result(rt.upgrade("sleep_reply_dream_conversation_acceptance_get", acceptance_run_id=rest[1]))
             return format_result(rt.upgrade("check", include_details=("details" in rest or "--details" in rest)))
         if cmd in {"setup", "设定"}:
             return format_result(rt.setup(" ".join(rest) if rest else None))
@@ -631,6 +1012,10 @@ def slash_life(raw_args: str) -> str:
                 return format_result(rt.autonomy("list"))
             if rest[0] in {"plan", "run"}:
                 return format_result(rt.autonomy(rest[0], manual=True))
+            if rest[0] in {"sleep", "sleep_context"}:
+                return format_result(rt.autonomy("sleep_context"))
+            if rest[0] in {"sleep_adjustments", "adjustments"}:
+                return format_result(rt.autonomy("sleep_adjustments"))
             if rest[0] == "get" and len(rest) >= 2:
                 return format_result(rt.autonomy("get", decision_id=rest[1]))
         if cmd in {"proactive", "pro", "主动"}:
@@ -657,6 +1042,10 @@ def slash_life(raw_args: str) -> str:
                 return format_result(rt.execution("list"))
             if rest[0] == "serendipity":
                 return format_result(rt.execution("serendipity"))
+            if rest[0] in {"sleep_context", "sleep"}:
+                return format_result(rt.execution("sleep_context"))
+            if rest[0] in {"sleep_adjustments", "adjustments"}:
+                return format_result(rt.execution("sleep_adjustments"))
             if rest[0] == "get" and len(rest) >= 2:
                 return format_result(rt.execution("get", decision_id=rest[1]))
             if rest[0] in {"run", "simulate", "execute"}:
@@ -664,6 +1053,53 @@ def slash_life(raw_args: str) -> str:
                 if len(rest) >= 2:
                     payload["schedule_block_id"] = rest[1]
                 return format_result(rt.execution(rest[0], **payload))
+        if cmd in {"sleep", "睡眠", "睡觉"}:
+            if not rest or rest[0] in {"status", "state"}:
+                return format_result(rt.sleep_tool("status"))
+            if rest[0] in {"plan", "plan_day"}:
+                return format_result(rt.sleep_tool("plan_day"))
+            if rest[0] == "nap":
+                return format_result(rt.sleep_tool("nap", planned_start=(rest[1] if len(rest) > 1 else None), planned_end=(rest[2] if len(rest) > 2 else None)))
+            if rest[0] in {"start", "sleep"}:
+                payload = {"sleep_plan_id": rest[1]} if len(rest) > 1 else {}
+                return format_result(rt.sleep_tool("start", **payload))
+            if rest[0] in {"wake", "end"}:
+                payload = {"sleep_session_id": rest[1]} if len(rest) > 1 else {}
+                return format_result(rt.sleep_tool("wake", **payload))
+            if rest[0] == "plans":
+                return format_result(rt.sleep_tool("plans"))
+            if rest[0] == "sessions":
+                return format_result(rt.sleep_tool("sessions"))
+
+        if cmd in {"dream", "梦", "做梦"}:
+            if not rest or rest[0] in {"status", "state"}:
+                return format_result(rt.dream("status"))
+            if rest[0] in {"run", "cycle", "dream"}:
+                payload = {}
+                if len(rest) >= 2:
+                    payload["sleep_session_id"] = rest[1]
+                return format_result(rt.dream("run", **payload))
+            if rest[0] in {"entries", "dreams"}:
+                return format_result(rt.dream("entries"))
+            if rest[0] in {"findings", "audit"}:
+                return format_result(rt.dream("findings" if rest[0] == "findings" else "audit"))
+            if rest[0] in {"get", "explain"} and len(rest) >= 2:
+                return format_result(rt.dream("get", dream_run_id=rest[1]))
+
+        if cmd in {"call", "叫醒", "紧急"}:
+            return format_result(rt.call(reason="/life call", message_text=" ".join(rest) if rest else None, user_id=None))
+        if cmd in {"reply", "回复门", "replygate"}:
+            if not rest or rest[0] in {"status", "state"}:
+                return format_result(rt.reply("status"))
+            if rest[0] in {"list", "delayed"}:
+                return format_result(rt.reply("list"))
+            if rest[0] in {"release", "释放"}:
+                return format_result(rt.reply("release", reason="/life reply release"))
+            if rest[0] in {"doctor", "check"}:
+                return format_result(rt.reply("doctor"))
+            if rest[0] in {"assess", "gate"}:
+                return format_result(rt.reply("assess", message_text=" ".join(rest[1:])))
+
         if cmd in {"confirmation", "confirm"}:
             if not rest or rest[0] == "list":
                 return format_result(rt.confirmation("list", "user", "anonymous-user"))

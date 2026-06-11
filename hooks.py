@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 
 from .runtime import LifeEngineRuntime
 from .trace import append_audit
@@ -11,31 +10,7 @@ from .trace import append_audit
 logger = logging.getLogger(__name__)
 
 
-def _allowed_platforms() -> set[str]:
-    """Return platforms where LifeEngine hooks are allowed to affect turns.
-
-    Default is qqbot-only so enabling the plugin in a shared gateway profile
-    does not inject LifeContext or FinalGate into Feishu/work sessions. Override
-    with HERMES_LIFEENGINE_PLATFORMS=qqbot,telegram or '*' for all platforms.
-    CLI/maintenance calls that do not provide a platform are left alone.
-    """
-    raw = os.getenv("HERMES_LIFEENGINE_PLATFORMS", "qqbot").strip()
-    if raw in {"*", "all", "ALL"}:
-        return {"*"}
-    return {p.strip().lower() for p in raw.split(",") if p.strip()}
-
-
-def _platform_allowed(kwargs: dict) -> bool:
-    platform = (kwargs.get("platform") or "").strip().lower()
-    if not platform:
-        return True
-    allowed = _allowed_platforms()
-    return "*" in allowed or platform in allowed
-
-
 def pre_llm_call(**kwargs):
-    if not _platform_allowed(kwargs):
-        return None
     rt = LifeEngineRuntime()
     try:
         context = rt.build_context_for_turn(
@@ -52,8 +27,6 @@ def pre_llm_call(**kwargs):
 
 
 def transform_llm_output(**kwargs):
-    if not _platform_allowed(kwargs):
-        return None
     rt = LifeEngineRuntime()
     try:
         return rt.audit_final_output(
@@ -69,8 +42,6 @@ def transform_llm_output(**kwargs):
 
 
 def post_tool_call(**kwargs):
-    if not _platform_allowed(kwargs):
-        return None
     # Tool observations become trace/audit, but not life facts unless the model
     # commits explicit LifeOps.  This avoids tool-result pollution.
     tool_name = kwargs.get("tool_name")
@@ -103,8 +74,6 @@ def post_tool_call(**kwargs):
 
 
 def on_session_start(**kwargs):
-    if not _platform_allowed(kwargs):
-        return None
     # Ensure DB/control exists early, then stay silent.
     rt = LifeEngineRuntime()
     try:
@@ -116,3 +85,47 @@ def on_session_start(**kwargs):
 
 def on_session_end(**kwargs):
     return None
+
+
+def _event_attr(event, *names):
+    for name in names:
+        try:
+            if isinstance(event, dict) and name in event:
+                return event.get(name)
+            value = getattr(event, name, None)
+            if value is not None:
+                return value
+        except Exception:
+            continue
+    return None
+
+
+def pre_gateway_dispatch(**kwargs):
+    """Gateway-level ReplyGate.
+
+    When reply_gate=auto/strict and the agent is asleep or in an
+    uninterruptible event, ordinary messages are queued as delayed replies and
+    skipped.  Call-like messages wake the agent.  In advisory mode we only write
+    a gate decision and let the normal turn proceed.
+    """
+    event = kwargs.get("event")
+    text = _event_attr(event, "text", "content", "message") or ""
+    sender_id = _event_attr(event, "sender_id", "user_id", "from_user", "author_id") or kwargs.get("sender_id")
+    session_id = _event_attr(event, "session_id", "conversation_id", "chat_id") or kwargs.get("session_id")
+    turn_id = _event_attr(event, "turn_id", "message_id", "id") or kwargs.get("turn_id")
+    platform = _event_attr(event, "platform") or kwargs.get("platform") or "gateway"
+    rt = LifeEngineRuntime()
+    try:
+        out = rt.assess_incoming_message(session_id=str(session_id) if session_id else None,
+                                         turn_id=str(turn_id) if turn_id else None,
+                                         sender_id=str(sender_id) if sender_id else None,
+                                         platform=str(platform) if platform else None,
+                                         text=str(text or ""))
+        if out.get("delayed_reply"):
+            return {"action": "skip", "reason": "LifeEngine ReplyGate deferred message until the agent is available"}
+        return {"action": "allow"}
+    except Exception as exc:
+        logger.debug("LifeEngine pre_gateway_dispatch ReplyGate failed: %s", exc)
+        return {"action": "allow"}
+    finally:
+        rt.close()

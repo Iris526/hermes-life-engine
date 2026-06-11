@@ -48,3 +48,8 @@ Typical proactive flow:
 - If pending_only, mention naturally next turn when appropriate.
 - If outbox queued and an adapter actually delivers it, mark sent: `life_proactive(action="send", outbox_id="outbox_...", result={...})`.
 - Suppress or expire stale/private items with `life_proactive(action="suppress"|"expire")`.
+
+
+## Sleep / Reply / Dream policy
+
+Use `life_policy` to inspect and tune the high-level policy for sleep timing, reply-gate behavior, delayed-reply digest templates, dream sharing, and DreamAudit repair preferences. Prefer `/life policy` for humans and `life_policy` for Agent self-management.

@@ -1,0 +1,14 @@
+{
+  "package": "lifeengine_0_10_0_to_0_11_18_patch",
+  "from_plugin_version": "0.10.0",
+  "to_plugin_version": "0.11.18",
+  "target_schema_version": 38,
+  "sqlite_vec_required": true,
+  "created_at_utc": "2026-06-11T04:19:32.322146+00:00",
+  "contains": [
+    "overlay/lifeengine complete target plugin",
+    "unified diff patch/lifeengine_0.10.0_to_0.11.18.patch",
+    "upgrade script scripts/apply_patch.py",
+    "manuals and design philosophy"
+  ]
+}

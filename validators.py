@@ -64,6 +64,10 @@ ALLOWED_OPS = {
     "UPDATE_EVENT_STATUS",
     "CREATE_SCHEDULE_BLOCK",
     "UPDATE_SCHEDULE_BLOCK_STATUS",
+    "UPDATE_REALTIME_STATE",
+    "PLAN_CORE_SLEEP",
+    "START_SLEEP_SESSION",
+    "END_SLEEP_SESSION",
     "COMPLETE_EVENT",
     "RESOURCE_DEFINE",
     "RESOURCE_DELTA",
@@ -94,9 +98,22 @@ ALLOWED_OPS = {
     "DECOMPOSE_EVENT",
     "CREATE_REFLECTION",
     "CREATE_GOAL_MILESTONE",
+    "CREATE_SLEEP_PLAN", "START_SLEEP_SESSION", "WAKE_SLEEP_SESSION", "INTERRUPT_SLEEP_SESSION",
+    "RECORD_REPLY_GATE_DECISION", "CREATE_DELAYED_REPLY", "RELEASE_DELAYED_REPLIES", "CALL_OVERRIDE",
+    "RUN_DREAM", "CREATE_DREAM_ENTRY",
     "RECOMPUTE_EVENT_PROGRESS",
     "AUTONOMY_CREATE_GOAL_STEP",
     "AUTONOMY_SCHEDULE_EVENT",
+    # v0.11.1 sleep system
+    "CREATE_SLEEP_PLAN",
+    "START_SLEEP_SESSION",
+    "END_SLEEP_SESSION",
+    "SKIP_SLEEP_PLAN",
+    "RECORD_REPLY_GATE_DECISION",
+    "CREATE_DELAYED_REPLY",
+    "RELEASE_DELAYED_REPLIES",
+    "CALL_OVERRIDE",
+    "RUN_DREAM", "CREATE_DREAM_ENTRY",
 }
 
 USER_WRITE_OPS = {
@@ -105,9 +122,22 @@ USER_WRITE_OPS = {
     "CREATE_MEAL_RECORD", "CREATE_LIFE_ARC", "CREATE_GOAL", "UPDATE_GOAL_PROGRESS", "CREATE_GOAL_MILESTONE",
     "LINK_EVENT_TO_GOAL", "CREATE_EVENT_DEPENDENCY", "DECOMPOSE_EVENT", "CREATE_REFLECTION", "RECOMPUTE_EVENT_PROGRESS",
     "CREATE_GOAL_MILESTONE",
+    "CREATE_SLEEP_PLAN", "START_SLEEP_SESSION", "WAKE_SLEEP_SESSION", "INTERRUPT_SLEEP_SESSION",
+    "RECORD_REPLY_GATE_DECISION", "CREATE_DELAYED_REPLY", "RELEASE_DELAYED_REPLIES", "CALL_OVERRIDE",
+    "RUN_DREAM", "CREATE_DREAM_ENTRY",
     "RECOMPUTE_EVENT_PROGRESS",
     "AUTONOMY_CREATE_GOAL_STEP",
     "AUTONOMY_SCHEDULE_EVENT",
+    # v0.11.1 sleep system
+    "CREATE_SLEEP_PLAN",
+    "START_SLEEP_SESSION",
+    "END_SLEEP_SESSION",
+    "SKIP_SLEEP_PLAN",
+    "RECORD_REPLY_GATE_DECISION",
+    "CREATE_DELAYED_REPLY",
+    "RELEASE_DELAYED_REPLIES",
+    "CALL_OVERRIDE",
+    "RUN_DREAM", "CREATE_DREAM_ENTRY",
 }
 
 
@@ -206,8 +236,138 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         _require(payload, "schedule_block_id", "status")
         if str(payload.get("status")) not in {"planned", "locked", "ready", "in_progress", "completed", "skipped", "cancelled", "rescheduled", "missed"}:
             raise ValidationError(f"invalid schedule block status: {payload.get('status')}")
+    elif op_type == "UPDATE_REALTIME_STATE":
+        allowed_modes = {"awake", "idle", "busy", "in_conversation", "asleep", "napping", "dreaming", "uninterruptible_event", "waiting_to_reply", "recovering", "system_paused"}
+        if payload.get("mode") and str(payload.get("mode")) not in allowed_modes:
+            raise ValidationError(f"invalid realtime state mode: {payload.get('mode')}")
+        if payload.get("lease_expires_at"):
+            try:
+                payload["lease_expires_at_ts"] = to_epoch(payload.get("lease_expires_at"))
+            except Exception as exc:
+                raise ValidationError("invalid lease_expires_at") from exc
+    elif op_type == "PLAN_CORE_SLEEP":
+        _require(payload, "date_key", "target_bedtime", "target_wake_time")
+        tz = payload.get("timezone") or "UTC"
+        # HH:MM bedtime/wake pairs are resolved by sleep.plan_core_sleep, including next-day wake rollover.
+        # Only validate here when explicit ISO datetimes are provided.
+        if "T" in str(payload.get("target_bedtime")) and "T" in str(payload.get("target_wake_time")):
+            start, end, start_ts, end_ts = normalize_range(payload.get("target_bedtime"), payload.get("target_wake_time"), default_tz=tz)
+            payload["target_bedtime"] = start
+            payload["target_wake_time"] = end
+            payload["target_bedtime_ts"] = start_ts
+            payload["target_wake_time_ts"] = end_ts
+        if payload.get("alarm_time") and "T" in str(payload.get("alarm_time")):
+            try:
+                payload["alarm_time_ts"] = to_epoch(payload.get("alarm_time"))
+            except Exception as exc:
+                raise ValidationError("invalid alarm_time") from exc
+    elif op_type == "START_SLEEP_SESSION":
+        if not payload.get("sleep_session_id") and not payload.get("sleep_plan_id"):
+            raise ValidationError("START_SLEEP_SESSION requires sleep_session_id or sleep_plan_id")
+        if payload.get("actual_start"):
+            try:
+                payload["actual_start_ts"] = to_epoch(payload.get("actual_start"))
+            except Exception as exc:
+                raise ValidationError("invalid actual_start") from exc
+    elif op_type == "END_SLEEP_SESSION":
+        _require(payload, "sleep_session_id")
+        if payload.get("actual_end"):
+            try:
+                payload["actual_end_ts"] = to_epoch(payload.get("actual_end"))
+            except Exception as exc:
+                raise ValidationError("invalid actual_end") from exc
+        if payload.get("quality_score") is not None:
+            _validate_0_100("sleep quality_score", payload.get("quality_score"))
+    elif op_type == "CREATE_SLEEP_PLAN":
+        # plan_day may provide date/bedtime/wake_time instead of explicit range.
+        if payload.get("planned_start") or payload.get("planned_end"):
+            _validate_time_range(payload, "planned_start", "planned_end")
+            p = _normalize_event_payload({"planned_start": payload.get("planned_start"), "planned_end": payload.get("planned_end"), "timezone": payload.get("timezone_name") or payload.get("timezone") or "UTC"})
+            payload["planned_start"] = p.get("planned_start")
+            payload["planned_end"] = p.get("planned_end")
+            if p.get("planned_start_ts") is not None:
+                payload["planned_start_ts"] = p.get("planned_start_ts")
+            if p.get("planned_end_ts") is not None:
+                payload["planned_end_ts"] = p.get("planned_end_ts")
+        elif not payload.get("date"):
+            # Runtime will default to today, but be explicit in validator report.
+            payload["date"] = "today"
+        if payload.get("sleep_type") and payload.get("sleep_type") not in {"core_sleep", "nap", "recovery_sleep"}:
+            raise ValidationError(f"invalid sleep_type: {payload.get('sleep_type')}")
+        if payload.get("wake_policy") and payload.get("wake_policy") not in {"natural", "natural_or_alarm", "alarm", "user_interrupt", "call_override", "schedule", "short_recovery"}:
+            raise ValidationError(f"invalid wake_policy: {payload.get('wake_policy')}")
+    elif op_type == "START_SLEEP_SESSION":
+        if not (payload.get("sleep_plan_id") or payload.get("schedule_block_id")):
+            # Allow runtime to choose the next planned sleep, but report it.
+            payload["auto_select_plan"] = True
+    elif op_type == "END_SLEEP_SESSION":
+        if payload.get("quality_score") is not None:
+            _validate_0_100("sleep quality_score", payload.get("quality_score"))
+        if payload.get("wake_cause") and payload.get("wake_cause") not in {"natural", "alarm", "alarm_or_natural", "user_interrupt", "call_override", "schedule", "unknown"}:
+            raise ValidationError(f"invalid wake_cause: {payload.get('wake_cause')}")
+    elif op_type == "SKIP_SLEEP_PLAN":
+        _require(payload, "sleep_plan_id")
     elif op_type == "COMPLETE_EVENT":
         _require(payload, "event_id")
+    elif op_type == "CREATE_SLEEP_PLAN":
+        _require(payload, "planned_sleep_at", "planned_wake_at")
+        # Sleep plans are scheduled blocks under the hood, but they have their own start/wake jobs.
+        _validate_time_range(payload, "planned_sleep_at", "planned_wake_at")
+        if payload.get("alarm_at"):
+            try:
+                payload["alarm_at_ts"] = to_epoch(payload.get("alarm_at"))
+            except Exception as exc:
+                raise ValidationError("invalid sleep alarm_at") from exc
+    elif op_type == "START_SLEEP_SESSION":
+        _require(payload, "sleep_plan_id")
+        if payload.get("now"):
+            try:
+                payload["now_ts"] = to_epoch(payload.get("now"))
+            except Exception as exc:
+                raise ValidationError("invalid sleep start now") from exc
+    elif op_type == "WAKE_SLEEP_SESSION":
+        if not payload.get("sleep_session_id") and not payload.get("sleep_plan_id"):
+            raise ValidationError("WAKE_SLEEP_SESSION requires sleep_session_id or sleep_plan_id")
+        if payload.get("now"):
+            try:
+                payload["now_ts"] = to_epoch(payload.get("now"))
+            except Exception as exc:
+                raise ValidationError("invalid sleep wake now") from exc
+    elif op_type == "INTERRUPT_SLEEP_SESSION":
+        if payload.get("now"):
+            try:
+                payload["now_ts"] = to_epoch(payload.get("now"))
+            except Exception as exc:
+                raise ValidationError("invalid sleep interruption time") from exc
+    elif op_type == "RECORD_REPLY_GATE_DECISION":
+        _require(payload, "decision")
+        if payload.get("decision") not in {"allow", "advisory", "defer", "call_override", "brief_status", "fail_safe_allow"}:
+            raise ValidationError(f"invalid reply gate decision: {payload.get('decision')}")
+    elif op_type == "CREATE_DELAYED_REPLY":
+        _require(payload, "message_text")
+        if payload.get("expires_at"):
+            try:
+                payload["expires_at_ts"] = to_epoch(payload.get("expires_at"))
+            except Exception as exc:
+                raise ValidationError("invalid delayed reply expires_at") from exc
+    elif op_type == "RELEASE_DELAYED_REPLIES":
+        if payload.get("limit") is not None and int(payload.get("limit")) <= 0:
+            raise ValidationError("release limit must be positive")
+    elif op_type == "CALL_OVERRIDE":
+        # reason/message are optional; call override may be triggered by a tool or gateway hook.
+        pass
+    elif op_type == "RUN_DREAM":
+        if payload.get("sleep_session_id") is not None and not str(payload.get("sleep_session_id")).strip():
+            raise ValidationError("sleep_session_id cannot be empty")
+        if payload.get("create_share_intent") is not None and not isinstance(payload.get("create_share_intent"), bool):
+            payload["create_share_intent"] = str(payload.get("create_share_intent")).lower() in {"1", "true", "yes", "on"}
+        if payload.get("allow_nap") is not None and not isinstance(payload.get("allow_nap"), bool):
+            payload["allow_nap"] = str(payload.get("allow_nap")).lower() in {"1", "true", "yes", "on"}
+    elif op_type == "CREATE_DREAM_ENTRY":
+        _require(payload, "content")
+        payload.setdefault("truth_layer", "dream_symbolic")
+        if payload.get("truth_layer") != "dream_symbolic":
+            raise ValidationError("Dream entries must use truth_layer=dream_symbolic")
     elif op_type == "RESOURCE_DEFINE":
         _require(payload, "key")
         if payload.get("min_value") is not None and payload.get("max_value") is not None:
@@ -542,6 +702,29 @@ def validate_life_ops(conn, owner_kind: str, owner_id: str, control: dict[str, A
             if not event_transition_allowed(old_status, "completed"):
                 raise ValidationError(f"invalid event status transition {old_status} -> completed")
             event_status_cache[event_id] = "completed"
+        if op_type == "START_SLEEP_SESSION":
+            row = conn.execute("SELECT event_id, schedule_block_id, status FROM sleep_plans WHERE owner_kind=? AND owner_id=? AND id=?", (owner_kind, owner_id, payload.get("sleep_plan_id"))).fetchone()
+            if not row:
+                raise ValidationError(f"sleep plan not found: {payload.get('sleep_plan_id')}")
+            if row["status"] in {"completed", "cancelled", "missed", "skipped"}:
+                raise ValidationError(f"cannot start sleep plan in status {row['status']}")
+        if op_type == "WAKE_SLEEP_SESSION":
+            if payload.get("sleep_session_id"):
+                row = conn.execute("SELECT status FROM sleep_sessions WHERE owner_kind=? AND owner_id=? AND id=?", (owner_kind, owner_id, payload.get("sleep_session_id"))).fetchone()
+                if not row:
+                    raise ValidationError(f"sleep session not found: {payload.get('sleep_session_id')}")
+            elif payload.get("sleep_plan_id"):
+                row = conn.execute("SELECT 1 FROM sleep_plans WHERE owner_kind=? AND owner_id=? AND id=?", (owner_kind, owner_id, payload.get("sleep_plan_id"))).fetchone()
+                if not row:
+                    raise ValidationError(f"sleep plan not found: {payload.get('sleep_plan_id')}")
+        if op_type == "INTERRUPT_SLEEP_SESSION" and payload.get("sleep_session_id"):
+            row = conn.execute("SELECT 1 FROM sleep_sessions WHERE owner_kind=? AND owner_id=? AND id=?", (owner_kind, owner_id, payload.get("sleep_session_id"))).fetchone()
+            if not row:
+                raise ValidationError(f"sleep session not found: {payload.get('sleep_session_id')}")
+        if op_type == "CREATE_DELAYED_REPLY" and payload.get("gate_decision_id"):
+            row = conn.execute("SELECT 1 FROM reply_gate_decisions WHERE owner_kind=? AND owner_id=? AND id=?", (owner_kind, owner_id, payload.get("gate_decision_id"))).fetchone()
+            if not row:
+                raise ValidationError(f"reply gate decision not found: {payload.get('gate_decision_id')}")
         if op_type == "UPDATE_SCHEDULE_BLOCK_STATUS":
             block_id = payload.get("schedule_block_id")
             old_status = current_schedule_status(block_id)
@@ -549,6 +732,12 @@ def validate_life_ops(conn, owner_kind: str, owner_id: str, control: dict[str, A
             if not schedule_transition_allowed(old_status, new_status):
                 raise ValidationError(f"invalid schedule block status transition {old_status} -> {new_status}")
             schedule_status_cache[block_id] = str(new_status)
+        if op_type == "UPDATE_REALTIME_STATE":
+            _assert_event_exists(conn, owner_kind, owner_id, payload.get("active_event_id"))
+            if payload.get("active_schedule_block_id"):
+                row = _schedule_row(conn, owner_kind, owner_id, payload.get("active_schedule_block_id"))
+                if not row:
+                    raise ValidationError(f"schedule block not found: {payload.get('active_schedule_block_id')}")
         if op_type == "RESOURCE_DELTA":
             validate_resource_delta_against_db(conn, owner_kind, owner_id, payload)
         if op_type == "RESOURCE_RESERVE":

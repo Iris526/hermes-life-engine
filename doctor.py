@@ -24,6 +24,11 @@ REQUIRED_TABLES = {
     "resource_definitions", "resource_accounts", "resource_ledger", "events", "schedule_blocks",
     "wake_jobs", "truth_source_reads", "inventory_items", "goals", "autonomy_decisions",
     "proactive_intents", "execution_decisions", "serendipity_events", "memory_vec", "schema_migrations", "install_checks", "final_gate_reports", "final_gate_feedback_queue", "trace_coverage_reports", "acceptance_reports", "api_freeze_snapshots",
+    "event_state_transitions", "schedule_block_state_transitions", "action_state_transitions", "agent_realtime_state", "agent_state_snapshots", "sleep_plans", "sleep_sessions", "sleep_interruptions", "sleep_doctor_findings", "sleep_session_state_transitions",
+    "reply_gate_decisions", "delayed_replies", "call_overrides", "reply_gate_recoveries",
+    "dream_runs", "dream_audit_findings", "dream_entries", "dream_repair_runs",
+    "sleep_day_states", "sleep_recovery_plans", "delayed_reply_digests", "dream_repair_policies",
+    "human_review_runs", "human_review_items",
 }
 
 
@@ -75,19 +80,10 @@ def check_trace_coverage(conn, owner_kind: str, owner_id: str, *, write_report: 
     if write_report:
         report_id = f"tracecov_{__import__('uuid').uuid4().hex}"
         import json
-        issues_json = json.dumps(issues, ensure_ascii=False, sort_keys=True)
-        try:
-            conn.execute(
-                "INSERT INTO trace_coverage_reports(id, owner_kind, owner_id, status, checked_transactions, issue_count, issues_json) VALUES(?,?,?,?,?,?,?)",
-                (report_id, owner_kind, owner_id, out["status"], len(txs), len(issues), issues_json),
-            )
-        except Exception:
-            op_count = sum(_count(conn, "SELECT COUNT(*) FROM life_ops WHERE transaction_id=?", (tx["id"],)) for tx in txs)
-            receipt_count = sum(_count(conn, "SELECT COUNT(*) FROM commit_receipts WHERE transaction_id=?", (tx["id"],)) for tx in txs)
-            conn.execute(
-                "INSERT INTO trace_coverage_reports(id, owner_kind, owner_id, status, checked_transactions, checked_ops, checked_receipts, issues_json) VALUES(?,?,?,?,?,?,?,?)",
-                (report_id, owner_kind, owner_id, out["status"], len(txs), op_count, receipt_count, issues_json),
-            )
+        conn.execute(
+            "INSERT INTO trace_coverage_reports(id, owner_kind, owner_id, status, checked_transactions, issue_count, issues_json) VALUES(?,?,?,?,?,?,?)",
+            (report_id, owner_kind, owner_id, out["status"], len(txs), len(issues), json.dumps(issues, ensure_ascii=False, sort_keys=True)),
+        )
         out["report_id"] = report_id
     return out
 
@@ -190,6 +186,39 @@ def run_doctor(conn, owner_kind: str, owner_id: str, *, write_audit: bool = True
         running = _count(conn, "SELECT COUNT(*) FROM wake_jobs WHERE owner_kind=? AND owner_id=? AND status='running'", (owner_kind, owner_id))
         checks["wake_jobs"] = _check(running == 0, f"running_count={running}", "warning", running_count=running)
 
+    if {"event_state_transitions", "events"}.issubset(names):
+        missing_transitions = _count(
+            conn,
+            """SELECT COUNT(*) FROM events e WHERE e.owner_kind=? AND e.owner_id=?
+                  AND NOT EXISTS (SELECT 1 FROM event_state_transitions t WHERE t.event_id=e.id)""",
+            (owner_kind, owner_id),
+        )
+        checks["event_transition_coverage"] = _check(missing_transitions == 0, "event transition coverage ok" if missing_transitions == 0 else f"{missing_transitions} event(s) without transition history", missing=missing_transitions)
+
+    if "agent_realtime_state" in names:
+        stuck = conn.execute(
+            """SELECT * FROM agent_realtime_state WHERE owner_kind=? AND owner_id=?
+                  AND lease_expires_at_ts IS NOT NULL AND lease_expires_at_ts < unixepoch('now')
+                  AND mode IN ('busy','asleep','napping','dreaming','uninterruptible_event','waiting_to_reply')""",
+            (owner_kind, owner_id),
+        ).fetchall()
+        checks["realtime_state_lease"] = _check(len(stuck) == 0, "realtime state leases ok" if not stuck else f"{len(stuck)} expired realtime lease(s)", "warning", stuck=[dict(r) for r in stuck])
+
+    if {"sleep_plans", "sleep_sessions"}.issubset(names):
+        active_sessions = _count(conn, "SELECT COUNT(*) FROM sleep_sessions WHERE owner_kind=? AND owner_id=? AND status='asleep'", (owner_kind, owner_id))
+        state_active = conn.execute("SELECT active_sleep_session_id, mode FROM agent_realtime_state WHERE owner_kind=? AND owner_id=?", (owner_kind, owner_id)).fetchone() if "agent_realtime_state" in names else None
+        mismatch = False
+        if active_sessions > 0 and state_active and state_active["mode"] not in {"asleep", "napping"}:
+            mismatch = True
+        checks["sleep_state"] = _check(not mismatch, "sleep state ok" if not mismatch else "active sleep session while realtime state is not asleep/napping", "warning", active_sessions=active_sessions, realtime_state=dict(state_active) if state_active else None)
+    if {"reply_gate_decisions", "delayed_replies"}.issubset(names):
+        stale_delayed = _count(conn, "SELECT COUNT(*) FROM delayed_replies WHERE owner_kind=? AND owner_id=? AND status='pending' AND queued_at < datetime('now','-12 hours')", (owner_kind, owner_id))
+        expired_delayed = _count(conn, "SELECT COUNT(*) FROM delayed_replies WHERE owner_kind=? AND owner_id=? AND status='pending' AND expires_at_ts IS NOT NULL AND expires_at_ts < unixepoch('now')", (owner_kind, owner_id))
+        checks["reply_gate"] = _check(stale_delayed == 0 and expired_delayed == 0, "reply gate queues ok" if not (stale_delayed or expired_delayed) else f"stale={stale_delayed}, expired={expired_delayed}", "warning", stale_delayed=stale_delayed, expired_delayed=expired_delayed)
+    if {"sleep_sessions", "dream_runs"}.issubset(names):
+        missing_dreams = _count(conn, """SELECT COUNT(*) FROM sleep_sessions s WHERE s.owner_kind=? AND s.owner_id=? AND s.session_type='core_sleep' AND s.status IN ('completed','interrupted') AND COALESCE(s.actual_duration_minutes,0) >= 90 AND NOT EXISTS (SELECT 1 FROM dream_runs d WHERE d.sleep_session_id=s.id)""", (owner_kind, owner_id))
+        stuck_dreams = _count(conn, "SELECT COUNT(*) FROM dream_runs WHERE owner_kind=? AND owner_id=? AND status='running' AND started_at < datetime('now','-30 minutes')", (owner_kind, owner_id))
+        checks["dreams"] = _check(missing_dreams == 0 and stuck_dreams == 0, "dream runs ok" if not (missing_dreams or stuck_dreams) else f"missing={missing_dreams}, stuck={stuck_dreams}", "warning", missing_dreams=missing_dreams, stuck_dreams=stuck_dreams)
     errors = [c for c in checks.values() if not c.get("ok") and c.get("severity") == "error"]
     warnings = [c for c in checks.values() if not c.get("ok") and c.get("severity") == "warning"]
     result = {

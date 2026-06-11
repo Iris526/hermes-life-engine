@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 PLUGIN_NAME = "lifeengine"
-PLUGIN_VERSION = "0.10.0"
+PLUGIN_VERSION = "0.11.18"
 DB_FILENAME = "lifeengine.db"
 VECTOR_DIM = 384
 
@@ -20,7 +20,7 @@ ENGINE_STATES = {
     "archived",
 }
 
-MUTATION_BLOCKING_STATES = {"setup_required", "setup", "paused", "paused_setup", "read_only", "disabled", "migrating", "archived"}
+MUTATION_BLOCKING_STATES = {"paused", "paused_setup", "read_only", "disabled", "migrating", "archived"}
 SETUP_STATES = {"setup_required", "setup", "paused_setup"}
 
 DEFAULT_AGENT_ID = "default-agent"
@@ -32,6 +32,10 @@ DEFAULT_MODULE_GATES = {
     "events": "auto",
     "resources": "auto",
     "schedule": "auto",
+    "sleep": "auto",
+    "reply_gate": "advisory",
+    "dream": "auto",
+    "dream_repair": "manual",
     "heartbeat": "manual",
     "autonomy": "manual",
     "proactive": "pending_only",
@@ -43,6 +47,7 @@ DEFAULT_MODULE_GATES = {
     "relationship_memory": "auto",
     "final_audit": "advisory",
     "human_surface": "simple",
+    "srd_policy": "auto",
 }
 
 DEFAULT_CANON_TEMPLATE = {
@@ -55,8 +60,30 @@ DEFAULT_CANON_TEMPLATE = {
     "autonomy": {},
     "proactive": {},
     "execution": {"defaultOutcomePolicy": "narrative_simulator", "allowPostpone": True, "allowPartial": True},
+    "sleep": {"coreSleepRequired": True, "defaultSleepHours": 7.5, "defaultBedtime": "23:30", "defaultWakeTime": "07:00", "allowAllNighter": True, "allowNap": True},
     "serendipity": {"dailyMinorEventProbability": 0.25, "dramaLevel": "low", "maxSignificantSurprisesPerWeek": 1},
     "diary": {},
+    "sleep": {
+        "core_sleep_required": True,
+        "default_plan_type": "core_sleep",
+        "default_wake_policy": "natural_or_alarm",
+        "allow_overnight_delay": True,
+        "allow_user_interrupt": True,
+        "sleep_debt_resource": "sleep_debt_minutes",
+        "fatigue_threshold_for_nap": 75
+    },
+    "dream": {
+        "enabled": True,
+        "run_on_core_sleep_wake": True,
+        "allow_nap_dreams": False,
+        "min_core_dream_minutes": 90,
+        "audit_on_dream": True,
+        "share_on_wake": True,
+        "truth_layer": "dream_symbolic",
+        "default_share_user_id": "anonymous-user",
+        "repair_policy": "manual",
+        "auto_safe_repair_types": ["stale_schedule_block", "pending_delayed_replies", "stale_resource_reservation"]
+    },
     "user_life_policy": {
         "canInventPastEvents": False,
         "canInventFuturePlans": False,

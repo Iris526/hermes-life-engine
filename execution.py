@@ -19,6 +19,8 @@ from .trace import append_journal, new_id
 TERMINAL_EVENT_STATUSES = {"completed", "cancelled", "failed", "abandoned", "archived", "discarded"}
 OUTDOOR_EVENT_TYPES = {"purchase", "travel", "social", "health", "fitness", "walk", "outdoor"}
 BAD_WEATHER_WORDS = {"rain", "light_rain", "heavy_rain", "storm", "snow", "typhoon", "thunder", "windy"}
+SLEEP_SENSITIVE_TYPES = {"work", "study", "creative", "fitness", "health", "purchase", "travel", "social", "maintenance", "fieldwork", "repair_task"}
+SLEEP_EXEMPT_TYPES = {"sleep", "core_sleep", "nap", "recovery_sleep", "dream", "meal", "reflection", "serendipity", "rest"}
 
 
 def _row_dict(row) -> dict[str, Any] | None:
@@ -34,11 +36,24 @@ def _decode_decision(row) -> dict[str, Any]:
     return d
 
 
+def _decode_sleep_adjustment_row(row) -> dict[str, Any] | None:
+    if not row:
+        return None
+    d = dict(row)
+    d["sleep_context"] = loads(d.pop("sleep_context_json"), {})
+    d["proposed_ops"] = loads(d.pop("proposed_ops_json"), [])
+    return d
+
+
 def get_execution_decision(conn, decision_id: str) -> dict[str, Any]:
     row = conn.execute("SELECT * FROM execution_decisions WHERE id=?", (decision_id,)).fetchone()
     if not row:
         raise ValueError(f"execution decision not found: {decision_id}")
-    return _decode_decision(row)
+    d = _decode_decision(row)
+    adj = conn.execute("SELECT * FROM execution_sleep_adjustments WHERE execution_decision_id=? ORDER BY created_at DESC LIMIT 1", (decision_id,)).fetchone()
+    if adj:
+        d["sleep_adjustment"] = _decode_sleep_adjustment_row(adj)
+    return d
 
 
 def list_execution_decisions(conn, owner_kind: str, owner_id: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -262,6 +277,193 @@ def _dependencies_unmet(conn, owner_kind: str, owner_id: str, event_id: str) -> 
     return unmet
 
 
+
+def _decode_sleep_day_state_row(row) -> dict[str, Any] | None:
+    if not row:
+        return None
+    d = dict(row)
+    d["all_nighter"] = bool(d.get("all_nighter"))
+    d["nap_recommended"] = bool(d.get("nap_recommended"))
+    for raw, public, default in [
+        ("resource_ledger_ids_json", "resource_ledger_ids", []),
+        ("body_state_json", "body_state", {}),
+        ("mind_state_json", "mind_state", {}),
+    ]:
+        if raw in d:
+            d[public] = loads(d.pop(raw), default)
+    return d
+
+
+def _latest_sleep_execution_context(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
+    """Return the latest sleep-day/realtime state as an execution pressure context."""
+    day_row = conn.execute(
+        "SELECT * FROM sleep_day_states WHERE owner_kind=? AND owner_id=? ORDER BY date_key DESC LIMIT 1",
+        (owner_kind, owner_id),
+    ).fetchone()
+    day = _decode_sleep_day_state_row(day_row)
+    state_row = conn.execute(
+        "SELECT * FROM agent_realtime_state WHERE owner_kind=? AND owner_id=?",
+        (owner_kind, owner_id),
+    ).fetchone()
+    realtime = dict(state_row) if state_row else {}
+    body = loads(realtime.get("body_state_json"), {}) if realtime else {}
+    mind = loads(realtime.get("mind_state_json"), {}) if realtime else {}
+    fatigue_account = conn.execute(
+        "SELECT current_value FROM resource_accounts WHERE owner_kind=? AND owner_id=? AND resource_key='fatigue'",
+        (owner_kind, owner_id),
+    ).fetchone()
+    fatigue_value = float(fatigue_account[0]) if fatigue_account else 0.0
+    recovery_pressure = int((day or {}).get("recovery_pressure") or body.get("recovery_pressure") or 0)
+    sleep_debt = int((day or {}).get("cumulative_sleep_debt_minutes") or body.get("sleep_debt_minutes") or 0)
+    fatigue = max(
+        int((day or {}).get("fatigue_delta") or 0),
+        int(body.get("fatigue") or body.get("fatigue_delta_from_sleep") or 0),
+        int(fatigue_value or 0),
+    )
+    focus_penalty = int((day or {}).get("focus_penalty") or mind.get("focus_penalty_from_sleep") or 0)
+    mood_penalty = int((day or {}).get("mood_penalty") or mind.get("mood_penalty_from_sleep") or 0)
+    all_nighter = bool((day or {}).get("all_nighter") or body.get("all_nighter"))
+    nap_recommended = bool((day or {}).get("nap_recommended") or body.get("nap_recommended"))
+    severity = "ok"
+    if all_nighter or recovery_pressure >= 85 or fatigue >= 80:
+        severity = "severe"
+    elif recovery_pressure >= 60 or nap_recommended or fatigue >= 55 or focus_penalty >= 30:
+        severity = "moderate"
+    elif sleep_debt >= 90 or fatigue >= 35 or focus_penalty >= 15:
+        severity = "mild"
+    return {
+        "sleep_day_state": day,
+        "sleep_day_state_id": (day or {}).get("id"),
+        "date_key": (day or {}).get("date_key"),
+        "realtime_mode": realtime.get("mode"),
+        "sleep_debt_minutes": sleep_debt,
+        "recovery_pressure": recovery_pressure,
+        "fatigue": fatigue,
+        "focus_penalty": focus_penalty,
+        "mood_penalty": mood_penalty,
+        "all_nighter": all_nighter,
+        "nap_recommended": nap_recommended,
+        "severity": severity,
+        "should_postpone": severity == "severe" or recovery_pressure >= 80,
+        "should_downshift": severity in {"moderate", "severe"} or fatigue >= 55 or focus_penalty >= 25,
+    }
+
+
+def get_execution_sleep_context(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
+    return _latest_sleep_execution_context(conn, owner_kind, owner_id)
+
+
+def list_execution_sleep_adjustments(conn, owner_kind: str, owner_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM execution_sleep_adjustments WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT ?",
+        (owner_kind, owner_id, int(limit)),
+    ).fetchall()
+    return [_decode_sleep_adjustment_row(r) for r in rows]
+
+
+def _event_sleep_sensitive(event: dict[str, Any]) -> bool:
+    values = {str(event.get(k) or "").strip().lower() for k in ("event_type", "event_category", "activity_domain", "subtype")}
+    values.discard("")
+    if values & SLEEP_EXEMPT_TYPES:
+        return False
+    if values & SLEEP_SENSITIVE_TYPES:
+        return True
+    # Default to sleep-aware for meaningful planned work when it has costs or high priority.
+    return bool(event.get("resource_costs")) or int(event.get("priority") or 0) >= 50
+
+
+def _record_execution_sleep_adjustment(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    *,
+    decision_id: str,
+    sleep_ctx: dict[str, Any],
+    event_id: str | None,
+    schedule_block_id: str | None,
+    adjustment_type: str,
+    severity: str,
+    reason: str,
+    original_decision_type: str | None,
+    adjusted_decision_type: str,
+    proposed_ops: list[dict[str, Any]],
+) -> dict[str, Any]:
+    adj_id = new_id("execsleep")
+    conn.execute(
+        """INSERT INTO execution_sleep_adjustments(
+             id, owner_kind, owner_id, execution_decision_id, sleep_day_state_id, event_id, schedule_block_id,
+             adjustment_type, severity, reason, sleep_context_json, original_decision_type, adjusted_decision_type,
+             proposed_ops_json
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            adj_id,
+            owner_kind,
+            owner_id,
+            decision_id,
+            sleep_ctx.get("sleep_day_state_id"),
+            event_id,
+            schedule_block_id,
+            adjustment_type,
+            severity,
+            reason,
+            dumps(sleep_ctx),
+            original_decision_type,
+            adjusted_decision_type,
+            dumps(proposed_ops),
+        ),
+    )
+    append_journal(
+        conn,
+        owner_kind,
+        owner_id,
+        "execution_sleep_adjustment_recorded",
+        {
+            "execution_sleep_adjustment_id": adj_id,
+            "execution_decision_id": decision_id,
+            "event_id": event_id,
+            "schedule_block_id": schedule_block_id,
+            "adjustment_type": adjustment_type,
+            "severity": severity,
+            "reason": reason,
+            "sleep_context": sleep_ctx,
+        },
+        "execution_sleep_adjustment",
+    )
+    row = conn.execute("SELECT * FROM execution_sleep_adjustments WHERE id=?", (adj_id,)).fetchone()
+    d = dict(row)
+    d["sleep_context"] = loads(d.pop("sleep_context_json"), {})
+    d["proposed_ops"] = loads(d.pop("proposed_ops_json"), [])
+    return d
+
+
+def _sleep_adjusted_ops(
+    event: dict[str, Any],
+    block: dict[str, Any],
+    sleep_ctx: dict[str, Any],
+    importance: int,
+    *,
+    postpone_ops_fn,
+) -> tuple[str, str, str, list[dict[str, Any]]] | None:
+    """Return (decision_type, adjustment_type, reason, ops) when sleep state changes execution."""
+    if not _event_sleep_sensitive(event):
+        return None
+    severity = str(sleep_ctx.get("severity") or "ok")
+    if severity == "ok" or severity == "mild":
+        return None
+    title = event.get("title") or "event"
+    if sleep_ctx.get("should_postpone") and importance < 82:
+        reason = "睡眠不足、疲劳或通宵状态导致执行推迟"
+        return "postponed", "sleep_pressure_postponed", reason, postpone_ops_fn(reason, days=1, proactive=importance >= 50)
+    # Important work can still happen, but only as a light/partial attempt.
+    reason = "睡眠债和疲劳导致本次只能低强度部分执行"
+    ops: list[dict[str, Any]] = [
+        {"type": "UPDATE_SCHEDULE_BLOCK_STATUS", "payload": {"schedule_block_id": block["id"], "status": "completed", "reason": reason}},
+        {"type": "UPDATE_EVENT_STATUS", "payload": {"event_id": event["id"], "status": "in_progress", "reason": "started lightly despite sleep pressure"}},
+        {"type": "UPDATE_EVENT_STATUS", "payload": {"event_id": event["id"], "status": "partial", "reason": reason}},
+        {"type": "CREATE_REFLECTION", "payload": {"target_kind": "event", "target_id": event["id"], "reflection_type": "execution_review", "content": f"『{title}』因为睡眠不足和疲劳，只做了低强度的一部分。", "source": "execution_sleep_adjustment"}},
+    ]
+    return "partial", "sleep_pressure_downshifted", reason, ops
+
 def _shifted_range(block: dict[str, Any], days: int = 1) -> tuple[str | None, str | None]:
     start = parse_datetime(block.get("start"))
     end = parse_datetime(block.get("end"))
@@ -330,9 +532,10 @@ def simulate_schedule_block_execution(
     unmet_dependencies = _dependencies_unmet(conn, owner_kind, owner_id, event_id)
     weather = _latest_weather(conn, owner_kind, owner_id)
     bad_weather = _weather_is_bad(weather)
+    sleep_ctx = _latest_sleep_execution_context(conn, owner_kind, owner_id)
     event_type = str(event.get("event_type") or "other")
     importance = int(event.get("importance") or 50)
-    score = {"importance": importance, "event_type": event_type, "shortages": shortages, "unmet_dependencies": unmet_dependencies, "weather": weather, "bad_weather": bad_weather}
+    score = {"importance": importance, "event_type": event_type, "shortages": shortages, "unmet_dependencies": unmet_dependencies, "weather": weather, "bad_weather": bad_weather, "sleep_context": sleep_ctx}
 
     def postpone_ops(reason: str, days: int = 1, proactive: bool = False) -> list[dict[str, Any]]:
         new_start, new_end = _shifted_range(block, days=days)
@@ -349,6 +552,14 @@ def simulate_schedule_block_execution(
     if unmet_dependencies:
         ops = postpone_ops("依赖事件尚未完成", days=1, proactive=importance >= 65)
         return record_execution_decision(conn, owner_kind, owner_id, tick_id=tick_id, trace_id=trace_id, wake_job_id=wake_job_id, schedule_block_id=block.get("id"), event_id=event_id, decision_type="postponed", status="proposed", reason="dependencies unmet", score=score, proposed_ops=ops)
+
+    sleep_adjusted = _sleep_adjusted_ops(event, block, sleep_ctx, importance, postpone_ops_fn=postpone_ops)
+    if sleep_adjusted:
+        decision_type, adjustment_type, reason, ops = sleep_adjusted
+        decision = record_execution_decision(conn, owner_kind, owner_id, tick_id=tick_id, trace_id=trace_id, wake_job_id=wake_job_id, schedule_block_id=block.get("id"), event_id=event_id, decision_type=decision_type, status="proposed", reason=reason, score=score, proposed_ops=ops)
+        adjustment = _record_execution_sleep_adjustment(conn, owner_kind, owner_id, decision_id=decision["id"], sleep_ctx=sleep_ctx, event_id=event_id, schedule_block_id=block.get("id"), adjustment_type=adjustment_type, severity=str(sleep_ctx.get("severity") or "info"), reason=reason, original_decision_type="completed", adjusted_decision_type=decision_type, proposed_ops=ops)
+        decision["sleep_adjustment"] = adjustment
+        return decision
 
     if bad_weather and event_type in OUTDOOR_EVENT_TYPES and importance < 85:
         ops = postpone_ops("天气不适合执行原计划", days=2, proactive=True)

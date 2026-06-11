@@ -23,17 +23,7 @@ def ensure_control(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
     ).fetchone()
     if row:
         d = dict(row)
-        stored_gates = loads(d.pop("module_gates_json"), {})
-        # v0.10 changes the product default from strict to advisory.  Existing
-        # pre-v0.10 controls often contain the old strict value only because it
-        # was the previous default, not because the operator explicitly chose a
-        # strict/debug mode.  If the new human_surface gate is absent, treat it
-        # as a legacy default row and migrate the effective value in memory.
-        if "human_surface" not in stored_gates and stored_gates.get("final_audit") == "strict":
-            stored_gates["final_audit"] = "advisory"
-        gates = DEFAULT_MODULE_GATES.copy()
-        gates.update(stored_gates)
-        d["module_gates"] = gates
+        d["module_gates"] = loads(d.pop("module_gates_json"), DEFAULT_MODULE_GATES.copy())
         d["paused"] = loads(d.pop("paused_json"), None)
         return d
     state = "setup_required" if owner_kind == "agent" else "paused"
