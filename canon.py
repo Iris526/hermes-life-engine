@@ -132,7 +132,13 @@ def commit_draft(conn, owner_kind: str, owner_id: str, draft_id: str | None = No
     base = get_active_canon(conn, owner_kind, owner_id)
     from_version = control.get("active_canon_version")
     data = deepcopy(base)
-    _deep_update(data, draft.get("extracted", {}))
+    extracted = deepcopy(draft.get("extracted", {}) or {})
+    delete_paths = extracted.pop("__delete_paths__", []) or []
+    if isinstance(delete_paths, str):
+        delete_paths = [delete_paths]
+    for delete_path in delete_paths:
+        _delete_nested_path(data, str(delete_path))
+    _deep_update(data, extracted)
     version_row = conn.execute(
         "SELECT COALESCE(MAX(version), 0) FROM canon_versions WHERE owner_kind=? AND owner_id=?",
         (owner_kind, owner_id),
@@ -398,9 +404,33 @@ def _set_nested_path(obj: dict[str, Any], path: str, value: Any) -> None:
     cur[parts[-1]] = value
 
 
+def _delete_nested_path(obj: dict[str, Any], path: str) -> bool:
+    parts = [p for p in str(path).replace("/", ".").split(".") if p]
+    if not parts:
+        raise ValueError("delete path is required")
+
+    def rec(cur: Any, idx: int) -> bool:
+        if not isinstance(cur, dict):
+            return False
+        remaining = ".".join(parts[idx:])
+        # Resource keys and other identifiers may themselves contain dots
+        # (e.g. resources.definitions.money.jpy). Prefer an exact remaining-key
+        # match before treating the next dot as another nesting level.
+        if remaining in cur:
+            cur.pop(remaining, None)
+            return True
+        if idx >= len(parts):
+            return False
+        nxt = cur.get(parts[idx])
+        return rec(nxt, idx + 1)
+
+    return rec(obj, 0)
+
+
 def patch_canon_draft(conn, owner_kind: str, owner_id: str, *, path: str | None = None, value: Any = None,
                       section: str | None = None, patch: dict[str, Any] | None = None,
-                      text: str | None = None, source: str = "agent") -> dict[str, Any]:
+                      text: str | None = None, delete_path: str | None = None,
+                      delete_paths: list[str] | None = None, source: str = "agent") -> dict[str, Any]:
     """Patch CanonDraft without mutating active Canon.
 
     This is the safe write interface for agents to complete missing settings.
@@ -411,6 +441,21 @@ def patch_canon_draft(conn, owner_kind: str, owner_id: str, *, path: str | None 
         return append_setup_statement(conn, owner_kind, owner_id, text, source=source)
     draft = begin_setup(conn, owner_kind, owner_id, reason="canon_patch")
     extracted = draft.get("extracted", {}) or {}
+    removed_paths: list[str] = []
+    raw_delete_paths: list[str] = []
+    if delete_path:
+        raw_delete_paths.append(str(delete_path))
+    if delete_paths:
+        raw_delete_paths.extend(str(p) for p in delete_paths if p)
+    for pth in raw_delete_paths:
+        _delete_nested_path(extracted, pth)
+        removed_paths.append(pth)
+    if removed_paths:
+        tracked = list(extracted.get("__delete_paths__") or [])
+        for pth in removed_paths:
+            if pth not in tracked:
+                tracked.append(pth)
+        extracted["__delete_paths__"] = tracked
     if patch is not None:
         if section:
             base = extracted.setdefault(section, {})
@@ -422,14 +467,14 @@ def patch_canon_draft(conn, owner_kind: str, owner_id: str, *, path: str | None 
             _deep_update(extracted, patch)
     elif path:
         _set_nested_path(extracted, path, value)
-    else:
-        raise ValueError("Provide text, patch, or path+value")
+    elif not removed_paths:
+        raise ValueError("Provide text, patch, delete_path(s), or path+value")
     questions = _unresolved_questions(extracted, owner_kind)
     conn.execute(
         """UPDATE canon_drafts SET extracted_json=?, unresolved_questions_json=?, updated_at=datetime('now') WHERE id=?""",
         (dumps(extracted), dumps(questions), draft["id"]),
     )
-    append_journal(conn, owner_kind, owner_id, "canon_draft_patched", {"draft_id": draft["id"], "path": path, "section": section, "patch": patch}, "canon_io")
+    append_journal(conn, owner_kind, owner_id, "canon_draft_patched", {"draft_id": draft["id"], "path": path, "section": section, "patch": patch, "delete_paths": removed_paths}, "canon_io")
     return get_draft(conn, draft["id"])
 
 

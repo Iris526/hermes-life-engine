@@ -2603,6 +2603,7 @@ class LifeEngineRuntime:
                     self.conn, owner_kind, owner_id,
                     path=payload.get("path"), value=value, section=payload.get("section"),
                     patch=patch if isinstance(patch, dict) else None, text=text,
+                    delete_path=payload.get("delete_path"), delete_paths=payload.get("delete_paths"),
                     source=str(payload.get("source") or "agent"),
                 )
                 return {"ok": True, "draft": draft, "rendered": render_draft_summary(draft)}
