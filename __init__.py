@@ -23,6 +23,7 @@ def register(ctx):
     toolset = "lifeengine"
     for name, schema, handler, desc, emoji in [
         ("life_status", schemas.LIFE_STATUS, tools.life_status, "Read LifeEngine status", "🫀"),
+        ("life_interface", schemas.LIFE_INTERFACE, tools.life_interface, "Unified safe LifeEngine read/write interface catalog", "🧩"),
         ("life_doctor", schemas.LIFE_DOCTOR, tools.life_doctor, "Run LifeEngine health checks", "🩺"),
         ("life_review", schemas.LIFE_REVIEW, tools.life_review, "Human LifeEngine review/inbox aggregation", "📋"),
         ("life_schedule", schemas.LIFE_SCHEDULE, tools.life_schedule, "Human-readable schedule timeline", "🗓️"),

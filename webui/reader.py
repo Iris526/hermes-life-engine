@@ -253,10 +253,10 @@ class LifeEngineReader:
                 # Agent. It should not leak into the human-facing observatory.
                 if r.get("item_type") == "final_gate_feedback":
                     continue
-                # Review items are persisted each time /life review runs. The
-                # WebUI should be an inbox, not a historical log, so collapse
+                # Persisted review items are generated snapshots. Collapse
                 # identical open items and hide doctor warnings whose invariant
-                # has already been repaired.
+                # has already been repaired, so the WebUI behaves like an inbox
+                # rather than a historical log.
                 if r.get("item_type") == "doctor_warning" and r.get("title") == "Doctor: event_transition_coverage":
                     if missing_event_transitions is None:
                         if self._table_exists(conn, "events") and self._table_exists(conn, "event_state_transitions"):

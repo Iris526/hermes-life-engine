@@ -33,6 +33,9 @@ from .canon import (
     set_engine_state,
     set_module_gate,
     update_control,
+    patch_canon_draft,
+    render_canon_summary,
+    render_draft_summary,
 )
 from .constants import DEFAULT_AGENT_ID, DEFAULT_USER_ID, MUTATION_BLOCKING_STATES, SETUP_STATES, PLUGIN_VERSION
 from .db import connect, transaction, _SCHEMA_VERSION
@@ -217,8 +220,8 @@ from .sleep_effects import (
 )
 from .trace import Trace, append_audit, append_journal, new_id, verify_journal_hash_chain
 
-from .schedule_view import list_schedule as list_human_schedule, _tz_from_canon
-from .settings_check import check_required_settings, latest_required_settings_check
+from .schedule_view import list_schedule as list_human_schedule, list_unscheduled_events, explain_schedule_semantics, _tz_from_canon
+from .settings_check import check_required_settings, latest_required_settings_check, required_settings_spec, default_setting_suggestions
 
 from .truth_sources import (
     list_truth_sources,
@@ -2483,12 +2486,69 @@ class LifeEngineRuntime:
     # ----- hook helpers ----------------------------------------------------
 
     def schedule(self, action: str = "today", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
-                 **payload: Any) -> dict[str, Any]:
+                 session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """Human-friendly schedule read/write interface.
+
+        Read actions render timelines. Write actions are convenience wrappers
+        over LifeOps and never mutate schedule tables directly.
+        """
+        action_l = str(action or "today").strip().lower()
+        if action_l in {"schedule_event", "schedule", "arrange", "排期", "安排"} and (payload.get("event_id") or payload.get("title")):
+            if not payload.get("event_id"):
+                # Two-step convenience: create event first, then schedule the returned id.
+                created = self.commit_ops([{"type": "CREATE_EVENT", "payload": {
+                    "title": payload.get("title"),
+                    "description": payload.get("description"),
+                    "event_type": payload.get("event_type") or "other",
+                    "event_category": payload.get("event_category") or payload.get("event_type") or "other",
+                    "source": payload.get("source") or "life_schedule_tool",
+                    "status": "planned",
+                    "importance": int(payload.get("importance", 50)),
+                    "priority": int(payload.get("priority", 50)),
+                }}], owner_kind, owner_id, "life_schedule_tool", session_id, turn_id)
+                event_id = (((created.get("results") or [{}])[0].get("result") or {}).get("id"))
+                if not event_id:
+                    return created
+                payload = {**payload, "event_id": event_id}
+            op = {"type": "CREATE_SCHEDULE_BLOCK", "payload": {
+                "event_id": payload.get("event_id"),
+                "start": payload.get("start") or payload.get("planned_start"),
+                "end": payload.get("end") or payload.get("planned_end"),
+                "block_type": payload.get("block_type") or "planned_event",
+                "timezone_name": payload.get("timezone") or payload.get("timezone_name") or "UTC",
+                "interruptibility": payload.get("interruptibility") or {},
+            }}
+            return self.commit_ops([op], owner_kind, owner_id, "life_schedule_tool", session_id, turn_id)
+        if action_l in {"reschedule", "move", "改期", "重新排期"}:
+            block_id = payload.get("schedule_block_id") or payload.get("block_id")
+            if not block_id:
+                raise ValueError("schedule_block_id is required for reschedule")
+            with transaction(self.conn):
+                row = self.conn.execute("SELECT * FROM schedule_blocks WHERE id=? AND owner_kind=? AND owner_id=?", (block_id, owner_kind, owner_id)).fetchone()
+                if not row:
+                    raise ValueError(f"schedule block not found: {block_id}")
+                event_id = row["event_id"]
+                block_type = row["block_type"] or "planned_event"
+                tz = row["timezone"] or payload.get("timezone") or "UTC"
+            ops = [
+                {"type": "UPDATE_SCHEDULE_BLOCK_STATUS", "payload": {"schedule_block_id": block_id, "status": "rescheduled", "reason": payload.get("reason") or "rescheduled by life_schedule"}},
+                {"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": event_id, "start": payload.get("start"), "end": payload.get("end"), "block_type": block_type, "timezone_name": payload.get("timezone") or tz}},
+            ]
+            return self.commit_ops(ops, owner_kind, owner_id, "life_schedule_tool", session_id, turn_id)
+        if action_l in {"cancel", "cancel_block", "取消"}:
+            return self.commit_ops([{"type": "UPDATE_SCHEDULE_BLOCK_STATUS", "payload": {"schedule_block_id": payload.get("schedule_block_id") or payload.get("block_id"), "status": "cancelled", "reason": payload.get("reason") or "cancelled by life_schedule"}}], owner_kind, owner_id, "life_schedule_tool", session_id, turn_id)
+        if action_l in {"complete", "complete_block", "done", "完成"}:
+            return self.commit_ops([{"type": "UPDATE_SCHEDULE_BLOCK_STATUS", "payload": {"schedule_block_id": payload.get("schedule_block_id") or payload.get("block_id"), "status": "completed", "reason": payload.get("reason") or "completed by life_schedule"}}], owner_kind, owner_id, "life_schedule_tool", session_id, turn_id)
+
         with transaction(self.conn):
             canon = get_active_canon(self.conn, owner_kind, owner_id)
             period = payload.get("period") or action or "today"
             if period in {"list", "view", "show"}:
                 period = payload.get("period") or "today"
+            if str(period).lower() in {"unscheduled", "queue", "planned_events", "待排期", "未排期"}:
+                return list_unscheduled_events(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 100)))
+            if str(period).lower() in {"explain", "semantics", "help", "说明"}:
+                return explain_schedule_semantics()
             date = payload.get("date")
             # Accept direct action as date, e.g. /life schedule 2026-06-11.
             if isinstance(action, str) and len(action) >= 8 and action[0].isdigit():
@@ -2502,12 +2562,74 @@ class LifeEngineRuntime:
 
     def required_settings(self, action: str = "check", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
                           **payload: Any) -> dict[str, Any]:
+        """Human/agent friendly Canon/settings interface.
+
+        Read actions are human-readable.  Write actions only update CanonDraft;
+        active Canon changes still require /life commit.
+        """
+        action = (action or "check").strip()
         with transaction(self.conn):
             canon = get_active_canon(self.conn, owner_kind, owner_id)
             if action in {"latest", "last"}:
                 latest = latest_required_settings_check(self.conn, owner_kind, owner_id)
                 return {"ok": True, "latest": latest, "rendered": latest.get("rendered") if latest else "还没有运行过必选设定检查。"}
+            if action in {"requirements", "spec", "schema", "必选项", "规格"}:
+                return required_settings_spec()
+            if action in {"suggest_defaults", "suggestions", "defaults", "补全建议"}:
+                check = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False, source="suggest_defaults")
+                return default_setting_suggestions(check, str(payload.get("kind") or payload.get("preset") or "balanced"))
+            if action in {"apply_default_draft", "complete_defaults", "apply_defaults", "写入默认草案"}:
+                check = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False, source="apply_default_draft")
+                sug = default_setting_suggestions(check, str(payload.get("kind") or payload.get("preset") or "balanced"))
+                draft = patch_canon_draft(self.conn, owner_kind, owner_id, patch=sug["patch"], source=str(payload.get("source") or "life_config_defaults"))
+                return {"ok": True, "suggestions": sug, "draft": draft, "rendered": sug["rendered"] + "\n\n" + render_draft_summary(draft)}
+            if action in {"summary", "get", "canon", "show", "设定"}:
+                required = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False, source="summary") if owner_kind == "agent" else {"ok": True}
+                return {"ok": True, "canon": canon, "required_settings": required, "rendered": render_canon_summary(canon) + "\n\n" + (required.get("rendered") or "")}
+            if action in {"missing", "check", "status", "required"}:
+                return check_required_settings(self.conn, owner_kind, owner_id, canon, persist=bool(payload.get("persist", True)), source=str(payload.get("source") or action or "manual"))
+            if action in {"draft", "草案"}:
+                control = ensure_control(self.conn, owner_kind, owner_id)
+                draft_id = control.get("draft_canon_id")
+                draft = get_draft(self.conn, draft_id) if draft_id else begin_setup(self.conn, owner_kind, owner_id, reason="config_draft")
+                return {"ok": True, "draft": draft, "rendered": render_draft_summary(draft)}
+            if action in {"patch", "set", "write", "补充", "update"}:
+                text = payload.get("text") or payload.get("statement")
+                patch = payload.get("patch")
+                if isinstance(patch, str):
+                    patch = loads(patch, {})
+                value = payload.get("value")
+                draft = patch_canon_draft(
+                    self.conn, owner_kind, owner_id,
+                    path=payload.get("path"), value=value, section=payload.get("section"),
+                    patch=patch if isinstance(patch, dict) else None, text=text,
+                    source=str(payload.get("source") or "agent"),
+                )
+                return {"ok": True, "draft": draft, "rendered": render_draft_summary(draft)}
+            if action in {"explain", "help", "说明"}:
+                rendered = """LifeEngine 设定读写说明
+======================
+- 读取当前设定：/life config 或 life_config(action='summary')
+- 检查缺失项：/life config check
+- 补充自然语言设定：/life setup <设定> 或 life_config(action='patch', text='...')
+- 补充结构化设定：life_config(action='patch', path='truth_sources.bindings.weather.authority', value='narrative_simulator')
+- 所有补充先进入 CanonDraft，不会污染生活流水。
+- 真正启用设定必须 /life commit。
+- Agent 自己可以补全非关键默认值；人设、世界观、真相源建议让用户明确确认。
+"""
+                return {"ok": True, "rendered": rendered}
             return check_required_settings(self.conn, owner_kind, owner_id, canon, persist=bool(payload.get("persist", True)), source=str(payload.get("source") or action or "manual"))
+
+    def interface(self, action: str = "catalog", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+                  session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """Unified safe Agent-facing interface router.
+
+        This intentionally does not expose raw SQL. Read routes call existing
+        domain APIs; write routes update CanonDraft or LifeOps-backed domain
+        methods so receipts, validators, and trace remain intact.
+        """
+        from .interface import run as run_interface
+        return run_interface(self, action, owner_kind, owner_id, session_id=session_id, turn_id=turn_id, **payload)
 
     def startup_check(self, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID, *, source: str = "startup") -> dict[str, Any]:
         with transaction(self.conn):

@@ -381,3 +381,108 @@ def _deep_update(target: dict[str, Any], update: dict[str, Any]) -> dict[str, An
         else:
             target[k] = v
     return target
+
+# ----- Human/agent-friendly Canon IO helpers -----------------------------
+
+def _set_nested_path(obj: dict[str, Any], path: str, value: Any) -> None:
+    parts = [p for p in str(path).replace("/", ".").split(".") if p]
+    if not parts:
+        raise ValueError("path is required")
+    cur: dict[str, Any] = obj
+    for part in parts[:-1]:
+        nxt = cur.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[part] = nxt
+        cur = nxt
+    cur[parts[-1]] = value
+
+
+def patch_canon_draft(conn, owner_kind: str, owner_id: str, *, path: str | None = None, value: Any = None,
+                      section: str | None = None, patch: dict[str, Any] | None = None,
+                      text: str | None = None, source: str = "agent") -> dict[str, Any]:
+    """Patch CanonDraft without mutating active Canon.
+
+    This is the safe write interface for agents to complete missing settings.
+    Natural language goes through ``append_setup_statement``; structured patch
+    updates CanonDraft.extracted and still requires /life commit to activate.
+    """
+    if text:
+        return append_setup_statement(conn, owner_kind, owner_id, text, source=source)
+    draft = begin_setup(conn, owner_kind, owner_id, reason="canon_patch")
+    extracted = draft.get("extracted", {}) or {}
+    if patch is not None:
+        if section:
+            base = extracted.setdefault(section, {})
+            if not isinstance(base, dict):
+                base = {}
+                extracted[section] = base
+            _deep_update(base, patch)
+        else:
+            _deep_update(extracted, patch)
+    elif path:
+        _set_nested_path(extracted, path, value)
+    else:
+        raise ValueError("Provide text, patch, or path+value")
+    questions = _unresolved_questions(extracted, owner_kind)
+    conn.execute(
+        """UPDATE canon_drafts SET extracted_json=?, unresolved_questions_json=?, updated_at=datetime('now') WHERE id=?""",
+        (dumps(extracted), dumps(questions), draft["id"]),
+    )
+    append_journal(conn, owner_kind, owner_id, "canon_draft_patched", {"draft_id": draft["id"], "path": path, "section": section, "patch": patch}, "canon_io")
+    return get_draft(conn, draft["id"])
+
+
+def render_canon_summary(canon: dict[str, Any]) -> str:
+    identity = canon.get("identity") or {}
+    worldview = canon.get("worldview") or {}
+    truth = canon.get("truth_sources") or {}
+    bindings = truth.get("bindings") or {}
+    resources = ((canon.get("resources") or {}).get("definitions") or {})
+    sleep = canon.get("sleep") or {}
+    autonomy = canon.get("autonomy") or {}
+    lines = ["LifeEngine 设定摘要", "=================="]
+    lines.append(f"身份：{identity.get('name') or identity.get('selfDescription') or identity.get('self_description') or '未设置'}")
+    if identity.get("age") or identity.get("gender"):
+        lines.append(f"  年龄/性别：{identity.get('age') or '-'} / {identity.get('gender') or '-'}")
+    lines.append(f"世界观：{worldview.get('raw_world_description') or worldview.get('world_binding') or worldview.get('world_type') or '未设置'}")
+    lines.append("真相源：")
+    if bindings:
+        for k, v in bindings.items():
+            if isinstance(v, dict):
+                lines.append(f"  - {k}: {v.get('authority') or '-'}" + (f" / {v.get('value')}" if v.get('value') else ""))
+            else:
+                lines.append(f"  - {k}: {v}")
+    else:
+        lines.append("  - 未设置")
+    lines.append("资源：")
+    if resources:
+        for k, v in list(resources.items())[:12]:
+            lines.append(f"  - {k}: {(v or {}).get('display_name') or k}, 初始值={(v or {}).get('initial', '-')}")
+        if len(resources) > 12:
+            lines.append(f"  - ... 还有 {len(resources)-12} 项")
+    else:
+        lines.append("  - 未设置")
+    lines.append(f"睡眠：目标 {sleep.get('target_minutes') or sleep.get('defaultSleepHours') or '未设置'}；允许通宵={sleep.get('allow_all_nighter', '-')}")
+    lines.append(f"自治：{autonomy or '默认开启 Agent 自我生活管理'}")
+    lines.append("")
+    lines.append("修改设定：/life setup <自然语言> 或 Agent 调用 life_config(action='patch')；提交：/life commit。")
+    return "\n".join(lines)
+
+
+def render_draft_summary(draft: dict[str, Any]) -> str:
+    lines = ["LifeEngine 设定草案", "=================="]
+    lines.append(f"草案：{draft.get('id')}；状态：{draft.get('status')}")
+    extracted = draft.get("extracted") or {}
+    if not extracted:
+        lines.append("还没有抽取到结构化设定。")
+    else:
+        lines.append("已记录的设定块：" + "、".join(sorted(extracted.keys())))
+    unresolved = draft.get("unresolved_questions") or []
+    if unresolved:
+        lines.append("还需要补充：")
+        for q in unresolved:
+            lines.append(f"  - {q}")
+    lines.append("")
+    lines.append("继续补充：/life setup <设定>；确认启用：/life commit。")
+    return "\n".join(lines)

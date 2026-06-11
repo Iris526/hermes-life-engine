@@ -16,6 +16,12 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
 
     sub.add_parser("status", help="Show LifeEngine status")
 
+    p_interface = sub.add_parser("interface", help="Unified safe LifeEngine interface catalog/read/write")
+    p_interface.add_argument("interface_action", nargs="?", default="catalog", choices=["catalog", "read", "write"])
+    p_interface.add_argument("domain", nargs="?")
+    p_interface.add_argument("view_or_intent", nargs="?")
+    p_interface.add_argument("--payload", default="{}", help="JSON payload for interface action")
+
     p_webui = sub.add_parser("webui", help="Run LifeEngine WebUI / Observatory")
     p_webui.add_argument("--life-dir", default=None, help="LifeEngine directory or lifeengine.db path")
     p_webui.add_argument("--host", default="127.0.0.1")
@@ -29,8 +35,12 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_schedule.add_argument("--limit", type=int, default=200)
     p_schedule.add_argument("--no-completed", action="store_true")
 
-    p_config = sub.add_parser("config", help="Show required LifeEngine setup checklist")
-    p_config.add_argument("action", nargs="?", default="check", choices=["check", "latest"])
+    p_config = sub.add_parser("config", help="Show/read/write LifeEngine required settings and CanonDraft")
+    p_config.add_argument("action", nargs="?", default="summary", choices=["summary", "check", "latest", "requirements", "suggest_defaults", "apply_default_draft", "draft", "explain", "patch", "set"])
+    p_config.add_argument("path", nargs="?")
+    p_config.add_argument("value", nargs="*")
+    p_config.add_argument("--kind", default="balanced")
+    p_config.add_argument("--text")
 
     p_review = sub.add_parser("review", help="Show one-page human LifeEngine review")
     p_review.add_argument("action", nargs="?", default="summary", choices=["summary", "run", "review", "runs", "history", "get", "dismiss", "preview", "apply", "actions", "get_action", "policy", "set_policy", "batch_preview", "apply_all", "batch_runs", "get_batch", "undo_preview", "undo", "undo_runs", "get_undo", "batch_undo_preview", "batch_undo", "managed_preview", "managed_run", "managed_runs", "get_managed_run", "managed_state", "managed_acceptance", "managed_acceptance_runs", "get_managed_acceptance", "managed_stress", "managed_stress_runs", "get_managed_stress", "managed_observability", "managed_observability_reports", "get_managed_observability", "managed_readiness", "managed_readiness_reports", "get_managed_readiness"] )
@@ -342,7 +352,17 @@ def handle_cli(args) -> None:
             if args.open:
                 argv.append("--open")
             raise SystemExit(_webui_main(argv))
-        if not action or action == "status":
+        if action == "interface":
+            payload = json.loads(getattr(args, "payload", "{}") or "{}")
+            iaction = getattr(args, "interface_action", "catalog") or "catalog"
+            if getattr(args, "domain", None):
+                payload["domain"] = args.domain
+            if iaction == "read" and getattr(args, "view_or_intent", None):
+                payload["view"] = args.view_or_intent
+            if iaction == "write" and getattr(args, "view_or_intent", None):
+                payload["intent"] = args.view_or_intent
+            print(format_result(rt.interface(iaction, **payload)))
+        elif not action or action == "status":
             print(format_result(rt.status()))
         elif action == "schedule":
             period = args.period or "today"
@@ -352,7 +372,15 @@ def handle_cli(args) -> None:
                 period = "day"
             print(format_result(rt.schedule(period, date=date, timezone=args.timezone, include_completed=not args.no_completed, limit=args.limit)))
         elif action == "config":
-            print(format_result(rt.required_settings(args.action)))
+            caction = getattr(args, "action", "summary")
+            payload = {"kind": getattr(args, "kind", "balanced")}
+            if caction in {"patch", "set"}:
+                if getattr(args, "text", None):
+                    payload["text"] = args.text
+                elif getattr(args, "path", None):
+                    payload["path"] = args.path
+                    payload["value"] = " ".join(getattr(args, "value", []) or [])
+            print(format_result(rt.required_settings(caction, **payload)))
         elif action == "doctor":
             print(format_result(rt.doctor(level=args.level, include_samples=args.include_samples)))
         elif action == "review":
@@ -769,7 +797,8 @@ def _simple_help() -> str:
         "  /life doctor         健康检查\n"
         "  /life backup         导出备份\n"
         "  /life advanced       显示高级命令。\n\n"
-        "普通人只看 schedule/review/config；复杂 life_* 工具交给 Agent 自己用。通常不需要人类记住内部工具。"
+        "普通人只看 schedule/review/config；复杂 life_* 工具交给 Agent 自己用。通常不需要人类记住内部工具。\n"
+        "日程说明：/life schedule explain；待排期事项：/life schedule unscheduled。"
     )
 
 
@@ -796,6 +825,17 @@ def slash_life(raw_args: str) -> str:
         rest = argv[1:]
         if cmd in {"help", "帮助", "?"}:
             return _simple_help()
+        if cmd in {"interface", "接口", "io"}:
+            if not rest:
+                return format_result(rt.interface("catalog"))
+            action2 = rest[0]
+            domain = rest[1] if len(rest) > 1 else None
+            view = rest[2] if len(rest) > 2 else None
+            if action2 in {"read", "读"}:
+                return format_result(rt.interface("read", domain=domain, view=view))
+            if action2 in {"write", "写"}:
+                return format_result(rt.interface("write", domain=domain, intent=view, text=" ".join(rest[3:])))
+            return format_result(rt.interface("catalog"))
         if cmd in {"advanced", "高级", "debug"}:
             return _advanced_help()
         if cmd in {"webui", "ui", "观察台", "dashboard"}:
@@ -826,9 +866,19 @@ def slash_life(raw_args: str) -> str:
                 period = "tomorrow"
             if period in {"本周", "一周", "week"}:
                 period = "week"
+            if period in {"未排期", "待排期"}:
+                period = "unscheduled"
+            if period in {"说明", "解释"}:
+                period = "explain"
             return format_result(rt.schedule(period, date=date))
         if cmd in {"config", "settings", "设定检查", "配置"}:
-            action = rest[0] if rest else "check"
+            action = rest[0] if rest else "summary"
+            if action in {"requirements", "spec", "必选项", "suggest_defaults", "apply_default_draft", "defaults", "补全建议"}:
+                return format_result(rt.required_settings(action, kind=(rest[1] if len(rest) > 1 else "balanced")))
+            if action in {"set", "patch", "补充"}:
+                if len(rest) >= 3 and "." in rest[1]:
+                    return format_result(rt.required_settings("patch", path=rest[1], value=" ".join(rest[2:])))
+                return format_result(rt.required_settings("patch", text=" ".join(rest[1:])))
             return format_result(rt.required_settings(action))
         if cmd in {"review", "inbox", "待办", "查看"}:
             if rest and rest[0] in {"runs", "history"}:

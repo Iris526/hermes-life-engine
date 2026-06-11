@@ -309,8 +309,6 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
 
     run_id = new_id("review")
     if persist:
-        # Assign item ids before rendering so /life review shows actionable ids
-        # next to each human-facing item instead of requiring users to inspect JSON.
         for it in items:
             it["id"] = new_id("reviewitem")
     rendered = render_human_review(summary, items)
@@ -348,11 +346,13 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
             (run_id, owner_kind, owner_id, "created", _overall_severity(items), dumps(summary), dumps(counts), len(items), rendered),
         )
         for it in items:
+            item_id = it.get("id")
             conn.execute(
                 """INSERT INTO human_review_items(id, owner_kind, owner_id, review_run_id, item_type, severity, title, message, source_table, source_id, action_hint_json, status)
                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (it.get("id"), owner_kind, owner_id, run_id, it.get("item_type"), it.get("severity"), it.get("title"), it.get("message"), it.get("source_table"), it.get("source_id"), dumps(it.get("action_hint") or {}), "open"),
+                (item_id, owner_kind, owner_id, run_id, it.get("item_type"), it.get("severity"), it.get("title"), it.get("message"), it.get("source_table"), it.get("source_id"), dumps(it.get("action_hint") or {}), "open"),
             )
+            it["id"] = item_id
         append_audit(conn, owner_kind, owner_id, "human_review_created", "info", "Human review generated", {"review_run_id": run_id, "item_count": len(items), "counts": counts})
     return {"ok": True, "review_run_id": run_id, "summary": summary, "items": items, "rendered": rendered}
 

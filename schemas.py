@@ -11,21 +11,63 @@ LIFE_STATUS = {
     "parameters": {"type": "object", "properties": OWNER_PROPS, "required": []},
 }
 
-LIFE_SCHEDULE = {
-    "name": "life_schedule",
-    "description": "Human-readable schedule timeline. Default is today; supports tomorrow, week, or a specific date. Read-only.",
+LIFE_INTERFACE = {
+    "name": "life_interface",
+    "description": (
+        "Unified safe LifeEngine interface catalog/read/write router for agents. "
+        "Not raw SQL: reads route to human/agent-friendly domain APIs; writes go to CanonDraft or LifeOps."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
             **OWNER_PROPS,
-            "action": {"type": "string", "description": "today/tomorrow/week/day/list/show or YYYY-MM-DD."},
-            "period": {"type": "string", "description": "today/tomorrow/week/day."},
+            "action": {"type": "string", "description": "catalog/read/write."},
+            "domain": {"type": "string", "description": "config/schedule/event/resource/inventory/sleep/dream/review/truth/trace."},
+            "view": {"type": "string", "description": "Read view, e.g. today/week/check/list/get."},
+            "intent": {"type": "string", "description": "Write intent, e.g. patch/schedule_event/reschedule/create/delta."},
+            "payload": {"type": "object", "description": "Optional nested payload; flat fields are also accepted."},
+            "text": {"type": "string"},
+            "path": {"type": "string"},
+            "value": {},
+            "event_id": {"type": "string"},
+            "schedule_block_id": {"type": "string"},
+            "start": {"type": "string"},
+            "end": {"type": "string"},
+            "date": {"type": "string"},
+            "limit": {"type": "integer"},
+        },
+        "required": [],
+    },
+}
+
+LIFE_SCHEDULE = {
+    "name": "life_schedule",
+    "description": (
+        "Human-readable schedule timeline and event/schedule relationship view. "
+        "Default is today; supports tomorrow, week, specific date, unscheduled, explain, and safe write helpers. "
+        "Important: Event.status='planned' means the thing exists but may not be scheduled; "
+        "ScheduleBlock.status='planned' means a concrete time block has been reserved."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            **OWNER_PROPS,
+            "action": {"type": "string", "description": "today/tomorrow/week/day/list/show/YYYY-MM-DD/unscheduled/explain/schedule_event/reschedule/cancel/complete."},
+            "period": {"type": "string", "description": "today/tomorrow/week/day/unscheduled."},
             "date": {"type": "string", "description": "YYYY-MM-DD date to view."},
             "start": {"type": "string", "description": "Optional ISO range start."},
             "end": {"type": "string", "description": "Optional ISO range end."},
             "timezone": {"type": "string", "description": "IANA timezone, default from Canon or Asia/Tokyo."},
             "include_completed": {"type": "boolean"},
             "limit": {"type": "integer"},
+            "event_id": {"type": "string", "description": "For schedule_event."},
+            "title": {"type": "string", "description": "Optional convenience event title when scheduling a new event."},
+            "event_type": {"type": "string"},
+            "event_category": {"type": "string"},
+            "schedule_block_id": {"type": "string", "description": "For reschedule/cancel/complete."},
+            "block_id": {"type": "string"},
+            "reason": {"type": "string"},
+            "interruptibility": {"type": "object"},
         },
         "required": [],
     },
@@ -33,10 +75,24 @@ LIFE_SCHEDULE = {
 
 LIFE_CONFIG = {
     "name": "life_config",
-    "description": "Human-readable required-setting check for LifeEngine Canon: identity, worldview, time, weather, truth sources, sleep, resources, autonomy. Read-only unless setup is used separately.",
+    "description": (
+        "Human/agent-friendly Canon settings interface. Read active settings, check missing required settings, "
+        "and patch CanonDraft safely. Patches never change active Canon until /life commit."
+    ),
     "parameters": {
         "type": "object",
-        "properties": {**OWNER_PROPS, "action": {"type": "string", "description": "check/latest"}, "persist": {"type": "boolean"}},
+        "properties": {
+            **OWNER_PROPS,
+            "action": {"type": "string", "description": "check/latest/summary/draft/patch/explain/requirements/suggest_defaults/apply_default_draft."},
+            "persist": {"type": "boolean"},
+            "text": {"type": "string", "description": "Natural-language setting to append to CanonDraft when action=patch."},
+            "path": {"type": "string", "description": "Dot path into CanonDraft.extracted, e.g. truth_sources.bindings.weather.authority."},
+            "value": {"description": "Value for path when action=patch."},
+            "section": {"type": "string", "description": "Optional top-level Canon section when applying patch object."},
+            "patch": {"description": "Object patch to merge into CanonDraft.extracted."},
+            "kind": {"type": "string", "description": "Default template kind for suggest_defaults/apply_default_draft: balanced or virtual_random."},
+            "preset": {"type": "string"},
+        },
         "required": [],
     },
 }
