@@ -16,6 +16,22 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
 
     sub.add_parser("status", help="Show LifeEngine status")
 
+    p_webui = sub.add_parser("webui", help="Run LifeEngine WebUI / Observatory")
+    p_webui.add_argument("--life-dir", default=None, help="LifeEngine directory or lifeengine.db path")
+    p_webui.add_argument("--host", default="127.0.0.1")
+    p_webui.add_argument("--port", type=int, default=8765)
+    p_webui.add_argument("--open", action="store_true")
+
+    p_schedule = sub.add_parser("schedule", help="Show human-readable schedule timeline")
+    p_schedule.add_argument("period", nargs="?", default="today", help="today, tomorrow, week, or YYYY-MM-DD")
+    p_schedule.add_argument("date", nargs="?", help="Optional YYYY-MM-DD date")
+    p_schedule.add_argument("--timezone", default=None)
+    p_schedule.add_argument("--limit", type=int, default=200)
+    p_schedule.add_argument("--no-completed", action="store_true")
+
+    p_config = sub.add_parser("config", help="Show required LifeEngine setup checklist")
+    p_config.add_argument("action", nargs="?", default="check", choices=["check", "latest"])
+
     p_review = sub.add_parser("review", help="Show one-page human LifeEngine review")
     p_review.add_argument("action", nargs="?", default="summary", choices=["summary", "run", "review", "runs", "history", "get", "dismiss", "preview", "apply", "actions", "get_action", "policy", "set_policy", "batch_preview", "apply_all", "batch_runs", "get_batch", "undo_preview", "undo", "undo_runs", "get_undo", "batch_undo_preview", "batch_undo", "managed_preview", "managed_run", "managed_runs", "get_managed_run", "managed_state", "managed_acceptance", "managed_acceptance_runs", "get_managed_acceptance", "managed_stress", "managed_stress_runs", "get_managed_stress", "managed_observability", "managed_observability_reports", "get_managed_observability", "managed_readiness", "managed_readiness_reports", "get_managed_readiness"] )
     p_review.add_argument("target", nargs="?", help="review_run_id for get, item_id for dismiss/apply/preview, action_run_id for get_action")
@@ -317,8 +333,26 @@ def handle_cli(args) -> None:
     rt = LifeEngineRuntime()
     try:
         action = getattr(args, "lifeengine_action", None)
+        if action == "webui":
+            rt.close()
+            from .webui.server import main as _webui_main
+            argv = ["--host", args.host, "--port", str(args.port)]
+            if args.life_dir:
+                argv.extend(["--life-dir", args.life_dir])
+            if args.open:
+                argv.append("--open")
+            raise SystemExit(_webui_main(argv))
         if not action or action == "status":
             print(format_result(rt.status()))
+        elif action == "schedule":
+            period = args.period or "today"
+            date = args.date
+            if period and period[0].isdigit():
+                date = period
+                period = "day"
+            print(format_result(rt.schedule(period, date=date, timezone=args.timezone, include_completed=not args.no_completed, limit=args.limit)))
+        elif action == "config":
+            print(format_result(rt.required_settings(args.action)))
         elif action == "doctor":
             print(format_result(rt.doctor(level=args.level, include_samples=args.include_samples)))
         elif action == "review":
@@ -720,6 +754,8 @@ def _simple_help() -> str:
     return (
         "LifeEngine 常用命令：\n"
         "  /life                查看状态摘要\n"
+        "  /life schedule       查看今天日程；支持 tomorrow/week/日期\n"
+        "  /life config         查看必选设定检查\n"
         "  /life setup <设定>   进入/继续设定，不推进生活\n"
         "  /life commit         提交设定草案\n"
         "  /life pause          暂停生活推进\n"
@@ -727,12 +763,13 @@ def _simple_help() -> str:
         "  /life run            手动推进一次 heartbeat\n"
         "  /life call           紧急叫醒/打断，释放延迟回复\n"
         "  /life dream          查看/运行 Dream 自检与梦境分享意图\n"
-        "  /life policy         查看睡眠/回复/梦分享策略（含冲突检查/导入导出/验收）\n"
-        "  /life review         查看待办/建议；/life review apply <item_id> 可执行安全建议\n"
+        "  /life policy         查看睡眠/回复/梦分享策略\n"
+        "  /life review         人类可读待办/建议列表\n"
+        "  /life webui          启动 WebUI 观察台\n"
         "  /life doctor         健康检查\n"
         "  /life backup         导出备份\n"
         "  /life advanced       显示高级命令。\n\n"
-        "通常不需要人类记住内部工具；Agent 会通过 life_* tools 自己提交 LifeOps、资源、日程、trace。"
+        "普通人只看 schedule/review/config；复杂 life_* 工具交给 Agent 自己用。通常不需要人类记住内部工具。"
     )
 
 
@@ -746,7 +783,7 @@ def _advanced_help() -> str:
         "  truth list/resolve/observe/bind | final_gate check/reports/get\n"
         "  upgrade [check|backup|export|import|restore|package_check|rebuild|verify|large_smoke|cron_test]\n"
         "  upgrade [integration_check|surface|api_freeze|release_readiness|acceptance|v1_rc_check]\n"
-        "  branch <name> | trace [audit|verify|doctor|migrations|receipts|explain <id>]"
+        "  branch <name> | trace [audit|verify|doctor|migrations|receipts|explain <id>] | webui"
     )
 
 def slash_life(raw_args: str) -> str:
@@ -761,10 +798,38 @@ def slash_life(raw_args: str) -> str:
             return _simple_help()
         if cmd in {"advanced", "高级", "debug"}:
             return _advanced_help()
+        if cmd in {"webui", "ui", "观察台", "dashboard"}:
+            host = "127.0.0.1"
+            port = 8765
+            life_dir = rest[0] if rest else None
+            suffix = f" --life-dir {life_dir!r}" if life_dir else ""
+            return (
+                "LifeEngine WebUI / Observatory\n"
+                "==============================\n"
+                f"启动命令：hermes lifeengine webui --host {host} --port {port}{suffix} --open\n"
+                f"打开地址：http://{host}:{port}\n\n"
+                "WebUI 会显示：像素小人实时状态、今天/本周日程、Review 列表、资源、梦境、流水。"
+            )
         if cmd in {"run", "推进"}:
             return format_result(rt.tick())
         if cmd in {"backup", "备份"}:
             return format_result(rt.upgrade("export"))
+        if cmd in {"schedule", "日程", "calendar", "cal"}:
+            period = rest[0] if rest else "today"
+            date = None
+            if period and period[0].isdigit():
+                date = period
+                period = "day"
+            if period in {"今天", "今日"}:
+                period = "today"
+            if period in {"明天"}:
+                period = "tomorrow"
+            if period in {"本周", "一周", "week"}:
+                period = "week"
+            return format_result(rt.schedule(period, date=date))
+        if cmd in {"config", "settings", "设定检查", "配置"}:
+            action = rest[0] if rest else "check"
+            return format_result(rt.required_settings(action))
         if cmd in {"review", "inbox", "待办", "查看"}:
             if rest and rest[0] in {"runs", "history"}:
                 return format_result(rt.review("runs"))

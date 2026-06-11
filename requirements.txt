@@ -1,1 +1,3 @@
 sqlite-vec
+fastapi
+uvicorn

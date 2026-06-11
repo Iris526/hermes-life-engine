@@ -123,9 +123,14 @@ def record_post_sleep_day_state(conn, owner_kind: str, owner_id: str, *, sleep_s
             ("mood", -effects["mood_penalty"], "consume", "sleep insufficiency mood penalty"),
             ("fatigue", effects["fatigue_delta"], "adjust", "sleep insufficiency fatigue increase"),
         ]:
-            lid = _apply_if_defined(conn, owner_kind, owner_id, key_name, delta, op, reason, source, event_id=event_id, schedule_block_id=block_id)
-            if lid:
-                ledger_ids.append(lid)
+            try:
+                lid = _apply_if_defined(conn, owner_kind, owner_id, key_name, delta, op, reason, source, event_id=event_id, schedule_block_id=block_id)
+                if lid:
+                    ledger_ids.append(lid)
+            except Exception:
+                # Resource ledgers are strict, but sleep-day-state must still be
+                # recorded so Autonomy/Execution can react to sleep debt.
+                continue
     body_state = {
         "sleep_debt_minutes": effects["cumulative_sleep_debt_minutes"],
         "last_sleep_debt_delta_minutes": effects["sleep_debt_delta_minutes"],

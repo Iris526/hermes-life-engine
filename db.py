@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 38
+_SCHEMA_VERSION = 39
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -96,7 +96,7 @@ def migrate(conn: sqlite3.Connection) -> None:
 
     v0 -> v1 creates the original LifeEngine tables; later versions add
     receipts, truth sources, inventory, goals, autonomy, proactive, execution,
-    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness.
+    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface.
     """
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
     _ensure_schema_migration_table(conn)
@@ -216,6 +216,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 38:
         _create_schema_v38(conn)
         _record_schema_migration(conn, 38, "managed_review_observability_and_release_readiness")
+    if current < 39:
+        _create_schema_v39(conn)
+        _record_schema_migration(conn, 39, "human_readable_schedule_review_and_settings")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -2910,3 +2913,23 @@ def _create_schema_v38(conn: sqlite3.Connection) -> None:
           ON human_review_managed_release_readiness_reports(owner_kind, owner_id, created_at DESC);
         """
     )
+
+def _create_schema_v39(conn: sqlite3.Connection) -> None:
+    """v0.11.19 human-readable schedule/review/settings surface."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS life_required_setting_checks (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'needs_setup',
+          missing_count INTEGER NOT NULL DEFAULT 0,
+          items_json TEXT NOT NULL DEFAULT '[]',
+          source TEXT NOT NULL DEFAULT 'startup',
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_life_required_setting_checks_owner_time
+          ON life_required_setting_checks(owner_kind, owner_id, created_at DESC);
+        """
+    )
+

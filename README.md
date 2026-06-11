@@ -1,94 +1,125 @@
-# Hermes LifeEngine Plugin
+# LifeEngine Hermes Plugin v0.12.1
 
-GitHub: <https://github.com/Iris526/hermes-life-engine>
+LifeEngine is an embedded, SQLite/sqlite-vec based Agent life runtime for Hermes. It gives an Agent its own Life Canon, resources, schedule, events, sleep, dreams, realtime state, autonomy, proactive intents, review inbox, and traceable life journal.
 
-LifeEngine is an optional Hermes directory plugin that gives an agent identity a persistent, auditable life runtime across sessions and platforms.
+- Plugin version: `0.12.1`
+- Schema version: `39`
+- sqlite-vec: required
+- Integration: Hermes directory plugin; no core-loop fork
 
-Current version: `0.11.18`
-
-Target schema: `38`
-
-Required dependency: `sqlite-vec`
-
-Integration model: Hermes directory plugin; no core-loop fork.
-
-## What v0.11.18 contains
-
-v0.11.18 updates the v0.10.0 plugin line with:
-
-- Event V2 state fields and transition tables.
-- SleepPlan / SleepSession, sleep debt, all-nighter, and recovery planning.
-- ReplyGate, delayed replies, and `/life call` wake/interrupt flow.
-- DreamRun / DreamAudit / DreamEntry and dream repair policy.
-- Sleep-aware autonomy and execution simulation.
-- Human `/life review` UX with preview/apply, batch apply, undo, managed loop, observability, and release-readiness reports.
-- Policy UX for sleep / reply / dream presets, conflicts, export/import, and acceptance checks.
-
-## Repository contents
-
-- `plugin.yaml` — Hermes plugin metadata and provided tools/hooks.
-- `*.py` — plugin runtime, LifeOps schemas, tools, hooks, migrations, review/sleep/dream/reply modules, maintenance, and validation.
-- `skills/lifeengine/SKILL.md` — operational skill loaded by the plugin.
-- `requirements.txt` — plugin Python dependency list.
-- `docs/design/` — LifeEngine design notes and v0.10/v0.11 design references.
-- `docs/patches/` — historical FinalGate patch notes.
-- `docs/upgrade/0.11.18/` — upstream patch-package manuals, checklist, manifest, and checksums.
-
-This repository intentionally excludes runtime state such as `lifeengine.db`, exports, backups, caches, and `__pycache__`.
-
-## Install / sync into a Hermes profile
-
-Install dependencies if needed:
+## Install
 
 ```bash
 pip install -r requirements.txt
-```
-
-Copy this directory into a Hermes profile's plugin directory:
-
-```bash
-mkdir -p ~/.hermes/plugins
-rsync -a --delete \
-  --exclude '.git/' \
-  --exclude '__pycache__/' \
-  --exclude '.pytest_cache/' \
-  ./ ~/.hermes/plugins/lifeengine/
-```
-
-Then enable and restart Hermes / gateway so plugin discovery reloads:
-
-```bash
+./install.sh
 hermes plugins enable lifeengine
 ```
 
-## Upgrade checks
+## Human-first command surface
 
-```bash
-hermes lifeengine doctor
-hermes lifeengine upgrade check --include-details
-hermes lifeengine trace verify
+Most humans only need these commands:
+
+```text
+/life                         Human status page
+/life setup <setting>         Edit Life Canon setup draft
+/life commit                  Commit setup draft
+/life pause                   Pause LifeEngine mutations
+/life resume                  Resume LifeEngine
+/life run                     Manual heartbeat tick
+/life schedule [period/date]  Human-readable timeline; default=today
+/life review                  Human-readable review inbox
+/life config                  Required setting checklist
+/life call                    Always interrupt / wake / recover and reply
+/life doctor                  Health check
+/life backup                  Export backup
+/life advanced                Show advanced commands
 ```
 
-Recommended additional checks:
+Complex `life_*` tools remain available to the Agent; humans do not need to memorize them.
 
-```bash
-hermes lifeengine upgrade verify_memory
-hermes lifeengine upgrade package_check
-hermes lifeengine review managed_observability
-hermes lifeengine review managed_readiness
+## New in v0.11.19
+
+v0.11.19 is a human-surface convergence release:
+
+1. `/life schedule` renders a human timeline instead of JSON. It supports `today`, `tomorrow`, `week`, or a specific `YYYY-MM-DD` date.
+2. `/life review` is a readable item list. Internal FinalGate and managed-review diagnostics are no longer shown as default human pending items.
+3. `/life config` checks required settings in a human-readable way: identity/persona, worldview, time, weather, truth sources, sleep rules, resources, autonomy.
+4. Agent self-life defaults are more autonomous: `autonomy=full` and `managed_review_loop=auto` by default for Agent-owned life.
+5. Startup/session checks run required-setting validation and align safe self-management defaults.
+6. Canon supports both virtual rules, such as randomized narrative weather, and real source bindings, such as system clock or external tool observations.
+
+## Human schedule examples
+
+```text
+/life schedule
+/life schedule today
+/life schedule tomorrow
+/life schedule week
+/life schedule 2026-06-11
 ```
 
-## Smoke checks for this source tree
+Output is a timeline like:
+
+```text
+今天的日程（2026-06-11）
+=================
+1. 06-11 10:30 - 06-11 12:00  处理小单子
+   类型：work；时间块：planned；事件：scheduled
+   中断：soft_interruptible
+```
+
+## Design principle
+
+The Agent should manage its own life. Humans configure the Life Canon, inspect high-level status, and intervene only for user-owned facts, dangerous actions, or explicit overrides. Agent-owned life progression, autonomy, safe review maintenance, sleep effects, dream audits, and schedule execution should run through LifeOps, validators, receipts, and trace without requiring constant human approval.
+
+## LifeEngine WebUI / Observatory（v0.12.1）
+
+启动本地观察台：
 
 ```bash
-python -m compileall -q .
-python - <<'PY'
-import importlib.util, pathlib, sys
-root = pathlib.Path('.').resolve()
-spec = importlib.util.spec_from_file_location('lifeengine', root / '__init__.py', submodule_search_locations=[str(root)])
-mod = importlib.util.module_from_spec(spec)
-sys.modules['lifeengine'] = mod
-spec.loader.exec_module(mod)
-print('LifeEngine import OK')
-PY
+hermes lifeengine webui --open
 ```
+
+或选择某个目录：
+
+```bash
+hermes lifeengine webui --life-dir ~/.hermes/lifeengine --open
+```
+
+打开：
+
+```text
+http://127.0.0.1:8765
+```
+
+页面包括：
+
+- 像素 Agent 小人实时状态
+- 今日 / 明日 / 本周 / 指定日期 schedule timeline
+- 实时状态、睡眠债、恢复压力、资源
+- Review 人类 item 列表
+- 梦境卡片
+- 最近流水 / trace
+
+任意选择的 DB 默认只读；只有当前 Hermes profile DB 才允许 WebUI 的有限 operator action（call、tick、review safe apply 等），且这些 action 仍然通过 LifeEngineRuntime。
+
+
+## v0.12.1 WebUI Live Observatory
+
+This package includes the v0.12.1 WebUI enhancement. The design document is bundled under `docs/lifeengine_total_design_v0_12_1.md`.
+
+Run:
+
+```bash
+hermes lifeengine webui --open
+```
+
+Highlights:
+
+- SSE live snapshot updates.
+- Clickable schedule timeline.
+- Event detail drawer with transitions, schedule blocks, results, resources and journal references.
+- Dream detail drawer.
+- Trace explain drawer.
+- Owner selector.
+- Human-friendly display; raw JSON is kept inside detail/debug views only.

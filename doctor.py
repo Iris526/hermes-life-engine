@@ -28,7 +28,7 @@ REQUIRED_TABLES = {
     "reply_gate_decisions", "delayed_replies", "call_overrides", "reply_gate_recoveries",
     "dream_runs", "dream_audit_findings", "dream_entries", "dream_repair_runs",
     "sleep_day_states", "sleep_recovery_plans", "delayed_reply_digests", "dream_repair_policies",
-    "human_review_runs", "human_review_items",
+    "human_review_runs", "human_review_items", "life_required_setting_checks",
 }
 
 

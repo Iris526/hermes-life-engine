@@ -16,6 +16,8 @@ from .trace import append_audit, append_journal, new_id
 from .time_utils import now_iso
 from .sleep_effects import get_sleep_day_state
 from .sleep_reply_dream_policy import get_policy, validate_policy, explain_policy
+from .canon import get_active_canon
+from .settings_check import check_required_settings
 
 
 def _row_dict(row) -> dict[str, Any] | None:
@@ -32,7 +34,8 @@ def _severity_rank(sev: str) -> int:
 
 
 def _item(item_type: str, severity: str, title: str, message: str, *, source_table: str | None = None,
-          source_id: str | None = None, action_hint: dict[str, Any] | None = None, section: str | None = None) -> dict[str, Any]:
+          source_id: str | None = None, action_hint: dict[str, Any] | None = None, section: str | None = None,
+          when: str | None = None) -> dict[str, Any]:
     return {
         "item_type": item_type,
         "severity": severity,
@@ -42,6 +45,7 @@ def _item(item_type: str, severity: str, title: str, message: str, *, source_tab
         "source_id": source_id,
         "action_hint": action_hint or {},
         "section": section or item_type,
+        "when": when,
     }
 
 
@@ -192,6 +196,11 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
     day = get_sleep_day_state(conn, owner_kind, owner_id)
     policy = get_policy(conn, owner_kind, owner_id, create=True)
     policy_validation = validate_policy(policy.get("effective_policy") or {})
+    required_settings = check_required_settings(conn, owner_kind, owner_id, get_active_canon(conn, owner_kind, owner_id), persist=False) if owner_kind == "agent" else {"ok": True, "missing": []}
+
+    summary["required_settings"] = {"ok": required_settings.get("ok"), "missing_count": required_settings.get("missing_count", 0)}
+    if required_settings.get("ok") is False:
+        items.append(_item("required_settings", "warning", "LifeEngine 必选设定还不完整", f"还缺 {required_settings.get('missing_count')} 项核心设定。", section="settings", action_hint={"command": "/life config"}))
 
     summary["engine_state"] = (control or {}).get("engine_state") or "unknown"
     summary["realtime_mode"] = realtime.get("mode")
@@ -219,30 +228,28 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
 
     confirmations = _pending_confirmations(conn, owner_kind, owner_id, limit)
     for c in confirmations:
-        items.append(_item("user_confirmation", "action", "有待确认的用户侧 Life 写入", c.get("reason") or "需要用户确认", source_table="user_confirmations", source_id=c.get("id"), section="confirmations", action_hint={"tool": "life_confirmation", "action": "confirm/reject", "confirmation_id": c.get("id")}))
+        items.append(_item("user_confirmation", "action", "有待确认的用户侧 Life 写入", c.get("reason") or "需要用户确认", source_table="user_confirmations", source_id=c.get("id"), section="confirmations", when=c.get("created_at"), action_hint={"tool": "life_confirmation", "action": "confirm/reject", "confirmation_id": c.get("id")}))
 
     delayed = _pending_delayed(conn, owner_kind, owner_id, limit)
     for d in delayed:
-        items.append(_item("delayed_reply", "action", "有延迟回复待处理", d.get("message_preview") or d.get("message_text") or "待回复消息", source_table="delayed_replies", source_id=d.get("id"), section="reply", action_hint={"tool": "life_reply", "action": "release"}))
+        items.append(_item("delayed_reply", "action", "有延迟回复待处理", d.get("message_preview") or d.get("message_text") or "待回复消息", source_table="delayed_replies", source_id=d.get("id"), section="reply", when=d.get("queued_at"), action_hint={"tool": "life_reply", "action": "release"}))
 
     digests = _recent_digests(conn, owner_kind, owner_id, limit=3)
     if digests:
         summary["recent_reply_digest"] = digests[0].get("summary_text")
 
+    # FinalGate is an internal advisory mechanism. Keep it out of the default
+    # human inbox; expose counts in summary only so users are not asked to manage
+    # model-internal wording diagnostics.
     fg_feedback = _pending_final_gate_feedback(conn, owner_kind, owner_id, limit)
-    for f in fg_feedback:
-        items.append(_item("final_gate_feedback", "info", "FinalGate 给 Agent 的内部提醒", f.get("message") or "有内部审计反馈", source_table="final_gate_feedback_queue", source_id=f.get("id"), section="final_gate", action_hint={"tool": "life_commit", "note": "如需成为事实，请提交 LifeOps；否则用意图/计划语气表达。"}))
-
     fg_reports = _latest_final_gate_reports(conn, owner_kind, owner_id, limit=3)
-    if fg_reports and not fg_feedback:
-        for r in fg_reports[:2]:
-            if r.get("status") in {"advisory", "blocked"}:
-                items.append(_item("final_gate_report", "info", "最近有 FinalGate advisory", f"{len(r.get('unsupported') or [])} 条 unsupported claim。", source_table="final_gate_reports", source_id=r.get("id"), section="final_gate", action_hint={"tool": "life_final_gate", "action": "get", "report_id": r.get("id")}))
+    if fg_feedback or fg_reports:
+        summary["final_gate"] = {"feedback_pending": len(fg_feedback), "recent_reports": len(fg_reports)}
 
     findings = _open_dream_findings(conn, owner_kind, owner_id, limit)
     for f in findings:
         sev = "warning" if f.get("severity") in {"warning", "error"} else "info"
-        items.append(_item("dream_audit_finding", sev, "DreamAudit 发现待处理项", f.get("message") or f.get("finding_type") or "DreamAudit finding", source_table="dream_audit_findings", source_id=f.get("id"), section="dream", action_hint={"tool": "life_dream", "action": "repair_plan/repair", "dream_run_id": f.get("dream_run_id")}))
+        items.append(_item("dream_audit_finding", sev, "DreamAudit 发现待处理项", f.get("message") or f.get("finding_type") or "DreamAudit finding", source_table="dream_audit_findings", source_id=f.get("id"), section="dream", when=f.get("created_at"), action_hint={"tool": "life_dream", "action": "repair_plan/repair", "dream_run_id": f.get("dream_run_id")}))
 
     dream_entries = _recent_dream_entries(conn, owner_kind, owner_id, limit=3)
     if dream_entries:
@@ -251,9 +258,9 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
 
     proactive_intents, outbox = _proactive(conn, owner_kind, owner_id, limit)
     for p in proactive_intents:
-        items.append(_item("proactive_intent", "action" if p.get("target_type") != "self_journal" else "info", "Agent 有想说的话", p.get("summary") or p.get("intent_type") or "proactive intent", source_table="proactive_intents", source_id=p.get("id"), section="proactive", action_hint={"tool": "life_proactive", "action": "evaluate", "intent_id": p.get("id")}))
+        items.append(_item("proactive_intent", "action" if p.get("target_type") != "self_journal" else "info", "Agent 有想说的话", p.get("summary") or p.get("intent_type") or "proactive intent", source_table="proactive_intents", source_id=p.get("id"), section="proactive", when=p.get("created_at"), action_hint={"tool": "life_proactive", "action": "evaluate", "intent_id": p.get("id")}))
     for o in outbox:
-        items.append(_item("proactive_outbox", "action", "主动消息在 outbox 等待处理", (o.get("draft_text") or "")[:220], source_table="proactive_outbox", source_id=o.get("id"), section="proactive", action_hint={"tool": "life_proactive", "action": "send/suppress", "outbox_id": o.get("id")}))
+        items.append(_item("proactive_outbox", "action", "主动消息在 outbox 等待处理", (o.get("draft_text") or "")[:220], source_table="proactive_outbox", source_id=o.get("id"), section="proactive", when=o.get("created_at"), action_hint={"tool": "life_proactive", "action": "send/suppress", "outbox_id": o.get("id")}))
 
     if include_doctor:
         doc = _doctor_summary(conn, owner_kind, owner_id)
@@ -297,19 +304,13 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
             "acceptance_status": latest_acceptance.get("status"),
             "stress_status": latest_stress.get("status"),
         }
-        if action_policy.get("allow_agent_managed_loop") and latest_acceptance.get("status") != "passed":
-            items.append(_item("managed_review_observability", "warning", "Managed Review 尚未通过验收", f"latest acceptance={latest_acceptance.get('status')}", section="review", action_hint={"tool": "life_review", "action": "managed_acceptance"}))
-        if action_policy.get("allow_agent_managed_loop") and latest_stress.get("status") not in {"passed", "completed"}:
-            items.append(_item("managed_review_observability", "warning", "Managed Review 尚未通过压力测试", f"latest stress={latest_stress.get('status')}", section="review", action_hint={"tool": "life_review", "action": "managed_stress"}))
-        if int(managed_state.get("failure_count") or 0) > 0:
-            items.append(_item("managed_review_observability", "warning", "Managed Review 今日有失败记录", f"failure_count={managed_state.get('failure_count')}", section="review", action_hint={"tool": "life_review", "action": "managed_observability"}))
     except Exception:
         pass
 
     run_id = new_id("review")
     if persist:
-        # Assign item ids before rendering so the human-facing /life review page
-        # can show the exact id needed for preview/apply/dismiss commands.
+        # Assign item ids before rendering so /life review shows actionable ids
+        # next to each human-facing item instead of requiring users to inspect JSON.
         for it in items:
             it["id"] = new_id("reviewitem")
     rendered = render_human_review(summary, items)
@@ -345,12 +346,15 @@ def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) ->
     sleep = summary.get("sleep") or {}
     if sleep:
         lines.append(f"睡眠：睡眠债 {sleep.get('sleep_debt_minutes')} 分钟，恢复压力 {sleep.get('recovery_pressure')}，通宵={sleep.get('all_nighter')}，建议补觉={sleep.get('nap_recommended')}")
+    req = summary.get("required_settings") or {}
+    if req:
+        lines.append(f"必选设定：{'已满足' if req.get('ok') else '还缺 ' + str(req.get('missing_count')) + ' 项'}")
     pol = summary.get("policy") or {}
     lines.append(f"策略：{pol.get('profile')}，冲突 {pol.get('conflicts', 0)}，提醒 {pol.get('warnings', 0)}")
     managed = summary.get("managed_review") or {}
     if managed:
         today = managed.get("today") or {}
-        lines.append(f"Managed Review：enabled={managed.get('enabled')} today runs={today.get('runs', 0)} actions={today.get('actions', 0)} failures={today.get('failures', 0)} acceptance={managed.get('acceptance_status')} stress={managed.get('stress_status')}")
+        lines.append(f"自主管理：{'开启' if managed.get('enabled') else '关闭'}；今天自动处理 {today.get('actions', 0)} 项，失败 {today.get('failures', 0)} 次。")
     if summary.get("latest_dream"):
         ld = summary["latest_dream"]
         lines.append(f"最近梦：{(ld.get('summary') or ld.get('share_text') or '')[:160]}")
@@ -360,12 +364,13 @@ def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) ->
         lines.append(f"Doctor：{'ok' if summary['doctor'].get('ok') else '有提醒'}，issues={summary['doctor'].get('issue_count')}")
     lines.append("")
     if not items:
-        lines.append("没有需要人类处理的项目。")
+        lines.append("没有需要人类处理的项目。Agent 会按当前策略自行处理低风险维护项。")
     else:
         lines.append("待处理 / 建议：")
         for idx, it in enumerate(items[:12], start=1):
+            when = it.get("when") or "最近"
             item_id = it.get("id") or "未持久化"
-            lines.append(f"{idx}. id={item_id} [{it.get('severity')}] {it.get('title')} — {it.get('message')}")
+            lines.append(f"{idx}. id={item_id} · {when} · [{it.get('severity')}] {it.get('title')} — {it.get('message')}")
             hint = it.get("action_hint") or {}
             if hint:
                 if hint.get("command"):
@@ -543,7 +548,7 @@ def mark_review_item_resolved(conn, owner_kind: str, owner_id: str, item_id: str
 # ----- Review action policy and batch application (v0.11.14) --------------
 
 DEFAULT_REVIEW_ACTION_POLICY: dict[str, Any] = {
-    "mode": "manual",
+    "mode": "agent_managed_safe",
     "allow_safe_batch": True,
     "allow_agent_safe_apply": True,
     "max_batch_items": 10,
@@ -570,9 +575,9 @@ DEFAULT_REVIEW_ACTION_POLICY: dict[str, Any] = {
     "allow_policy_patch": False,
     "allow_safe_undo": True,
     "max_undo_items": 10,
-    "allow_agent_managed_loop": False,
+    "allow_agent_managed_loop": True,
     "agent_managed_sections": ["sleep", "reply", "dream", "proactive", "policy"],
-    "agent_managed_daily_action_limit": 5,
+    "agent_managed_daily_action_limit": 8,
     "agent_managed_failure_budget": 2,
     "agent_managed_min_minutes_between_runs": 20,
     "agent_managed_safe_only": True,

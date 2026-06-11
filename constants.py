@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 PLUGIN_NAME = "lifeengine"
-PLUGIN_VERSION = "0.11.18"
+PLUGIN_VERSION = "0.12.1"
 DB_FILENAME = "lifeengine.db"
 VECTOR_DIM = 384
 
@@ -37,7 +37,7 @@ DEFAULT_MODULE_GATES = {
     "dream": "auto",
     "dream_repair": "manual",
     "heartbeat": "manual",
-    "autonomy": "manual",
+    "autonomy": "full",
     "proactive": "pending_only",
     "execution": "auto",
     "serendipity": "low",
@@ -47,18 +47,33 @@ DEFAULT_MODULE_GATES = {
     "relationship_memory": "auto",
     "final_audit": "advisory",
     "human_surface": "simple",
+    "schedule_view": "human",
+    "managed_review_loop": "auto",
     "srd_policy": "auto",
 }
 
 DEFAULT_CANON_TEMPLATE = {
     "identity": {},
     "worldview": {},
-    "truth_sources": {},
-    "resources": {},
-    "schedule_rules": {},
+    "truth_sources": {
+        "bindings": {
+            "time": {"domain": "time", "authority": "system_clock", "timezone": "Asia/Tokyo", "time_flow": "real_time"},
+            "weather": {"domain": "weather", "authority": "narrative_simulator", "mode": "random_local", "freshness_ttl_minutes": 120, "fallback": "narrative_generate"},
+        }
+    },
+    "resources": {
+        "definitions": {
+            "energy": {"display_name": "Energy", "resource_class": "capacity", "unit": "points", "min": 0, "max": 100, "initial": 60},
+            "focus": {"display_name": "Focus", "resource_class": "capacity", "unit": "points", "min": 0, "max": 100, "initial": 60},
+            "mood": {"display_name": "Mood", "resource_class": "state", "unit": "points", "min": -100, "max": 100, "initial": 0},
+            "fatigue": {"display_name": "Fatigue", "resource_class": "state", "unit": "points", "min": 0, "max": 100, "initial": 20},
+            "sleep_debt_minutes": {"display_name": "Sleep debt", "resource_class": "state", "unit": "minutes", "min": 0, "initial": 0},
+        }
+    },
+    "schedule_rules": {"timezone": "Asia/Tokyo"},
     "behavior_rules": {},
-    "autonomy": {},
-    "proactive": {},
+    "autonomy": {"enabled": True, "default_mode": "full", "agent_decides_self_life": True},
+    "proactive": {"mode": "pending_only"},
     "execution": {"defaultOutcomePolicy": "narrative_simulator", "allowPostpone": True, "allowPartial": True},
     "sleep": {"coreSleepRequired": True, "defaultSleepHours": 7.5, "defaultBedtime": "23:30", "defaultWakeTime": "07:00", "allowAllNighter": True, "allowNap": True},
     "serendipity": {"dailyMinorEventProbability": 0.25, "dramaLevel": "low", "maxSignificantSurprisesPerWeek": 1},

@@ -216,6 +216,10 @@ from .sleep_effects import (
     record_post_sleep_day_state,
 )
 from .trace import Trace, append_audit, append_journal, new_id, verify_journal_hash_chain
+
+from .schedule_view import list_schedule as list_human_schedule, _tz_from_canon
+from .settings_check import check_required_settings, latest_required_settings_check
+
 from .truth_sources import (
     list_truth_sources,
     observe_truth_source,
@@ -339,7 +343,11 @@ class LifeEngineRuntime:
             sleep_plans = list_sleep_plans(self.conn, owner_kind, owner_id, limit=5)
             sleep_sessions = list_sleep_sessions(self.conn, owner_kind, owner_id, limit=5)
             dreams = dream_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}
-            return {"control": c, "canon": canon, "realtime_state": realtime_state, "sleep_plans": sleep_plans, "sleep_sessions": sleep_sessions, "dreams": dreams, "resources": resources, "inventory": inventory, "goals": goals, "life_arcs": arcs, "pending_confirmations": confirmations, "pending_proactive": pending, "proactive_outbox": proactive_outbox if owner_kind == "agent" else [], "proactive_states": proactive_states if owner_kind == "agent" else [], "recent_autonomy": autonomy, "recent_execution": execution, "recent_serendipity": serendipity}
+            required = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False) if owner_kind == "agent" else {"ok": True, "missing": []}
+            schedule = list_human_schedule(self.conn, owner_kind, owner_id, period="today", tz_name=_tz_from_canon(canon), limit=20) if owner_kind == "agent" else {"items": []}
+            out = {"control": c, "canon": canon, "realtime_state": realtime_state, "sleep_plans": sleep_plans, "sleep_sessions": sleep_sessions, "dreams": dreams, "resources": resources, "inventory": inventory, "goals": goals, "life_arcs": arcs, "pending_confirmations": confirmations, "pending_proactive": pending, "proactive_outbox": proactive_outbox if owner_kind == "agent" else [], "proactive_states": proactive_states if owner_kind == "agent" else [], "recent_autonomy": autonomy, "recent_execution": execution, "recent_serendipity": serendipity, "required_settings": required, "today_schedule": schedule.get("summary", {})}
+            out["rendered"] = _render_status_page(out)
+            return out
 
     def control(self, action: str, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID, **kwargs: Any) -> dict[str, Any]:
         with transaction(self.conn):
@@ -395,7 +403,8 @@ class LifeEngineRuntime:
                 else:
                     draft = begin_setup(self.conn, owner_kind, owner_id, "manual setup")
                 trace.end(output_obj={"draft_id": draft["id"]})
-                return {"ok": True, "draft": _brief_draft(draft)}
+                brief = _brief_draft(draft)
+                return {"ok": True, "draft": brief, "rendered": _render_setup_result(brief)}
             except Exception as exc:
                 trace.end(status="error", error=f"{type(exc).__name__}: {exc}")
                 raise
@@ -407,7 +416,7 @@ class LifeEngineRuntime:
             try:
                 committed = commit_draft(self.conn, owner_kind, owner_id, draft_id, activate)
                 trace.end(output_obj={"version": committed["version"]})
-                return {"ok": True, "canon": committed}
+                return {"ok": True, "canon": committed, "rendered": _render_canon_commit(committed)}
             except Exception as exc:
                 trace.end(status="error", error=f"{type(exc).__name__}: {exc}")
                 raise
@@ -562,7 +571,9 @@ class LifeEngineRuntime:
         if op_type == "CREATE_DREAM_ENTRY":
             return create_dream_entry(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
         if op_type == "RESOURCE_DEFINE":
-            return define_resource(self.conn, owner_kind, owner_id, canon_version=canon_version, **payload)
+            p = dict(payload)
+            reset_account = "initial" in p or bool(p.pop("reset_account", False))
+            return define_resource(self.conn, owner_kind, owner_id, canon_version=canon_version, reset_account=reset_account, **p)
         if op_type == "RESOURCE_DELTA":
             return apply_delta(self.conn, owner_kind, owner_id, **payload)
         if op_type == "RESOURCE_RESERVE":
@@ -2470,6 +2481,61 @@ class LifeEngineRuntime:
             raise ValueError(f"Unknown trace action: {action}")
 
     # ----- hook helpers ----------------------------------------------------
+
+    def schedule(self, action: str = "today", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+                 **payload: Any) -> dict[str, Any]:
+        with transaction(self.conn):
+            canon = get_active_canon(self.conn, owner_kind, owner_id)
+            period = payload.get("period") or action or "today"
+            if period in {"list", "view", "show"}:
+                period = payload.get("period") or "today"
+            date = payload.get("date")
+            # Accept direct action as date, e.g. /life schedule 2026-06-11.
+            if isinstance(action, str) and len(action) >= 8 and action[0].isdigit():
+                date = action
+                period = "day"
+            return list_human_schedule(
+                self.conn, owner_kind, owner_id, period=str(period or "today"), date=date,
+                start=payload.get("start"), end=payload.get("end"), tz_name=payload.get("timezone") or _tz_from_canon(canon),
+                include_completed=bool(payload.get("include_completed", True)), limit=int(payload.get("limit", 200)),
+            )
+
+    def required_settings(self, action: str = "check", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+                          **payload: Any) -> dict[str, Any]:
+        with transaction(self.conn):
+            canon = get_active_canon(self.conn, owner_kind, owner_id)
+            if action in {"latest", "last"}:
+                latest = latest_required_settings_check(self.conn, owner_kind, owner_id)
+                return {"ok": True, "latest": latest, "rendered": latest.get("rendered") if latest else "还没有运行过必选设定检查。"}
+            return check_required_settings(self.conn, owner_kind, owner_id, canon, persist=bool(payload.get("persist", True)), source=str(payload.get("source") or action or "manual"))
+
+    def startup_check(self, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID, *, source: str = "startup") -> dict[str, Any]:
+        with transaction(self.conn):
+            control = ensure_control(self.conn, owner_kind, owner_id)
+            canon = get_active_canon(self.conn, owner_kind, owner_id)
+            required = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=True, source=source) if owner_kind == "agent" else {"ok": True}
+            # Make self-life management opt-out rather than opt-in. Human/user-life
+            # confirmation remains protected elsewhere.
+            gates = dict(control.get("module_gates") or {})
+            changed = False
+            if gates.get("autonomy") in {None, "manual", "off"}:
+                gates["autonomy"] = "full"
+                changed = True
+            if gates.get("managed_review_loop") in {None, "off", "manual"}:
+                gates["managed_review_loop"] = "auto"
+                changed = True
+            if changed:
+                update_control(self.conn, owner_kind, owner_id, module_gates_json=dumps(gates))
+            # Ensure review policy permits agent-managed safe maintenance by default.
+            try:
+                from .review import get_review_action_policy, set_review_action_policy
+                pol = get_review_action_policy(self.conn, owner_kind, owner_id, create=True).get("policy") or {}
+                if not pol.get("allow_agent_managed_loop"):
+                    set_review_action_policy(self.conn, owner_kind, owner_id, policy_patch={"allow_agent_managed_loop": True, "mode": "agent_managed_safe"}, updated_by="startup_check")
+            except Exception:
+                pass
+            return {"ok": True, "control": ensure_control(self.conn, owner_kind, owner_id), "required_settings": required}
+
     def build_context_for_turn(self, session_id: str | None, turn_id: str | None, user_message: str,
                                sender_id: str | None = None, platform: str | None = None,
                                model: str | None = None) -> str:
@@ -2510,7 +2576,9 @@ class LifeEngineRuntime:
                 dreams = dream_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}
                 srd_policy = get_srd_policy(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}
                 final_gate_feedback = consume_final_gate_feedback(self.conn, owner_kind, owner_id, limit=3)
-                out = _render_life_context(control, canon, events, resources, memories, pending, scope, truth_sources, inventory=inventory, confirmations=confirmations, goals=goals, arcs=arcs, autonomy=autonomy, proactive_outbox=proactive_outbox if owner_kind == "agent" else [], proactive_states=proactive_states if owner_kind == "agent" else [], execution=execution, serendipity=serendipity, sleep=sleep, reply_gate=reply_gate, dreams=dreams, srd_policy=srd_policy, final_gate_feedback=final_gate_feedback)
+                required = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False) if owner_kind == "agent" else {"ok": True}
+                today_schedule = list_human_schedule(self.conn, owner_kind, owner_id, period="today", tz_name=_tz_from_canon(canon), limit=20) if owner_kind == "agent" else {"items": []}
+                out = _render_life_context(control, canon, events, resources, memories, pending, scope, truth_sources, inventory=inventory, confirmations=confirmations, goals=goals, arcs=arcs, autonomy=autonomy, proactive_outbox=proactive_outbox if owner_kind == "agent" else [], proactive_states=proactive_states if owner_kind == "agent" else [], execution=execution, serendipity=serendipity, sleep=sleep, reply_gate=reply_gate, dreams=dreams, srd_policy=srd_policy, final_gate_feedback=final_gate_feedback, required_settings=required, today_schedule=today_schedule)
                 trace.end(output_obj={"mode": control["engine_state"], "memories": len(memories), "events": len(events)})
                 return out
             except Exception as exc:
@@ -2665,7 +2733,9 @@ def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events:
                          reply_gate: dict[str, Any] | None = None,
                          dreams: dict[str, Any] | None = None,
                          srd_policy: dict[str, Any] | None = None,
-                         final_gate_feedback: list[dict[str, Any]] | None = None) -> str:
+                         final_gate_feedback: list[dict[str, Any]] | None = None,
+                         required_settings: dict[str, Any] | None = None,
+                         today_schedule: dict[str, Any] | None = None) -> str:
     compact_accounts = [
         {"key": a["resource_key"], "value": a["current_value"], "unit": a.get("unit"), "state": a.get("state")}
         for a in resources.get("accounts", [])[:20]
@@ -2737,5 +2807,61 @@ def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events:
     return "\n<LIFEENGINE_CONTEXT>\n" + pretty(compact) + "\n</LIFEENGINE_CONTEXT>"
 
 
+
+def _render_status_page(out: dict[str, Any]) -> str:
+    control = out.get("control") or {}
+    realtime = out.get("realtime_state") or {}
+    req = out.get("required_settings") or {}
+    sched = out.get("today_schedule") or {}
+    gates = control.get("module_gates") or {}
+    lines = ["LifeEngine 状态", "=============="]
+    lines.append(f"运行：{control.get('engine_state')}；实时：{realtime.get('mode') or 'unknown'}；Canon v{control.get('active_canon_version') or '-'}")
+    lines.append(f"自治：{gates.get('autonomy')}；自主管理 Review：{gates.get('managed_review_loop', 'auto')}；FinalGate：{gates.get('final_audit')}")
+    if req.get("ok") is False:
+        lines.append(f"必选设定：还缺 {req.get('missing_count')} 项，运行 /life config 查看。")
+    else:
+        lines.append("必选设定：已满足。")
+    lines.append(f"今日日程：{sched.get('count', 0)} 个时间块。查看：/life schedule")
+    if out.get("resources", {}).get("accounts"):
+        acc = out["resources"]["accounts"][:5]
+        lines.append("资源：" + "，".join([f"{a.get('resource_key')}={a.get('current_value')}" for a in acc]))
+    lines.append("常用：/life review 看待办；/life schedule 看日程；/life setup 补设定；/life run 推进一次。")
+    return "\n".join(lines)
+
+
+def _render_setup_result(brief: dict[str, Any]) -> str:
+    lines = ["LifeEngine 设定草案", "================"]
+    lines.append(f"草案：{brief.get('id')}；状态：{brief.get('status')}；已记录 {brief.get('statement_count')} 条设定输入。")
+    extracted = brief.get("extracted") or {}
+    if extracted:
+        lines.append("已识别：")
+        for key in ["identity", "worldview", "truth_sources", "resources", "sleep", "dream", "autonomy", "proactive"]:
+            if extracted.get(key):
+                lines.append(f"- {key}: 已记录")
+    qs = brief.get("unresolved_questions") or []
+    if qs:
+        lines.append("还建议补充：")
+        for q in qs[:8]:
+            lines.append(f"- {q}")
+    lines.append("确认无误后用 /life commit 提交；想继续补充就直接 /life setup <自然语言设定>。")
+    return "\n".join(lines)
+
+
+def _render_canon_commit(committed: dict[str, Any]) -> str:
+    mig = committed.get("migration") or {}
+    return "\n".join([
+        "LifeEngine 设定已提交",
+        "====================",
+        f"Canon 版本：v{committed.get('version')}；状态：{committed.get('status')}",
+        f"迁移类型：{mig.get('migration_type') or mig.get('type') or 'recorded'}",
+        "如果这是第一次设定，LifeEngine 会进入 active；如果是重构设定，建议先 /life review，再 /life resume。",
+    ])
+
+
 def format_result(obj: Any) -> str:
+    if isinstance(obj, dict):
+        for key in ("rendered", "human", "message"):
+            val = obj.get(key)
+            if isinstance(val, str) and val.strip():
+                return val
     return json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True)

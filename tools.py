@@ -33,6 +33,18 @@ def life_review(args: dict, **kwargs) -> str:
 
 
 
+def life_schedule(args: dict, **kwargs) -> str:
+    owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
+    action = args.get("action", "today")
+    payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action"}}
+    return _run(lambda rt: rt.schedule(action, owner_kind, owner_id, **payload))
+
+def life_config(args: dict, **kwargs) -> str:
+    owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
+    action = args.get("action", "check")
+    payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action"}}
+    return _run(lambda rt: rt.required_settings(action, owner_kind, owner_id, **payload))
+
 def life_doctor(args: dict, **kwargs) -> str:
     owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
     return _run(lambda rt: rt.doctor(owner_kind=owner_kind, owner_id=owner_id, level=args.get("level", "full"), include_samples=bool(args.get("include_samples", False))))
@@ -225,3 +237,20 @@ def life_policy(args: dict, **kwargs) -> str:
     action = args.get("action", "get")
     payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action"}}
     return _run(lambda rt: rt.policy(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
+
+
+
+def life_webui(args: dict, **kwargs) -> str:
+    """Return WebUI launch/status information. Actual server runs via CLI."""
+    import json as _json
+    from .webui.reader import resolve_lifeengine_db
+    action = args.get("action", "status")
+    host = args.get("host") or "127.0.0.1"
+    port = int(args.get("port") or 8765)
+    life_dir = args.get("life_dir")
+    try:
+        db = resolve_lifeengine_db(life_dir)
+        cmd = f"hermes lifeengine webui --host {host} --port {port}" + (f" --life-dir {life_dir!r}" if life_dir else "")
+        return _json.dumps({"ok": True, "action": action, "db_path": str(db), "url": f"http://{host}:{port}", "command": cmd, "message": "Run the command to launch the local LifeEngine WebUI."}, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        return _json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False, indent=2)

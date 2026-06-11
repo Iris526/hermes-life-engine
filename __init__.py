@@ -25,6 +25,8 @@ def register(ctx):
         ("life_status", schemas.LIFE_STATUS, tools.life_status, "Read LifeEngine status", "🫀"),
         ("life_doctor", schemas.LIFE_DOCTOR, tools.life_doctor, "Run LifeEngine health checks", "🩺"),
         ("life_review", schemas.LIFE_REVIEW, tools.life_review, "Human LifeEngine review/inbox aggregation", "📋"),
+        ("life_schedule", schemas.LIFE_SCHEDULE, tools.life_schedule, "Human-readable schedule timeline", "🗓️"),
+        ("life_config", schemas.LIFE_CONFIG, tools.life_config, "Human-readable LifeEngine required-setting checks", "🧾"),
         ("life_upgrade", schemas.LIFE_UPGRADE, tools.life_upgrade, "Install, upgrade, backup, and maintenance checks", "🧰"),
         ("life_control", schemas.LIFE_CONTROL, tools.life_control, "Pause/resume/setup/module control", "🕹️"),
         ("life_setup", schemas.LIFE_SETUP, tools.life_setup, "Write CanonDraft settings", "🧬"),
@@ -48,6 +50,7 @@ def register(ctx):
         ("life_proactive", schemas.LIFE_PROACTIVE, tools.life_proactive, "Proactive intent and outbox state", "📣"),
         ("life_execution", schemas.LIFE_EXECUTION, tools.life_execution, "Narrative execution simulator and serendipity", "🎲"),
         ("life_policy", schemas.LIFE_POLICY, tools.life_policy, "Sleep/Reply/Dream policy UX configuration", "⚙️"),
+        ("life_webui", schemas.LIFE_WEBUI, tools.life_webui, "LifeEngine WebUI / Observatory launch helper", "🖥️"),
     ]:
         ctx.register_tool(name=name, toolset=toolset, schema=schema, handler=handler, description=desc, emoji=emoji)
 
@@ -58,7 +61,7 @@ def register(ctx):
     ctx.register_hook("on_session_start", hooks.on_session_start)
     ctx.register_hook("on_session_end", hooks.on_session_end)
 
-    ctx.register_command("life", slash_life, description="Manage LifeEngine", args_hint="help|status|setup|commit|pause|resume|run|call|review|doctor|backup|advanced")
+    ctx.register_command("life", slash_life, description="Manage LifeEngine", args_hint="help|status|setup|commit|pause|resume|run|call|schedule|review|config|doctor|backup|advanced")
     ctx.register_cli_command(
         name="lifeengine",
         help="Manage embedded LifeEngine",

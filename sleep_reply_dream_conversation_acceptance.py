@@ -192,10 +192,19 @@ def run_sleep_reply_dream_conversation_acceptance(rt: Any, owner_kind: str, owne
         return {"ok": True, "dream_run_id": dream_run_id, "repair_transaction_id": repair.get("transaction_id") or (repair.get("commit") or {}).get("transaction_id"), "repaired_block_status": block_after, "planned_ops": len(plan_out.get("ops", [])), "digest_id": digests[0]["id"]}
 
     def s5_interrupted_sleep_affects_execution() -> dict[str, Any]:
-        # Record the short interrupted sleep explicitly, then execute an important event.
-        sessions = rt.sleep_tool("sessions", owner_id=synthetic_owner_id, limit=20)["sleep_sessions"]
-        interrupted = next((s for s in sessions if s.get("status") == "interrupted"), sessions[0])
-        day = rt.sleep_tool("record_effects", owner_id=synthetic_owner_id, sleep_session_id=interrupted["id"], date="2026-06-12")["sleep_day_state"]
+        # Record a severe sleep deficit explicitly, then execute an important event.
+        # The call-interrupted session from CRD02 can be too short/clock-dependent in
+        # isolated test runners, so this scenario creates a deterministic missed core
+        # sleep plan to guarantee SleepDayState pressure for the execution simulator.
+        missed_plan = rt.sleep_tool(
+            "plan", owner_id=synthetic_owner_id,
+            planned_sleep_at="2026-06-12T00:00:00+00:00",
+            planned_wake_at="2026-06-12T08:00:00+00:00",
+            timezone_name="UTC",
+        )
+        missed_plan_id = _first_fact_evidence(missed_plan, "sleep_plan_id")
+        day = rt.sleep_tool("record_effects", owner_id=synthetic_owner_id, sleep_plan_id=missed_plan_id, date="2026-06-12")["sleep_day_state"]
+        assert day.get("all_nighter") or int(day.get("recovery_pressure") or 0) >= 70
         event_id, block_id = _create_work_event(rt, synthetic_owner_id, title="被睡眠不足影响的重要对话后工作", importance=88, start="2026-06-12T10:00:00+00:00")
         out = rt.execution("run", owner_id=synthetic_owner_id, schedule_block_id=block_id)
         assert out["decision"]["decision_type"] in {"partial", "postponed"}

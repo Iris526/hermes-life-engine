@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LifeEngine Observatory</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">LE</div>
+        <div>
+          <h1>LifeEngine Observatory</h1>
+          <p>Agent runtime live monitor · WebUI v0.12.1</p>
+        </div>
+      </div>
+      <div class="livebox">
+        <span id="liveDot" class="live-dot idle"></span><span id="liveText">connecting…</span>
+      </div>
+      <div class="db-picker">
+        <input id="pathInput" placeholder="选择 LifeEngine 目录或 lifeengine.db 路径" />
+        <button id="selectBtn">连接目录</button>
+        <select id="ownerSelect" title="选择 owner"></select>
+        <button id="refreshBtn">刷新</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="stage-card glass">
+        <div class="scene" id="scene">
+          <div class="skyline"></div>
+          <div class="lantern l1"></div><div class="lantern l2"></div><div class="lantern l3"></div>
+          <div class="avatar-wrap" id="avatarWrap">
+            <img id="avatar" src="/static/assets/default-agent-pixel.png" alt="agent avatar" />
+            <div class="avatar-shadow"></div>
+            <div class="status-rune" id="statusRune">✦</div>
+          </div>
+          <div class="speech" id="avatarBubble">加载中…</div>
+        </div>
+        <div class="state-strip">
+          <div><span>状态</span><b id="stateLabel">--</b></div>
+          <div><span>模式</span><b id="modeLabel">--</b></div>
+          <div><span>Owner</span><b id="ownerLabel">--</b></div>
+        </div>
+        <div class="operator-row">
+          <button id="callBtn">Call / 强制唤醒</button>
+          <button id="tickBtn">Tick</button>
+          <button id="recoveryBtn">补觉建议</button>
+        </div>
+      </section>
+
+      <section class="panel glass overview">
+        <div class="panel-title"><h2>实时状态</h2><span id="updatedAt" class="subtle"></span></div>
+        <div id="currentEvent" class="current-event">--</div>
+        <div class="meter-grid" id="meters"></div>
+        <div class="mini-grid">
+          <div class="mini"><span>睡眠债</span><b id="sleepDebt">--</b></div>
+          <div class="mini"><span>恢复压力</span><b id="recoveryPressure">--</b></div>
+          <div class="mini"><span>延迟回复</span><b id="delayedCount">--</b></div>
+          <div class="mini"><span>梦境</span><b id="dreamCount">--</b></div>
+        </div>
+      </section>
+
+      <section class="panel glass schedule-panel">
+        <div class="panel-title">
+          <h2>日程 Timeline</h2>
+          <div class="tabbar">
+            <button data-period="today" class="active">今天</button>
+            <button data-period="tomorrow">明天</button>
+            <button data-period="week">本周</button>
+            <input id="dateInput" type="date" />
+          </div>
+        </div>
+        <div id="scheduleLabel" class="subtle"></div>
+        <div id="timeline" class="timeline"></div>
+      </section>
+
+      <section class="panel glass review-panel">
+        <div class="panel-title"><h2>Review Inbox</h2><button class="small" id="applySafeBtn">安全处理</button></div>
+        <div id="reviewList" class="feed"></div>
+      </section>
+
+      <section class="panel glass events-panel">
+        <div class="panel-title"><h2>近期事件</h2></div>
+        <div id="eventList" class="feed compact"></div>
+      </section>
+
+      <section class="panel glass resources-panel">
+        <div class="panel-title"><h2>资源</h2></div>
+        <div id="resources" class="resources"></div>
+      </section>
+
+      <section class="panel glass dreams-panel">
+        <div class="panel-title"><h2>梦 / 记忆泡泡</h2></div>
+        <div id="dreams" class="dreams"></div>
+      </section>
+
+      <section class="panel glass message-panel">
+        <div class="panel-title"><h2>回复 / 主动意图</h2></div>
+        <div id="messages" class="feed compact"></div>
+      </section>
+
+      <section class="panel glass trace-panel">
+        <div class="panel-title"><h2>最近流水</h2></div>
+        <div id="trace" class="trace"></div>
+      </section>
+    </main>
+  </div>
+
+  <aside class="drawer" id="drawer" aria-hidden="true">
+    <div class="drawer-head"><div><span id="drawerKind" class="badge">detail</span><h2 id="drawerTitle">Detail</h2></div><button id="drawerClose">关闭</button></div>
+    <div id="drawerBody" class="drawer-body"></div>
+  </aside>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

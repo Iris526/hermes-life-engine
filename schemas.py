@@ -11,6 +11,36 @@ LIFE_STATUS = {
     "parameters": {"type": "object", "properties": OWNER_PROPS, "required": []},
 }
 
+LIFE_SCHEDULE = {
+    "name": "life_schedule",
+    "description": "Human-readable schedule timeline. Default is today; supports tomorrow, week, or a specific date. Read-only.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            **OWNER_PROPS,
+            "action": {"type": "string", "description": "today/tomorrow/week/day/list/show or YYYY-MM-DD."},
+            "period": {"type": "string", "description": "today/tomorrow/week/day."},
+            "date": {"type": "string", "description": "YYYY-MM-DD date to view."},
+            "start": {"type": "string", "description": "Optional ISO range start."},
+            "end": {"type": "string", "description": "Optional ISO range end."},
+            "timezone": {"type": "string", "description": "IANA timezone, default from Canon or Asia/Tokyo."},
+            "include_completed": {"type": "boolean"},
+            "limit": {"type": "integer"},
+        },
+        "required": [],
+    },
+}
+
+LIFE_CONFIG = {
+    "name": "life_config",
+    "description": "Human-readable required-setting check for LifeEngine Canon: identity, worldview, time, weather, truth sources, sleep, resources, autonomy. Read-only unless setup is used separately.",
+    "parameters": {
+        "type": "object",
+        "properties": {**OWNER_PROPS, "action": {"type": "string", "description": "check/latest"}, "persist": {"type": "boolean"}},
+        "required": [],
+    },
+}
+
 LIFE_CONTROL = {
     "name": "life_control",
     "description": "Control LifeEngine state and module gates: setup, pause, resume, disable, readonly, heartbeat, module. Does not create life events.",
@@ -693,4 +723,19 @@ LIFE_POLICY = {
         },
         "required": ["action"]
     },
+}
+
+LIFE_WEBUI = {
+    "name": "life_webui",
+    "description": "Start or inspect the LifeEngine WebUI / Observatory. Use for human-friendly live dashboard commands, not for changing life facts.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "description": "status, command, launch_hint", "default": "status"},
+            "life_dir": {"type": "string", "description": "Optional LifeEngine directory or lifeengine.db path"},
+            "host": {"type": "string", "default": "127.0.0.1"},
+            "port": {"type": "integer", "default": 8765}
+        },
+        "required": []
+    }
 }

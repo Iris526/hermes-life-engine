@@ -77,7 +77,7 @@ def on_session_start(**kwargs):
     # Ensure DB/control exists early, then stay silent.
     rt = LifeEngineRuntime()
     try:
-        rt.status("agent", "default-agent")
+        rt.startup_check("agent", "default-agent", source="on_session_start")
     finally:
         rt.close()
     return None

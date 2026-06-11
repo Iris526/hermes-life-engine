@@ -28,7 +28,7 @@ def define_resource(conn, owner_kind: str, owner_id: str, key: str, display_name
                     resource_class: str = "capacity", unit: str | None = "points",
                     min_value: float | None = 0, max_value: float | None = 100,
                     initial: float = 0, rules: dict[str, Any] | None = None,
-                    canon_version: int | None = None) -> dict[str, Any]:
+                    canon_version: int | None = None, reset_account: bool = False) -> dict[str, Any]:
     if not key or not str(key).strip():
         raise ResourceError("resource key is required")
     key = str(key).strip()
@@ -58,7 +58,22 @@ def define_resource(conn, owner_kind: str, owner_id: str, key: str, display_name
                    reason, source) VALUES(?,?,?,?,?,?,?,?,?)""",
             (new_id("reslog"), owner_kind, owner_id, key, float(initial), unit, "produce", "initial resource value", "resource_define"),
         )
-    append_journal(conn, owner_kind, owner_id, "resource_defined", {"key": key, "display_name": display_name or key}, "resource")
+    elif reset_account:
+        current = float(row["current_value"])
+        target = float(initial)
+        delta = target - current
+        if abs(delta) > 1e-9:
+            conn.execute(
+                """INSERT INTO resource_ledger(id, owner_kind, owner_id, resource_key, delta, unit, operation,
+                       reason, source) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (new_id("reslog"), owner_kind, owner_id, key, float(delta), unit, "adjust", "resource redefined initial value", "resource_define"),
+            )
+        conn.execute(
+            """UPDATE resource_accounts SET current_value=?, unit=?, capacity=?, updated_at=datetime('now')
+               WHERE owner_kind=? AND owner_id=? AND resource_key=?""",
+            (target, unit, max_value, owner_kind, owner_id, key),
+        )
+    append_journal(conn, owner_kind, owner_id, "resource_defined", {"key": key, "display_name": display_name or key, "reset_account": bool(reset_account)}, "resource")
     return get_resource(conn, owner_kind, owner_id, key)
 
 
