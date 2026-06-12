@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 40
+_SCHEMA_VERSION = 41
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -96,7 +96,7 @@ def migrate(conn: sqlite3.Connection) -> None:
 
     v0 -> v1 creates the original LifeEngine tables; later versions add
     receipts, truth sources, inventory, goals, autonomy, proactive, execution,
-    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface.
+    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets.
     """
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
     _ensure_schema_migration_table(conn)
@@ -222,6 +222,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 40:
         _create_schema_v40(conn)
         _record_schema_migration(conn, 40, "living_rhythm_canon_consistency_and_paper_notes")
+    if current < 41:
+        _create_schema_v41(conn)
+        _record_schema_migration(conn, 41, "editable_collections_closet_cabinets")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3008,5 +3011,140 @@ def _create_schema_v40(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_living_inventory_preset_owner_time
           ON living_inventory_preset_runs(owner_kind, owner_id, created_at DESC);
+        """
+    )
+
+
+def _create_schema_v41(conn: sqlite3.Connection) -> None:
+    """v0.12.6 editable item collections / closet cabinets.
+
+    Preset collections are editable.  New collection categories can be created
+    by the Agent with their own intake image-generation rules, usage rules,
+    and maintenance rules.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS item_collections (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          collection_type TEXT NOT NULL DEFAULT 'custom',
+          name TEXT NOT NULL,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          rules_json TEXT NOT NULL DEFAULT '{}',
+          image_generation_rule_json TEXT NOT NULL DEFAULT '{}',
+          usage_rule_json TEXT NOT NULL DEFAULT '{}',
+          maintenance_rule_json TEXT NOT NULL DEFAULT '{}',
+          required_metadata_json TEXT NOT NULL DEFAULT '[]',
+          sort_order INTEGER NOT NULL DEFAULT 100,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_item_collections_owner_type
+          ON item_collections(owner_kind, owner_id, collection_type, status);
+
+        CREATE TABLE IF NOT EXISTS collection_items (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          collection_id TEXT NOT NULL,
+          item_type TEXT NOT NULL DEFAULT 'item',
+          name TEXT NOT NULL,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          attributes_json TEXT NOT NULL DEFAULT '{}',
+          material_spec_json TEXT NOT NULL DEFAULT '{}',
+          care_spec_json TEXT NOT NULL DEFAULT '{}',
+          asset_bundle_json TEXT NOT NULL DEFAULT '{}',
+          usage_state_json TEXT NOT NULL DEFAULT '{}',
+          quantity REAL NOT NULL DEFAULT 1,
+          condition_score INTEGER NOT NULL DEFAULT 100,
+          cleanliness_state TEXT NOT NULL DEFAULT 'clean',
+          availability_state TEXT NOT NULL DEFAULT 'available',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY(collection_id) REFERENCES item_collections(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_collection_items_owner_collection
+          ON collection_items(owner_kind, owner_id, collection_id, status, availability_state);
+
+        CREATE TABLE IF NOT EXISTS collection_item_assets (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          item_id TEXT NOT NULL,
+          asset_type TEXT NOT NULL,
+          view_name TEXT,
+          asset_uri TEXT,
+          prompt_text TEXT,
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'pending_generation',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY(item_id) REFERENCES collection_items(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_collection_assets_item
+          ON collection_item_assets(owner_kind, owner_id, item_id, status);
+
+        CREATE TABLE IF NOT EXISTS outfit_plans (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          occasion TEXT NOT NULL DEFAULT 'daily',
+          event_id TEXT,
+          item_ids_json TEXT NOT NULL DEFAULT '[]',
+          context_json TEXT NOT NULL DEFAULT '{}',
+          reasoning_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'draft',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_outfit_plans_owner_time
+          ON outfit_plans(owner_kind, owner_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS collection_rule_presets (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          preset_name TEXT NOT NULL,
+          collection_type TEXT NOT NULL,
+          rule_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_collection_rule_presets_owner
+          ON collection_rule_presets(owner_kind, owner_id, collection_type, status);
+
+        CREATE TABLE IF NOT EXISTS collection_maintenance_runs (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          item_id TEXT,
+          maintenance_type TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          result_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          completed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_collection_maintenance_owner
+          ON collection_maintenance_runs(owner_kind, owner_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS collection_usage_history (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          item_id TEXT NOT NULL,
+          outfit_plan_id TEXT,
+          event_id TEXT,
+          operation TEXT NOT NULL,
+          reason TEXT,
+          status TEXT NOT NULL DEFAULT 'done',
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_collection_usage_owner_item
+          ON collection_usage_history(owner_kind, owner_id, item_id, created_at DESC);
         """
     )

@@ -352,9 +352,6 @@ LIFE_INVENTORY = {
             "quantity_delta": {"type": "number"},
             "unit": {"type": "string"},
             "attributes": {"type": "object"},
-            "image_path": {"type": "string", "description": "Optional local file path for the item's primary image; stored under attributes.media."},
-            "image_url": {"type": "string", "description": "Optional URL for the item's primary image; stored under attributes.media."},
-            "media": {"type": "object", "description": "Optional media payload merged into attributes.media for wardrobe/reference images."},
             "condition": {"type": "string"},
             "location": {"type": "string"},
             "from_location": {"type": "string"},
@@ -811,7 +808,7 @@ LIFE_LIVING = {
         "properties": {
             **OWNER_PROPS,
             "action": {"type": "string", "description": "summary/consistency/init_inventory/day_rhythm/decompose_abstract/paper_notes/create_note/diary_draft."},
-            "preset": {"type": "string", "description": "Living preset, e.g. default, temple_life, or an explicit persona preset such as temple_life."},
+            "preset": {"type": "string", "description": "Living preset, e.g. guimingguan."},
             "date": {"type": "string", "description": "YYYY-MM-DD date for rhythm/decomposition."},
             "timezone": {"type": "string", "description": "IANA timezone, default Asia/Tokyo."},
             "event_id": {"type": "string", "description": "Abstract parent event id to decompose."},
@@ -827,4 +824,51 @@ LIFE_LIVING = {
         },
         "required": [],
     },
+}
+
+LIFE_COLLECTION = {
+    "name": "life_collection",
+    "description": (
+        "Editable LifeEngine collection/closet/cabinet interface. Built-in presets include wardrobe, shoe_cabinet, "
+        "sock_drawer, accessory_cabinet, and vanity, but collections are editable and custom collections like weapon_cabinet "
+        "can be created. New wearable items must be added to a collection and get item-only asset generation jobs before use."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            **OWNER_PROPS,
+            "action": {"type": "string", "description": "summary/init/presets/collections/get_collection/create_collection/update_collection/archive_collection/items/get_item/add_item/update_item/generate_assets/set_asset/checkout/return/dirty/maintain/outfit/outfits."},
+            "collection_id": {"type": "string"},
+            "collection_type": {"type": "string", "description": "wardrobe/shoe_cabinet/sock_drawer/accessory_cabinet/vanity/custom."},
+            "type": {"type": "string", "description": "Alias for collection_type."},
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+            "rules": {"type": "object"},
+            "image_generation_rule": {"type": "object"},
+            "entry_image_rule": {"type": "object"},
+            "usage_rule": {"type": "object"},
+            "maintenance_rule": {"type": "object"},
+            "required_metadata": {"type": "array", "items": {"type": "string"}},
+            "item_id": {"type": "string"},
+            "item_type": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "attributes": {"type": "object"},
+            "material_spec": {"type": "object"},
+            "care_spec": {"type": "object"},
+            "quantity": {"type": "number"},
+            "asset_id": {"type": "string"},
+            "asset_uri": {"type": "string"},
+            "path": {"type": "string"},
+            "url": {"type": "string"},
+            "occasion": {"type": "string"},
+            "weather": {"type": "string"},
+            "mood": {"type": "string"},
+            "event_id": {"type": "string"},
+            "cleanliness_state": {"type": "string"},
+            "maintenance_type": {"type": "string"},
+            "reason": {"type": "string"},
+            "limit": {"type": "integer"}
+        },
+        "required": []
+    }
 }

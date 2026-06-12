@@ -1,5 +1,5 @@
 name: lifeengine
-version: 0.12.5
+version: 0.12.6
 kind: standalone
 description: Embedded self-life runtime for Hermes agents with Life Canon, resources, heartbeat, sleep/dream/reply systems, trace, human-friendly surfaces, and WebUI observatory with live stream and detail views.
 author: LifeEngine Project
@@ -7,6 +7,7 @@ provides_tools:
   - life_status
   - life_interface
   - life_living
+  - life_collection
   - life_upgrade
   - life_doctor
   - life_review

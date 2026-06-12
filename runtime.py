@@ -112,6 +112,30 @@ from .maintenance import (
 )
 from .heartbeat import heartbeat_installation_status, write_tick_script
 from .confirmations import confirmed_ops, get_confirmation, list_confirmations, mark_confirmation, propose_confirmation
+from .collections import (
+    DEFAULT_COLLECTION_PRESETS,
+    archive_collection,
+    build_outfit,
+    check_out_item,
+    create_collection,
+    create_collection_item,
+    ensure_default_collections,
+    generate_assets,
+    get_collection,
+    get_collection_item,
+    get_outfit_plan,
+    list_collection_items,
+    list_collections,
+    list_outfit_plans,
+    maintain_item,
+    render_collections_summary,
+    render_items,
+    render_item_assets,
+    return_item,
+    set_item_asset_uri,
+    update_collection,
+    update_collection_item,
+)
 from .invariants import run_doctor as run_invariant_doctor
 from .inventory import (
     create_inventory_item,
@@ -2700,10 +2724,7 @@ class LifeEngineRuntime:
                     if bid: block_ids.append(bid)
                     tx_ids.append(c2.get("transaction_id")); receipts.append((c2.get("receipt") or {}).get("receipt_id"))
             if owner_kind == "agent" and any(i.get("worth_proactive") for i in templates):
-                summary = "我给今天折了几张生活节律小纸条：晨巡、香案、工具包、小委托和傍晚记账。"
-                if str(preset).lower() in {"temple_life", "temple_life"}:
-                    summary = "我给今天折了几张小道观的小日程纸条：晨巡、香案、工具包、小委托和傍晚记账。"
-                self.commit_ops([{"type": "CREATE_PROACTIVE_INTENT", "payload": {"target_type": "self_journal", "intent_type": "report_progress", "summary": summary, "emotional_tone": "calm", "importance": 62, "urgency": 25, "novelty": 45, "relationship_relevance": 45, "privacy_level": "safe_to_share", "status": "generated"}}], owner_kind, owner_id, "life_rhythm_engine", session_id, turn_id)
+                self.commit_ops([{"type": "CREATE_PROACTIVE_INTENT", "payload": {"target_type": "self_journal", "intent_type": "report_progress", "summary": "我给今天折了几张小日程纸条：晨巡、整理、工具包、小委托和傍晚记账。", "emotional_tone": "calm", "importance": 62, "urgency": 25, "novelty": 45, "relationship_relevance": 45, "privacy_level": "safe_to_share", "status": "generated"}}], owner_kind, owner_id, "life_rhythm_engine", session_id, turn_id)
             rendered = "今日生活节律已生成\n================\n" + "\n".join([f"- {t['start'][11:16]}-{t['end'][11:16]} {t['title']}" for t in templates])
             with transaction(self.conn):
                 run_id = new_id("rhythm")
@@ -2739,7 +2760,7 @@ class LifeEngineRuntime:
                 else:
                     erow = self.conn.execute("SELECT * FROM events WHERE id=? AND owner_kind=? AND owner_id=?", (event_id, owner_kind, owner_id)).fetchone()
                     if not erow:
-                        return {"ok": False, "error": "abstract event not found", "event_id": event_id}
+                        return {"ok": False, "error": "abstract event not found", "rendered": f"未找到事件：{event_id}"}
                     event = dict(erow)
                     grow = self.conn.execute("SELECT g.* FROM event_goal_links l JOIN goals g ON g.id=l.goal_id WHERE l.event_id=? LIMIT 1", (event_id,)).fetchone()
                     goal = dict(grow) if grow else {}
@@ -2767,6 +2788,118 @@ class LifeEngineRuntime:
             commit = self.commit_ops([{"type": "CREATE_DIARY", "payload": {"diary_type": "daily_draft", "date": today, "content": content, "privacy": "agent_private"}}], owner_kind, owner_id, "daily_diary_draft", session_id, turn_id)
             return {"ok": True, "commit": commit, "rendered": content}
         raise ValueError(f"Unknown living action: {action}")
+
+
+    def collection(self, action: str = "summary", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+                   session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """Editable collection / closet / cabinet API.
+
+        Preset collections are human-friendly defaults, not hard-coded ontology.
+        The Agent or human can create, rename, archive, and redefine rules for
+        collections.  New item intake creates asset-generation jobs according
+        to the collection's own rule.
+        """
+        action_l = str(action or "summary").strip().lower()
+        with transaction(self.conn):
+            if action_l in {"summary", "status", "closet"}:
+                ensure_default_collections(self.conn, owner_kind, owner_id)
+                collections = list_collections(self.conn, owner_kind, owner_id)
+                counts = {}
+                for c in collections:
+                    counts[c["collection_type"]] = len(list_collection_items(self.conn, owner_kind, owner_id, collection_id=c["id"], limit=500))
+                rendered = render_collections_summary(collections) + "\n\n数量：" + "，".join([f"{c['name']} {counts.get(c['collection_type'],0)}" for c in collections])
+                return {"ok": True, "collections": collections, "counts": counts, "rendered": rendered}
+            if action_l in {"init", "ensure_defaults", "defaults"}:
+                collections = ensure_default_collections(self.conn, owner_kind, owner_id)
+                return {"ok": True, "collections": collections, "rendered": render_collections_summary(collections)}
+            if action_l in {"presets", "preset_rules"}:
+                return {"ok": True, "presets": DEFAULT_COLLECTION_PRESETS, "rendered": "内置集合预设：" + "、".join(DEFAULT_COLLECTION_PRESETS.keys()) + "。这些只是默认分类，可增删改。"}
+            if action_l in {"collections", "list_collections", "list"} and not payload.get("collection_type"):
+                collections = list_collections(self.conn, owner_kind, owner_id, include_archived=bool(payload.get("include_archived", False)))
+                return {"ok": True, "collections": collections, "rendered": render_collections_summary(collections)}
+            if action_l in {"get_collection", "collection"}:
+                c = get_collection(self.conn, owner_kind, owner_id, payload.get("collection_id"), payload.get("collection_type") or payload.get("type"))
+                return {"ok": True, "collection": c, "rendered": render_collections_summary([c])}
+            if action_l in {"create_collection", "add_collection", "new_collection"}:
+                c = create_collection(
+                    self.conn, owner_kind, owner_id,
+                    collection_type=payload.get("collection_type") or payload.get("type") or "custom",
+                    name=payload.get("name") or payload.get("display_name") or "新集合",
+                    description=payload.get("description"),
+                    rules=payload.get("rules"),
+                    image_generation_rule=payload.get("image_generation_rule") or payload.get("entry_image_rule"),
+                    usage_rule=payload.get("usage_rule"),
+                    maintenance_rule=payload.get("maintenance_rule"),
+                    required_metadata=payload.get("required_metadata"),
+                    sort_order=int(payload.get("sort_order", 100)),
+                )
+                return {"ok": True, "collection": c, "rendered": "已创建物品集合：" + c["name"] + f"（{c['collection_type']}）。"}
+            if action_l in {"update_collection", "edit_collection", "set_rules", "define_rules"}:
+                c = update_collection(
+                    self.conn, owner_kind, owner_id,
+                    collection_id=payload.get("collection_id"),
+                    collection_type=payload.get("collection_type") or payload.get("type"),
+                    name=payload.get("name"), description=payload.get("description"), status=payload.get("status"),
+                    rules=payload.get("rules"), image_generation_rule=payload.get("image_generation_rule") or payload.get("entry_image_rule"),
+                    usage_rule=payload.get("usage_rule"), maintenance_rule=payload.get("maintenance_rule"),
+                    required_metadata=payload.get("required_metadata"), sort_order=payload.get("sort_order"),
+                )
+                return {"ok": True, "collection": c, "rendered": "已更新集合规则：" + c["name"]}
+            if action_l in {"archive_collection", "delete_collection", "remove_collection"}:
+                c = archive_collection(self.conn, owner_kind, owner_id, collection_id=payload.get("collection_id"), collection_type=payload.get("collection_type") or payload.get("type"))
+                return {"ok": True, "collection": c, "rendered": "已归档集合：" + c["name"]}
+            if action_l in {"items", "list_items", "wardrobe", "shoes", "shoe_cabinet", "socks", "sock_drawer", "accessories", "accessory_cabinet", "vanity"}:
+                ctype_map = {"wardrobe":"wardrobe", "shoes":"shoe_cabinet", "shoe_cabinet":"shoe_cabinet", "socks":"sock_drawer", "sock_drawer":"sock_drawer", "accessories":"accessory_cabinet", "accessory_cabinet":"accessory_cabinet", "vanity":"vanity"}
+                ctype = payload.get("collection_type") or payload.get("type") or ctype_map.get(action_l)
+                if ctype in DEFAULT_COLLECTION_PRESETS:
+                    ensure_default_collections(self.conn, owner_kind, owner_id)
+                items = list_collection_items(self.conn, owner_kind, owner_id, collection_id=payload.get("collection_id"), collection_type=ctype, availability_state=payload.get("availability_state"), status=payload.get("status", "active"), limit=int(payload.get("limit", 100)))
+                title = (get_collection(self.conn, owner_kind, owner_id, collection_type=ctype)["name"] if ctype else "集合条目") if items or ctype else "集合条目"
+                return {"ok": True, "items": items, "rendered": render_items(title, items)}
+            if action_l in {"get_item", "item"}:
+                item = get_collection_item(self.conn, owner_kind, owner_id, payload["item_id"], include_assets=True)
+                return {"ok": True, "item": item, "rendered": render_items(item["name"], [item]) + "\n\n" + render_item_assets(item)}
+            if action_l in {"add_item", "create_item", "add", "intake"}:
+                ensure_default_collections(self.conn, owner_kind, owner_id)
+                item = create_collection_item(
+                    self.conn, owner_kind, owner_id,
+                    collection_id=payload.get("collection_id"),
+                    collection_type=payload.get("collection_type") or payload.get("type") or payload.get("category") or "wardrobe",
+                    name=payload.get("name") or "未命名物品",
+                    item_type=payload.get("item_type"), description=payload.get("description") or payload.get("text"),
+                    tags=payload.get("tags"), attributes=payload.get("attributes"), material_spec=payload.get("material_spec"),
+                    care_spec=payload.get("care_spec"), quantity=float(payload.get("quantity", 1)),
+                )
+                return {"ok": True, "item": item, "rendered": render_items("已入库", [item]) + "\n\n" + render_item_assets(item)}
+            if action_l in {"update_item", "edit_item"}:
+                fields = {k: v for k, v in payload.items() if k != "item_id"}
+                item = update_collection_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], **fields)
+                return {"ok": True, "item": item, "rendered": render_items("已更新", [item])}
+            if action_l in {"generate_assets", "asset_jobs", "assets"}:
+                out = generate_assets(self.conn, owner_kind, owner_id, item_id=payload["item_id"])
+                return out
+            if action_l in {"set_asset", "attach_asset", "fulfill_asset"}:
+                asset = set_item_asset_uri(self.conn, owner_kind, owner_id, asset_id=payload["asset_id"], asset_uri=payload.get("asset_uri") or payload.get("path") or payload.get("url"), status=payload.get("status", "available"), metadata=payload.get("metadata"))
+                return {"ok": True, "asset": asset, "rendered": f"资产已绑定：{asset.get('asset_type')} → {asset.get('asset_uri')}"}
+            if action_l in {"checkout", "check_out", "wear", "use"}:
+                return check_out_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], reason=payload.get("reason") or action_l, event_id=payload.get("event_id"))
+            if action_l in {"return", "return_item", "put_back"}:
+                return return_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], cleanliness_state=payload.get("cleanliness_state", "dirty"), reason=payload.get("reason") or "return", event_id=payload.get("event_id"))
+            if action_l in {"dirty", "mark_dirty"}:
+                item = update_collection_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], cleanliness_state="dirty")
+                return {"ok": True, "item": item, "rendered": item["name"] + " 已标记为 dirty。"}
+            if action_l in {"maintain", "clean", "wash", "repair"}:
+                return maintain_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], maintenance_type=payload.get("maintenance_type") or action_l, reason=payload.get("reason") or action_l)
+            if action_l in {"outfit", "build_outfit", "style", "wear_today"}:
+                ensure_default_collections(self.conn, owner_kind, owner_id)
+                return build_outfit(self.conn, owner_kind, owner_id, occasion=payload.get("occasion") or "daily", weather=payload.get("weather"), mood=payload.get("mood"), event_id=payload.get("event_id"))
+            if action_l in {"outfits", "list_outfits"}:
+                plans = list_outfit_plans(self.conn, owner_kind, owner_id, status=payload.get("status"), limit=int(payload.get("limit", 20)))
+                return {"ok": True, "outfit_plans": plans, "rendered": "造型草案\n========\n" + ("\n".join([f"- {p['created_at']} · {p['occasion']} · {p['status']}" for p in plans]) or "暂无。")}
+            if action_l in {"get_outfit", "outfit_plan"}:
+                plan = get_outfit_plan(self.conn, owner_kind, owner_id, payload["outfit_plan_id"])
+                return {"ok": True, "outfit_plan": plan, "rendered": "造型草案：" + plan["id"]}
+        raise ValueError(f"Unknown collection action: {action}")
 
     def startup_check(self, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID, *, source: str = "startup") -> dict[str, Any]:
         with transaction(self.conn):

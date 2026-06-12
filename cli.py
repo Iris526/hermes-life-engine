@@ -31,6 +31,22 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_living.add_argument("--event-id")
     p_living.add_argument("--limit", type=int, default=20)
 
+
+    p_closet = sub.add_parser("closet", help="Human-friendly wardrobe/shoes/socks/accessories/vanity collections")
+    p_closet.add_argument("action", nargs="?", default="summary", choices=["summary", "init", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "add", "add_item", "create_collection", "update_collection", "archive_collection", "generate_assets", "checkout", "return", "maintain", "outfit", "outfits", "presets"])
+    p_closet.add_argument("text", nargs="*", help="Optional item name/description or collection name")
+    p_closet.add_argument("--collection-id")
+    p_closet.add_argument("--collection-type")
+    p_closet.add_argument("--item-id")
+    p_closet.add_argument("--asset-id")
+    p_closet.add_argument("--asset-uri")
+    p_closet.add_argument("--type")
+    p_closet.add_argument("--name")
+    p_closet.add_argument("--description")
+    p_closet.add_argument("--quantity", type=float, default=1)
+    p_closet.add_argument("--occasion", default="daily")
+    p_closet.add_argument("--limit", type=int, default=50)
+
     p_webui = sub.add_parser("webui", help="Run LifeEngine WebUI / Observatory")
     p_webui.add_argument("--life-dir", default=None, help="LifeEngine directory or lifeengine.db path")
     p_webui.add_argument("--host", default="127.0.0.1")
@@ -396,6 +412,17 @@ def handle_cli(args) -> None:
                 payload["summary"] = " ".join(args.text)
                 payload["text"] = " ".join(args.text)
             print(format_result(rt.living(args.action, **{k:v for k,v in payload.items() if v is not None})))
+        elif action == "closet":
+            payload = {"collection_id": args.collection_id, "collection_type": args.collection_type or args.type, "item_id": args.item_id, "asset_id": args.asset_id, "asset_uri": args.asset_uri, "quantity": args.quantity, "occasion": args.occasion, "limit": args.limit}
+            if args.name:
+                payload["name"] = args.name
+            elif args.text:
+                payload["name"] = args.text[0]
+                if len(args.text) > 1:
+                    payload["description"] = " ".join(args.text[1:])
+            if args.description:
+                payload["description"] = args.description
+            print(format_result(rt.collection(args.action, **{k:v for k,v in payload.items() if v not in (None, "")})))
         elif action == "doctor":
             print(format_result(rt.doctor(level=args.level, include_samples=args.include_samples)))
         elif action == "review":
@@ -821,7 +848,7 @@ def _advanced_help() -> str:
     return (
         "Advanced /life commands:\n"
         "  heartbeat <mode|install|status|run-script|test> | tick | module <key> <value>\n"
-        "  resource list/add <key> | inventory list/add/meals | goal list/create/decompose/progress\n"
+        "  resource list/add <key> | inventory list/add/meals | closet wardrobe/add/outfit | goal list/create/decompose/progress\n"
         "  autonomy list/plan/run/sleep_context | proactive list/create/evaluate/outbox/send/suppress\n"
         "  execution list/run/serendipity | sleep status/plan/start/wake/plans/sessions | dream status/run/entries/findings | reply status/list/release/doctor | call | confirmation list/confirm/reject <id>\n"
         "  truth list/resolve/observe/bind | final_gate check/reports/get\n"
@@ -853,6 +880,26 @@ def slash_life(raw_args: str) -> str:
             return format_result(rt.interface("catalog"))
         if cmd in {"advanced", "高级", "debug"}:
             return _advanced_help()
+        if cmd in {"closet", "衣橱", "wardrobe", "衣柜"}:
+            action = rest[0] if rest else "summary"
+            payload = {}
+            aliases = {"init":"init", "初始化":"init", "collections":"collections", "集合":"collections", "wardrobe":"wardrobe", "衣橱":"wardrobe", "衣柜":"wardrobe", "shoes":"shoes", "鞋柜":"shoes", "socks":"socks", "袜子":"socks", "accessories":"accessories", "配饰":"accessories", "vanity":"vanity", "梳妆台":"vanity", "outfit":"outfit", "穿搭":"outfit", "presets":"presets", "预设":"presets"}
+            action = aliases.get(action, action)
+            if action in {"add", "add_item", "入库"}:
+                payload["collection_type"] = rest[1] if len(rest) > 1 else "wardrobe"
+                payload["name"] = rest[2] if len(rest) > 2 else "未命名物品"
+                payload["description"] = " ".join(rest[3:]) if len(rest) > 3 else None
+                action = "add_item"
+            if action in {"create_collection", "新集合"}:
+                payload["collection_type"] = rest[1] if len(rest) > 1 else "custom"
+                payload["name"] = rest[2] if len(rest) > 2 else payload["collection_type"]
+                payload["description"] = " ".join(rest[3:]) if len(rest) > 3 else None
+                action = "create_collection"
+            if action in {"generate_assets", "生图", "资产"}:
+                payload["item_id"] = rest[1] if len(rest) > 1 else None
+                action = "generate_assets"
+            return format_result(rt.collection(action, **payload))
+
         if cmd in {"webui", "ui", "观察台", "dashboard"}:
             host = "127.0.0.1"
             port = 8765

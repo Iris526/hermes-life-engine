@@ -1,9 +1,9 @@
-# LifeEngine Hermes Plugin v0.12.5
+# LifeEngine Hermes Plugin v0.12.6
 
 LifeEngine is an embedded, SQLite/sqlite-vec based Agent life runtime for Hermes. It gives an Agent its own Life Canon, resources, schedule, events, sleep, dreams, realtime state, autonomy, proactive intents, review inbox, traceable life journal, and a WebUI observatory.
 
-- Plugin version: `0.12.5`
-- DB schema version: `40`
+- Plugin version: `0.12.6`
+- DB schema version: `41`
 - sqlite-vec: required by LifeEngine runtime
 - Integration: Hermes directory plugin; no core-loop fork
 
@@ -60,9 +60,9 @@ Default URL:
 http://127.0.0.1:8765
 ```
 
-## New in v0.12.5
+## New in v0.12.6
 
-v0.12.5 adds the concrete living layer: Canon consistency doctor, temple-life day rhythm generation, abstract goal event decomposition, living inventory/resource presets, proactive paper notes, low-frequency diary drafts, and a more human-readable Review grouping. Agent self-life can now move from abstract “推进目标” placeholders toward concrete daily routines and small commissions.
+v0.12.6 adds the concrete living layer: Canon consistency doctor, Guimingguan-style day rhythm generation, abstract goal event decomposition, living inventory/resource presets, proactive paper notes, low-frequency diary drafts, and a more human-readable Review grouping. Agent self-life can now move from abstract “推进目标” placeholders toward concrete daily routines and small commissions.
 
 1. `life_interface` provides one safe Agent-facing router for catalog/read/write across config, schedule, event, resource, inventory, sleep, dream, review, truth, and trace.
 2. `life_config` now exposes required-setting specs, default suggestions, and draft-only default application.
@@ -75,5 +75,41 @@ v0.12.5 adds the concrete living layer: Canon consistency doctor, temple-life da
 The current design document is bundled in the zip:
 
 ```text
-docs/lifeengine_total_design_v0_12_5.md
+docs/lifeengine_total_design_v0_12_6.md
+```
+
+## New in v0.12.6
+
+v0.12.6 adds the editable Closet / Collection system:
+
+```text
+/life closet
+/life closet init
+/life closet wardrobe
+/life closet shoes
+/life closet socks
+/life closet accessories
+/life closet vanity
+/life closet add wardrobe 白色短上衣 轻薄棉混纺
+/life closet outfit
+```
+
+Built-in collection presets are not fixed ontology. They are editable defaults:
+
+```text
+wardrobe
+shoe_cabinet
+sock_drawer
+accessory_cabinet
+vanity
+```
+
+The Agent or an advanced user can add/update/archive collections such as weapon_cabinet or tool_cabinet, and define intake image-generation rules, usage rules, and maintenance rules.
+
+New items are not allowed to appear only in prose. They enter a collection first, get pending asset-generation jobs according to that collection's rules, and then can be selected by outfit/use flows.
+
+The current design document is bundled as:
+
+```text
+docs/lifeengine_total_design_v0_12_6.md
 ```

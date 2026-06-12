@@ -72,6 +72,12 @@ DOMAINS: dict[str, dict[str, Any]] = {
         "write": ["init_inventory", "day_rhythm", "decompose_abstract", "create_note", "diary_draft"],
         "rule": "把抽象目标变成具体日常；写入走 LifeOps 或 Canon/trace，不直接 SQL。",
     },
+    "collection": {
+        "label": "衣橱/鞋柜/梳妆台/配饰柜/袜子抽屉 / Collections",
+        "read": ["summary", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "outfits"],
+        "write": ["init", "create_collection", "update_collection", "archive_collection", "add_item", "generate_assets", "set_asset", "checkout", "return", "maintain", "outfit"],
+        "rule": "集合分类是预设但可增删改；新增物品必须按集合规则生成资产图任务，再供穿搭/使用检索。",
+    },
     "trace": {
         "label": "Trace / 审计",
         "read": ["latest", "explain", "verify", "audit"],
@@ -130,6 +136,8 @@ def read(rt: Any, owner_kind: str, owner_id: str, domain: str, view: str | None 
         return rt.truth(view if view != "summary" else "list", owner_kind, owner_id, None, None, **p)
     if domain == "living":
         return rt.living(view if view != "summary" else "summary", owner_kind, owner_id, None, None, **p)
+    if domain in {"collection", "closet", "wardrobe"}:
+        return rt.collection(view if view != "summary" else "summary", owner_kind, owner_id, None, None, **p)
     if domain == "trace":
         return rt.traces(view if view != "summary" else "latest", owner_kind, owner_id, **p)
     raise ValueError(f"unknown LifeEngine interface domain: {domain}")
@@ -165,6 +173,8 @@ def write(rt: Any, owner_kind: str, owner_id: str, domain: str, intent: str | No
         return rt.truth(intent, owner_kind, owner_id, session_id, turn_id, **p)
     if domain == "living":
         return rt.living(intent, owner_kind, owner_id, session_id, turn_id, **p)
+    if domain in {"collection", "closet", "wardrobe"}:
+        return rt.collection(intent, owner_kind, owner_id, session_id, turn_id, **p)
     raise ValueError(f"unknown or read-only LifeEngine interface domain: {domain}")
 
 
