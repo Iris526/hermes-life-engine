@@ -34,7 +34,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
 
 
     p_closet = sub.add_parser("closet", help="Human-friendly wardrobe/shoes/socks/accessories/vanity collections")
-    p_closet.add_argument("action", nargs="?", default="summary", choices=["summary", "init", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "add", "add_item", "create_collection", "update_collection", "archive_collection", "generate_assets", "checkout", "return", "maintain", "outfit", "outfits", "presets", "resolve_outfit", "current_outfit", "wear_outfit", "return_outfit", "asset_check", "purchase_chain", "purchase_chains"])
+    p_closet.add_argument("action", nargs="?", default="summary", choices=["summary", "init", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "add", "add_item", "create_collection", "update_collection", "archive_collection", "generate_assets", "checkout", "return", "maintain", "outfit", "outfits", "presets", "resolve_outfit", "resolver_explain", "add_alias", "aliases", "outfit_presets", "create_outfit_preset", "update_outfit_preset", "archive_outfit_preset", "current_outfit", "wear_outfit", "return_outfit", "asset_check", "purchase_chain", "purchase_chains"])
     p_closet.add_argument("text", nargs="*", help="Optional item name/description or collection name")
     p_closet.add_argument("--collection-id")
     p_closet.add_argument("--collection-type")

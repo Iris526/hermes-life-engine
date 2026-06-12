@@ -44,9 +44,9 @@ DOMAINS: dict[str, dict[str, Any]] = {
     },
     "collection": {
         "label": "衣橱/鞋柜/梳妆台/配饰柜/袜子抽屉 / Collections",
-        "read": ["summary", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "outfits", "resolve_outfit", "current_outfit", "asset_check", "purchase_chains"],
-        "write": ["init", "create_collection", "update_collection", "archive_collection", "add_item", "generate_assets", "set_asset", "resolve_outfit", "wear_outfit", "return_outfit", "asset_check", "purchase_chain", "checkout", "return", "maintain", "outfit"],
-        "rule": "集合分类是预设但可增删改；新增物品必须按集合规则生成资产图任务，再供穿搭/使用检索。",
+        "read": ["summary", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "outfits", "outfit_presets", "aliases", "resolve_outfit", "current_outfit", "asset_check", "purchase_chains"],
+        "write": ["init", "create_collection", "update_collection", "archive_collection", "add_item", "add_alias", "create_outfit_preset", "update_outfit_preset", "archive_outfit_preset", "generate_assets", "set_asset", "resolve_outfit", "wear_outfit", "return_outfit", "asset_check", "purchase_chain", "checkout", "return", "maintain", "outfit"],
+        "rule": "集合分类是预设但可增删改；Collection 是道具集合，Item 是具体道具；Resolver V2 支持 exact name、alias、outfit preset、当前活动上下文优先级。",
     },
     "behavior": {
         "label": "行为映射 / Behavior Mapping",

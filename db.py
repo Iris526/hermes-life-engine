@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 43
+_SCHEMA_VERSION = 44
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -96,7 +96,7 @@ def migrate(conn: sqlite3.Connection) -> None:
 
     v0 -> v1 creates the original LifeEngine tables; later versions add
     receipts, truth sources, inventory, goals, autonomy, proactive, execution,
-    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets, and v0.12.8 behavior-to-truth-source mapping, and v0.12.8 outfit resolver/current outfit/action-chain closure.
+    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets, and v0.12.8 behavior-to-truth-source mapping, and v0.12.8 outfit resolver/current outfit/action-chain closure, and v0.12.9 resolver aliases/outfit presets/collection board.
     """
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
     _ensure_schema_migration_table(conn)
@@ -231,6 +231,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 43:
         _create_schema_v43(conn)
         _record_schema_migration(conn, 43, "outfit_resolver_and_action_chain_closure")
+    if current < 44:
+        _create_schema_v44(conn)
+        _record_schema_migration(conn, 44, "outfit_resolver_v2_aliases_presets_collection_board")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3313,5 +3316,65 @@ def _create_schema_v43(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_stale_event_cleanup_owner
           ON stale_event_cleanup_runs(owner_kind, owner_id, created_at DESC);
+        """
+    )
+
+
+def _create_schema_v44(conn: sqlite3.Connection) -> None:
+    """v0.12.9 outfit resolver V2: aliases, exact matching, presets, context priority, collection board."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS collection_item_aliases (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          item_id TEXT NOT NULL,
+          alias TEXT NOT NULL,
+          alias_norm TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT 'manual',
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY(item_id) REFERENCES collection_items(id) ON DELETE CASCADE
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_collection_alias_unique
+          ON collection_item_aliases(owner_kind, owner_id, item_id, alias_norm);
+        CREATE INDEX IF NOT EXISTS idx_collection_alias_lookup
+          ON collection_item_aliases(owner_kind, owner_id, alias_norm, status);
+
+        CREATE TABLE IF NOT EXISTS outfit_presets (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          name_norm TEXT NOT NULL,
+          aliases_json TEXT NOT NULL DEFAULT '[]',
+          occasion TEXT NOT NULL DEFAULT 'daily',
+          item_refs_json TEXT NOT NULL DEFAULT '{}',
+          context_priority_json TEXT NOT NULL DEFAULT '{}',
+          rules_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_outfit_presets_owner_name
+          ON outfit_presets(owner_kind, owner_id, name_norm, status);
+
+        CREATE TABLE IF NOT EXISTS outfit_resolver_runs (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          query_text TEXT,
+          occasion TEXT NOT NULL DEFAULT 'daily',
+          resolver_version TEXT NOT NULL DEFAULT 'v0.12.9',
+          match_strategy TEXT,
+          selected_json TEXT NOT NULL DEFAULT '{}',
+          score_json TEXT NOT NULL DEFAULT '{}',
+          context_json TEXT NOT NULL DEFAULT '{}',
+          outfit_resolution_id TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_outfit_resolver_runs_owner_time
+          ON outfit_resolver_runs(owner_kind, owner_id, created_at DESC);
         """
     )

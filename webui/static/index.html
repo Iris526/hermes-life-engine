@@ -13,7 +13,7 @@
         <div class="brand-seal">LE</div>
         <div>
           <h1>LifeEngine Observatory</h1>
-          <p>Agent 生活观察台 · WebUI v0.12.6</p>
+          <p>Agent 生活观察台 · WebUI v0.12.9</p>
         </div>
       </div>
       <div class="top-status">
@@ -32,6 +32,7 @@
       <button data-target="overview" class="active">总览</button>
       <button data-target="schedule">日程</button>
       <button data-target="review">Review</button>
+      <button data-target="collections">合集</button>
       <button data-target="events">事件</button>
       <button data-target="dreams">梦</button>
       <button data-target="trace">Trace</button>
@@ -125,6 +126,12 @@
             <button id="applySafeBtn" class="primary small">安全处理</button>
           </div>
           <div id="reviewList" class="feed readable"></div>
+        </section>
+
+
+        <section id="collections" class="view-section">
+          <div class="section-head"><div><h2>Collections / 柜子与抽屉</h2><p>Collection 是道具集合；Item 是集合里的具体道具。衣橱、鞋柜、武器柜都只是 collection。</p></div></div>
+          <div id="collectionBoard" class="collection-board"></div>
         </section>
 
         <section id="events" class="view-section">

@@ -74,7 +74,7 @@ class WebUIState:
 
 def create_app(life_dir: str | None = None) -> FastAPI:
     state = WebUIState(life_dir)
-    app = FastAPI(title="LifeEngine WebUI", version="0.12.6")
+    app = FastAPI(title="LifeEngine WebUI", version="0.12.9")
     app.state.lifeengine_webui = state
     app.add_middleware(
         CORSMiddleware,
@@ -94,7 +94,7 @@ def create_app(life_dir: str | None = None) -> FastAPI:
         try:
             reader = state.reader()
             meta = reader.meta()
-            return {"ok": True, "webui_version": "0.12.6", "meta": meta}
+            return {"ok": True, "webui_version": "0.12.9", "meta": meta}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 

@@ -1,9 +1,9 @@
-# LifeEngine Hermes Plugin v0.12.8
+# LifeEngine Hermes Plugin v0.12.9
 
 LifeEngine is an embedded, SQLite/sqlite-vec based Agent life runtime for Hermes. It gives an Agent its own Life Canon, resources, schedule, events, sleep, dreams, realtime state, autonomy, proactive intents, review inbox, traceable life journal, and a WebUI observatory.
 
-- Plugin version: `0.12.8`
-- DB schema version: `42`
+- Plugin version: `0.12.9`
+- DB schema version: `44`
 - sqlite-vec: required by LifeEngine runtime
 - Integration: Hermes directory plugin; no core-loop fork
 
@@ -101,7 +101,7 @@ v0.12.8 adds the concrete living layer: Canon consistency doctor, Guimingguan-st
 The current design document is bundled in the zip:
 
 ```text
-docs/lifeengine_total_design_v0_12_6.md
+docs/lifeengine_total_design_v0_12_9.md
 ```
 
 ## New in v0.12.8
@@ -137,7 +137,7 @@ New items are not allowed to appear only in prose. They enter a collection first
 The current design document is bundled as:
 
 ```text
-docs/lifeengine_total_design_v0_12_6.md
+docs/lifeengine_total_design_v0_12_9.md
 ```
 
 ## v0.12.8 Behavior Mapping
@@ -161,3 +161,22 @@ v0.12.8 adds operational closet/action-chain closure:
 - `life_schedule(action="cleanup_stale")`: safely close stale planned/scheduled items so autonomy is not blocked by old placeholder events.
 
 The rule is: dressing and visual generation must go through collection resolution first; missing or asset-incomplete items are explicit and never hallucinated.
+
+## v0.12.9 — Outfit Resolver V2 / Collection Board
+
+Collection means a cabinet/drawer/shelf/container. Item means the concrete object inside it.
+
+New resolver priority:
+1. outfit preset exact name
+2. outfit preset alias
+3. item exact name
+4. item alias
+5. current activity / weather / occasion context
+6. token heuristic fallback
+
+New collection actions:
+- life_collection(action="add_alias", item_id="...", alias="浅蓝那套")
+- life_collection(action="create_outfit_preset", name="浅蓝那套", item_refs={...})
+- life_collection(action="resolver_explain")
+
+WebUI now has a Collections board for wardrobe / shoe cabinet / sock drawer / accessories / vanity / custom cabinets.

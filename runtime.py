@@ -156,10 +156,16 @@ from .collections import (
     update_collection_item,
 )
 from .collection_flow import (
+    add_item_alias,
+    archive_outfit_preset,
     asset_completeness_for_item,
     check_outfit_assets,
+    create_outfit_preset,
     create_outfit_snapshot,
     get_current_outfit,
+    get_outfit_preset,
+    list_item_aliases,
+    list_outfit_presets,
     list_outfit_resolutions,
     list_outfit_snapshots,
     list_purchase_chains,
@@ -167,6 +173,7 @@ from .collection_flow import (
     resolve_outfit,
     return_current_outfit,
     render_current_outfit,
+    update_outfit_preset,
 )
 
 from .invariants import run_doctor as run_invariant_doctor
@@ -2917,6 +2924,26 @@ class LifeEngineRuntime:
         with transaction(self.conn):
             if action_l in {"resolve_outfit", "resolver", "resolve", "解析穿搭", "穿搭解析"}:
                 return resolve_outfit(self.conn, owner_kind, owner_id, query_text=payload.get("query_text") or payload.get("text") or payload.get("name") or payload.get("summary"), occasion=payload.get("occasion") or "daily", event_id=payload.get("event_id"), context=payload.get("context") or {}, source="life_collection_tool")
+            if action_l in {"resolver_explain", "resolve_explain", "resolver_rules"}:
+                return {"ok": True, "rendered": "Outfit Resolver V2 优先级：1) outfit preset exact/alias；2) item exact name；3) item alias；4) 当前活动/天气/场合上下文加权；5) token heuristic fallback。集合是 collection，具体物品是 item；一个 collection 可以是衣橱、鞋柜、武器柜等。"}
+            if action_l in {"add_alias", "alias_item"}:
+                alias = add_item_alias(self.conn, owner_kind, owner_id, item_id=payload["item_id"], alias=payload.get("alias") or payload.get("name") or payload.get("text"), source="life_collection_tool")
+                return {"ok": True, "alias": alias, "rendered": f"已添加物品别名：{alias.get('alias')}。"}
+            if action_l in {"aliases", "item_aliases"}:
+                aliases = list_item_aliases(self.conn, owner_kind, owner_id, item_id=payload.get("item_id"), alias=payload.get("alias"), limit=int(payload.get("limit", 100)))
+                return {"ok": True, "aliases": aliases, "rendered": "物品别名\n========\n" + ("\n".join([f"- {a.get('alias')} → {a.get('item_id')}" for a in aliases]) or "暂无。")}
+            if action_l in {"outfit_presets", "presets_outfit", "list_outfit_presets"}:
+                presets = list_outfit_presets(self.conn, owner_kind, owner_id, status=payload.get("status", "active"), limit=int(payload.get("limit", 100)))
+                return {"ok": True, "outfit_presets": presets, "rendered": "穿搭预设\n========\n" + ("\n".join([f"- {p.get('name')} · {p.get('occasion')} · alias={','.join(p.get('aliases') or [])}" for p in presets]) or "暂无。")}
+            if action_l in {"create_outfit_preset", "add_outfit_preset", "preset_outfit"}:
+                preset = create_outfit_preset(self.conn, owner_kind, owner_id, name=payload.get("name") or payload.get("preset_name") or "未命名穿搭预设", aliases=payload.get("aliases") or [], occasion=payload.get("occasion") or "daily", item_refs=payload.get("item_refs") or {}, context_priority=payload.get("context_priority") or {}, rules=payload.get("rules") or {}, source="life_collection_tool")
+                return {"ok": True, "outfit_preset": preset, "rendered": "已创建穿搭预设：" + preset.get("name", "")}
+            if action_l in {"update_outfit_preset", "edit_outfit_preset"}:
+                preset = update_outfit_preset(self.conn, owner_kind, owner_id, preset_id=payload["preset_id"], name=payload.get("name"), aliases=payload.get("aliases"), occasion=payload.get("occasion"), item_refs=payload.get("item_refs"), context_priority=payload.get("context_priority"), rules=payload.get("rules"), status=payload.get("status"), source="life_collection_tool")
+                return {"ok": True, "outfit_preset": preset, "rendered": "已更新穿搭预设：" + preset.get("name", "")}
+            if action_l in {"archive_outfit_preset", "delete_outfit_preset"}:
+                preset = archive_outfit_preset(self.conn, owner_kind, owner_id, preset_id=payload["preset_id"], source="life_collection_tool")
+                return {"ok": True, "outfit_preset": preset, "rendered": "已归档穿搭预设：" + preset.get("name", "")}
             if action_l in {"current_outfit", "current", "wearing", "当前穿着"}:
                 snap = get_current_outfit(self.conn, owner_kind, owner_id)
                 return {"ok": True, "current_outfit": snap, "rendered": render_current_outfit(snap)}

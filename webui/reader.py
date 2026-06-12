@@ -243,9 +243,21 @@ class LifeEngineReader:
                 ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, created_at DESC
                 LIMIT ?
             """, (owner_kind, owner_id, limit))
+            filtered = []
             for r in rows:
+                # Hide stale duplicate doctor warnings created by older WebUI/Doctor
+                # surfaces. Current Doctor health should be read from fresh review
+                # runs; these old rows otherwise keep cluttering the human inbox.
+                if (
+                    r.get("item_type") == "doctor_warning"
+                    and str(r.get("title") or "").startswith("Doctor: event_transition_coverage")
+                    and not r.get("source_table")
+                    and not r.get("source_id")
+                ):
+                    continue
                 r["action_hint"] = _safe_json(r.get("action_hint_json"), {})
-            return rows
+                filtered.append(r)
+            return filtered
 
     def delayed_replies(self, owner_kind: str, owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -290,17 +302,47 @@ class LifeEngineReader:
                     WHERE i.owner_kind=? AND i.owner_id=?
                     ORDER BY i.updated_at DESC LIMIT ?
                 """, (owner_kind, owner_id, limit))
+                alias_by_item = {}
+                if self._table_exists(conn, "collection_item_aliases"):
+                    for a in self._all(conn, "SELECT item_id, alias FROM collection_item_aliases WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY created_at", (owner_kind, owner_id)):
+                        alias_by_item.setdefault(a.get("item_id"), []).append(a.get("alias"))
+                asset_by_item = {}
+                if self._table_exists(conn, "collection_item_assets"):
+                    for a in self._all(conn, "SELECT item_id, status, asset_uri FROM collection_item_assets WHERE owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
+                        d = asset_by_item.setdefault(a.get("item_id"), {"total":0,"available":0,"pending":0})
+                        d["total"] += 1
+                        if a.get("status") == "available" and a.get("asset_uri"):
+                            d["available"] += 1
+                        else:
+                            d["pending"] += 1
                 for i in items:
                     for key in ["tags_json", "attributes_json", "material_spec_json", "care_spec_json", "asset_bundle_json", "usage_state_json"]:
                         if key in i:
                             i[key.replace("_json", "")] = _safe_json(i.get(key), [] if key == "tags_json" else {})
+                    i["aliases"] = alias_by_item.get(i.get("id"), [])
+                    i["asset_counts"] = asset_by_item.get(i.get("id"), {"total":0,"available":0,"pending":0})
+            # Build a collection board grouped by cabinet/drawer/shelf.
+            items_by_collection = {}
+            for i in items:
+                items_by_collection.setdefault(i.get("collection_id"), []).append(i)
+            board = []
+            for c in collections:
+                its = items_by_collection.get(c.get("id"), [])
+                board.append({"collection": c, "items": its, "item_count": len(its), "available_count": sum(1 for x in its if x.get("availability_state") == "available"), "needs_asset_count": sum(1 for x in its if (x.get("asset_counts") or {}).get("pending", 0) > 0)})
             outfits = []
             if self._table_exists(conn, "outfit_plans"):
                 outfits = self._all(conn, "SELECT * FROM outfit_plans WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT 20", (owner_kind, owner_id))
                 for o in outfits:
                     o["item_ids"] = _safe_json(o.get("item_ids_json"), [])
                     o["context"] = _safe_json(o.get("context_json"), {})
-            return {"collections": collections, "items": items, "outfits": outfits}
+            presets = []
+            if self._table_exists(conn, "outfit_presets"):
+                presets = self._all(conn, "SELECT * FROM outfit_presets WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY updated_at DESC LIMIT 100", (owner_kind, owner_id))
+                for p in presets:
+                    p["aliases"] = _safe_json(p.get("aliases_json"), [])
+                    p["item_refs"] = _safe_json(p.get("item_refs_json"), {})
+                    p["context_priority"] = _safe_json(p.get("context_priority_json"), {})
+            return {"collections": collections, "items": items, "board": board, "outfits": outfits, "outfit_presets": presets}
 
     def doctor_latest(self, owner_kind: str, owner_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:

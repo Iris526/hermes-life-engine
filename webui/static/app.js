@@ -77,6 +77,7 @@ function renderSnapshot(data){
   renderResources(data.resources || []);
   renderDreams(data.dreams || []);
   renderMessages(data.delayed_replies || [], data.proactive || {});
+  renderCollections(data.collections || {});
   renderTrace(data.trace || []);
 }
 function renderOwners(owners, current){
@@ -133,6 +134,20 @@ function renderReview(items){
   if(!items.length){$('reviewList').innerHTML='<div class="empty">没有需要人类处理的项目。Agent 会按当前策略自行处理低风险维护项。</div>';return;}
   $('reviewList').innerHTML = items.map((x,i)=>`<div class="feed-item severity-${esc(x.severity || 'info')}"><b>${i+1}. ${esc(x.title||'Review item')}</b><div>${esc(x.message||'')}</div><div class="badges"><span class="badge">${severityText(x.severity)}</span><span class="badge">${esc(x.item_type||'item')}</span>${x.action_hint?.tool?`<span class="badge">建议：${esc(x.action_hint.tool)}.${esc(x.action_hint.action)}</span>`:''}</div></div>`).join('');
 }
+function renderCollections(collections){
+  const board = collections.board || [];
+  const presets = collections.outfit_presets || [];
+  const el = $('collectionBoard');
+  if(!board.length){el.innerHTML='<div class="empty">还没有集合。可以先初始化衣橱/鞋柜/袜子/配饰/梳妆台，或创建自定义集合。</div>';return;}
+  const cards = board.map(b=>{
+    const c=b.collection||{}; const its=b.items||[];
+    const preview = its.slice(0,6).map(i=>`<div class="collection-item"><b>${esc(i.name||i.id)}</b><span>${esc(i.availability_state||'')} · ${esc(i.cleanliness_state||'')} · assets ${esc((i.asset_counts||{}).available||0)}/${esc((i.asset_counts||{}).total||0)}</span>${(i.aliases||[]).length?`<small>别名：${esc((i.aliases||[]).join('、'))}</small>`:''}</div>`).join('');
+    return `<section class="collection-card"><div class="collection-head"><h3>${esc(c.name||c.collection_type)}</h3><span>${esc(c.collection_type||'custom')}</span></div><div class="collection-stats"><b>${b.item_count||0}</b> 件 · 可用 ${b.available_count||0} · 待补资产 ${b.needs_asset_count||0}</div>${preview||'<div class="empty">暂无 item。</div>'}</section>`;
+  }).join('');
+  const presetHtml = presets.length ? `<section class="collection-card presets"><div class="collection-head"><h3>穿搭预设</h3><span>outfit presets</span></div>${presets.map(p=>`<div class="collection-item"><b>${esc(p.name)}</b><span>${esc(p.occasion||'daily')} · alias ${(p.aliases||[]).map(esc).join('、')}</span></div>`).join('')}</section>` : '';
+  el.innerHTML = cards + presetHtml;
+}
+
 function renderEvents(items){
   if(!items.length){$('eventList').innerHTML='<div class="empty">暂无近期事件。</div>';return;}
   $('eventList').innerHTML = items.slice(0,36).map((e,i)=>`<div class="feed-item clickable" data-event="${esc(e.id)}"><b>${i+1}. ${esc(e.title || e.id)}</b><div>${kindText(e.event_category || e.event_type)} · ${statusText(e.status)} · ${fmtDateTime(e.updated_at)}</div><div class="badges"><span class="badge">${esc(e.event_category || e.event_type || 'event')}</span><span class="badge status-${esc(e.status)}">${statusText(e.status)}</span></div></div>`).join('');
