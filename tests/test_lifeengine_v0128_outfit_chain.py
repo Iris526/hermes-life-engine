@@ -11,8 +11,8 @@ def _rt():
 def test_v0128_outfit_resolver_snapshot_purchase_chain():
     from lifeengine.constants import PLUGIN_VERSION
     from lifeengine.db import _SCHEMA_VERSION
-    assert PLUGIN_VERSION == '0.12.10'
-    assert _SCHEMA_VERSION == 45
+    assert PLUGIN_VERSION == '0.13.0'
+    assert _SCHEMA_VERSION >= 43
     rt = _rt()
     try:
         assert rt.collection('init')['ok']

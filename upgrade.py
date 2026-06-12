@@ -530,20 +530,36 @@ _ADVANCED_COMMAND_GROUPS = [
 ]
 
 
+def _plugin_root() -> Path:
+    packaged = _package_root() / "lifeengine"
+    if packaged.exists():
+        return packaged
+    return Path(__file__).resolve().parent
+
+
 def integration_check(conn: sqlite3.Connection, owner_kind: str, owner_id: str, *, include_details: bool = False) -> dict[str, Any]:
+    plugin_root = _plugin_root()
     checks = [
-        {"name": "plugin_yaml", "ok": (_package_root() / "lifeengine" / "plugin.yaml").exists()},
-        {"name": "register_entrypoint", "ok": (_package_root() / "lifeengine" / "__init__.py").exists()},
+        {"name": "plugin_yaml", "ok": (plugin_root / "plugin.yaml").exists()},
+        {"name": "register_entrypoint", "ok": (plugin_root / "__init__.py").exists()},
         {"name": "tool_surface", "ok": len(_LIFEENGINE_TOOL_SURFACE) >= 20, "tools": _LIFEENGINE_TOOL_SURFACE},
         {"name": "human_surface", "ok": len(_MINIMAL_HUMAN_COMMANDS) <= 12, "commands": _MINIMAL_HUMAN_COMMANDS},
         {"name": "sqlite_vec", "ok": bool(_sqlite_vec_info(conn).get("ok"))},
     ]
     ok = all(c.get("ok") for c in checks)
     run_id = new_id("integration")
-    conn.execute(
-        "INSERT INTO integration_test_runs(id, owner_kind, owner_id, status, checks_json, include_details) VALUES(?,?,?,?,?,?)",
-        (run_id, owner_kind, owner_id, "ok" if ok else "failed", dumps(checks if include_details else [{"name": c["name"], "ok": c["ok"]} for c in checks]), 1 if include_details else 0),
-    )
+    stored_checks = checks if include_details else [{"name": c["name"], "ok": c["ok"]} for c in checks]
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(integration_test_runs)").fetchall()}
+    if "include_details" in cols:
+        conn.execute(
+            "INSERT INTO integration_test_runs(id, owner_kind, owner_id, status, checks_json, include_details) VALUES(?,?,?,?,?,?)",
+            (run_id, owner_kind, owner_id, "ok" if ok else "failed", dumps(stored_checks), 1 if include_details else 0),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO integration_test_runs(id, owner_kind, owner_id, test_type, status, checks_json, output_json) VALUES(?,?,?,?,?,?,?)",
+            (run_id, owner_kind, owner_id, "integration_check", "ok" if ok else "failed", dumps(stored_checks), dumps({"include_details": include_details})),
+        )
     out = {"ok": ok, "status": "ok" if ok else "failed", "integration_test_run_id": run_id, "checks": checks if include_details else [{"name": c["name"], "ok": c["ok"]} for c in checks]}
     append_audit(conn, owner_kind, owner_id, "life_integration_check", "info" if ok else "error", f"Integration check status={out['status']}", out)
     return out

@@ -3,177 +3,144 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LifeEngine Observatory</title>
+  <title>LifeEngine RPG Observatory</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <div id="app" class="app-shell">
-    <header class="topbar">
-      <div class="brand">
-        <div class="brand-seal">LE</div>
-        <div>
-          <h1>LifeEngine Observatory</h1>
-          <p>Agent 生活观察台 · WebUI v0.12.10</p>
-        </div>
-      </div>
-      <div class="top-status">
-        <span id="liveDot" class="live-dot idle"></span>
-        <span id="liveText">连接中…</span>
-      </div>
-      <div class="connect-bar">
-        <input id="pathInput" placeholder="LifeEngine 目录或 lifeengine.db 路径" />
-        <button id="selectBtn" class="primary">连接</button>
-        <select id="ownerSelect" title="选择 Agent / Owner"></select>
-        <button id="refreshBtn" class="ghost">刷新</button>
-      </div>
-    </header>
-
-    <nav class="view-tabs" aria-label="WebUI views">
-      <button data-target="overview" class="active">总览</button>
-      <button data-target="schedule">日程</button>
-      <button data-target="review">Review</button>
-      <button data-target="collections">合集</button>
-      <button data-target="events">事件</button>
-      <button data-target="dreams">梦</button>
-      <button data-target="trace">Trace</button>
-    </nav>
-
-    <main class="main-grid">
-      <aside class="left-rail">
-        <section class="card identity-card">
-          <div class="portrait-frame">
-            <img class="portrait-img" src="/static/assets/agent-cover.jpg" alt="Agent reference portrait" />
-            <div class="portrait-shade"></div>
-            <div class="portrait-caption">默认形象来源</div>
-          </div>
-          <div class="identity-meta">
-            <span class="label">Owner</span>
-            <b id="ownerLabel">--</b>
-          </div>
-        </section>
-
-        <section class="card sprite-card">
-          <div class="sprite-scene" id="spriteScene">
-            <div class="scene-stars"></div>
-            <div class="pixel-platform"></div>
-            <img id="avatarSprite" class="pixel-agent" src="/static/assets/sprite-idle.png" alt="pixel agent" />
-            <div id="stateBadge" class="state-badge">待机</div>
-          </div>
-          <div class="speech-bubble" id="avatarBubble">正在读取 LifeEngine 状态…</div>
-          <div class="state-row">
-            <div><span>实时状态</span><b id="stateLabel">--</b></div>
-            <div><span>模式</span><b id="modeLabel">--</b></div>
-          </div>
-          <div class="operator-row">
-            <button id="callBtn">Call</button>
-            <button id="tickBtn">Tick</button>
-            <button id="recoveryBtn">补觉</button>
-          </div>
-        </section>
-      </aside>
-
-      <section class="center-stage">
-        <section id="overview" class="view-section active">
-          <div class="section-head">
-            <div>
-              <h2>实时总览</h2>
-              <p id="updatedAt">--</p>
-            </div>
-            <span id="schemaBadge" class="pill">schema --</span>
-          </div>
-          <div class="now-card card" id="currentEvent">--</div>
-          <div class="metric-grid" id="meters"></div>
-          <div class="quick-grid">
-            <div class="quick"><span>睡眠债</span><b id="sleepDebt">--</b></div>
-            <div class="quick"><span>恢复压力</span><b id="recoveryPressure">--</b></div>
-            <div class="quick"><span>延迟回复</span><b id="delayedCount">--</b></div>
-            <div class="quick"><span>梦境</span><b id="dreamCount">--</b></div>
-          </div>
-          <div class="two-col">
-            <section class="card compact-card">
-              <div class="mini-head"><h3>今天日程</h3><button class="ghost tiny" data-jump="schedule">打开日程</button></div>
-              <div id="todayPreview" class="mini-list"></div>
-            </section>
-            <section class="card compact-card">
-              <div class="mini-head"><h3>待处理 / 建议</h3><button class="ghost tiny" data-jump="review">打开 Review</button></div>
-              <div id="reviewPreview" class="mini-list"></div>
-            </section>
-          </div>
-        </section>
-
-        <section id="schedule" class="view-section">
-          <div class="section-head">
-            <div>
-              <h2>Schedule Timeline</h2>
-              <p id="scheduleLabel">默认查看今天；可切换明天、本周或指定日期。</p>
-            </div>
-            <div class="period-controls">
-              <button data-period="today" class="active">今天</button>
-              <button data-period="tomorrow">明天</button>
-              <button data-period="week">本周</button>
-              <input id="dateInput" type="date" />
-            </div>
-          </div>
-          <div id="timeline" class="timeline"></div>
-        </section>
-
-        <section id="review" class="view-section">
-          <div class="section-head">
-            <div>
-              <h2>Human Review</h2>
-              <p>只显示需要人类看得懂的项目；Agent 自己的低风险维护默认自己处理。</p>
-            </div>
-            <button id="applySafeBtn" class="primary small">安全处理</button>
-          </div>
-          <div id="reviewList" class="feed readable"></div>
-        </section>
-
-
-        <section id="collections" class="view-section">
-          <div class="section-head"><div><h2>Collections / 柜子与抽屉</h2><p>Collection 是道具集合；Item 是集合里的具体道具。衣橱、鞋柜、武器柜都只是 collection。</p></div></div>
-          <div id="collectionBoard" class="collection-board"></div>
-        </section>
-
-        <section id="events" class="view-section">
-          <div class="section-head"><div><h2>近期事件</h2><p>点击查看 Event V2 生命周期、日程块、结果、资源和 trace。</p></div></div>
-          <div id="eventList" class="feed readable"></div>
-        </section>
-
-        <section id="dreams" class="view-section">
-          <div class="section-head"><div><h2>梦 / 记忆泡泡</h2><p>梦是 dream_symbolic，不会污染现实事实。</p></div></div>
-          <div id="dreamsList" class="dream-grid"></div>
-        </section>
-
-        <section id="trace" class="view-section">
-          <div class="section-head"><div><h2>Trace / 最近流水</h2><p>点击一条流水查看解释。默认展示人类摘要，原始 JSON 收在折叠区。</p></div></div>
-          <div id="traceList" class="trace-list"></div>
-        </section>
-      </section>
-
-      <aside class="right-rail">
-        <section class="card side-card">
-          <div class="mini-head"><h3>资源</h3></div>
-          <div id="resources" class="resource-list"></div>
-        </section>
-        <section class="card side-card">
-          <div class="mini-head"><h3>回复 / 主动意图</h3></div>
-          <div id="messages" class="feed compact"></div>
-        </section>
-        <section class="card side-card">
-          <div class="mini-head"><h3>目录</h3></div>
-          <div id="dbInfo" class="db-info">--</div>
-        </section>
-      </aside>
-    </main>
+  <div id="boot-screen" class="boot-screen">
+    <div class="boot-card">
+      <div class="boot-rune">◆</div>
+      <h1>LifeEngine Observatory</h1>
+      <p>读取 Agent 的生活运行时，像 RPG 一样观察一天的状态。</p>
+      <div class="boot-line"><span></span></div>
+    </div>
   </div>
 
-  <aside class="drawer" id="drawer" aria-hidden="true">
-    <div class="drawer-head">
-      <div><span id="drawerKind" class="badge">detail</span><h2 id="drawerTitle">Detail</h2></div>
-      <button id="drawerClose" class="ghost">关闭</button>
-    </div>
-    <div id="drawerBody" class="drawer-body"></div>
-  </aside>
+  <main id="app" class="game-shell">
+    <section class="top-hud">
+      <div class="brand-block">
+        <div class="sigil">LE</div>
+        <div>
+          <div class="eyebrow">Hermes Life Engine</div>
+          <h1>LifeEngine 观测台</h1>
+        </div>
+      </div>
+      <div class="path-picker">
+        <input id="life-path" placeholder="选择 LifeEngine 目录或 lifeengine.db" />
+        <button id="select-path" class="btn primary">载入</button>
+      </div>
+      <div class="live-pill" id="live-pill">connecting…</div>
+    </section>
+
+    <section class="rpg-layout">
+      <aside class="left-panel frame-panel">
+        <div class="panel-title">角色状态</div>
+        <div class="portrait-card">
+          <img src="/static/assets/agent-cover.jpg" class="portrait" alt="Agent reference" />
+          <div class="portrait-mask"></div>
+          <div class="portrait-name" id="agent-name">Agent</div>
+        </div>
+        <div class="stat-stack" id="stat-stack"></div>
+        <div class="quick-actions">
+          <button class="btn ghost" data-action="tick">心跳</button>
+          <button class="btn ghost danger" data-action="call">Call</button>
+          <button class="btn ghost" data-action="sleep_recovery_plan">补觉</button>
+        </div>
+        <div class="mini-log" id="mini-log"></div>
+      </aside>
+
+      <section class="main-stage frame-panel">
+        <div class="scene-header">
+          <div>
+            <div class="eyebrow">当前场景</div>
+            <h2 id="scene-title">读取中…</h2>
+          </div>
+          <div class="scene-tags" id="scene-tags"></div>
+        </div>
+        <div class="stage-viewport" id="stage-viewport">
+          <div class="parallax moon"></div>
+          <div class="parallax shrine"></div>
+          <div class="floor-grid"></div>
+          <div class="avatar-aura"></div>
+          <img id="agent-sprite" class="agent-sprite idle" src="/static/assets/sprite-idle.png" alt="Agent sprite" />
+          <div id="speech-bubble" class="speech-bubble">……</div>
+        </div>
+        <div class="stage-status-row" id="stage-status-row"></div>
+      </section>
+
+      <aside class="right-panel frame-panel">
+        <div class="panel-title">今日任务 / 日程</div>
+        <div class="period-tabs">
+          <button class="period active" data-period="today">今天</button>
+          <button class="period" data-period="tomorrow">明天</button>
+          <button class="period" data-period="week">本周</button>
+          <input id="date-input" type="date" />
+        </div>
+        <div class="quest-list" id="schedule-list"></div>
+      </aside>
+    </section>
+
+    <section class="bottom-bar frame-panel">
+      <button class="hotkey active" data-tab="bag">背包/合集</button>
+      <button class="hotkey" data-tab="closet">衣橱</button>
+      <button class="hotkey" data-tab="review">Review</button>
+      <button class="hotkey" data-tab="dream">梦</button>
+      <button class="hotkey" data-tab="workspace">Hermes 工作区</button>
+      <button class="hotkey" data-tab="settings">设定</button>
+      <button class="hotkey" data-tab="trace">Trace</button>
+    </section>
+
+    <section class="game-windows">
+      <article id="window-bag" class="game-window active">
+        <div class="window-title">物品合集</div>
+        <div id="collection-board" class="collection-grid"></div>
+      </article>
+
+      <article id="window-closet" class="game-window">
+        <div class="window-title">衣橱 / 鞋柜 / 梳妆台</div>
+        <div id="closet-board" class="inventory-list"></div>
+      </article>
+
+      <article id="window-review" class="game-window">
+        <div class="window-title">Review Inbox</div>
+        <div id="review-list" class="review-list"></div>
+      </article>
+
+      <article id="window-dream" class="game-window">
+        <div class="window-title">梦境记录</div>
+        <div id="dream-list" class="dream-list"></div>
+      </article>
+
+      <article id="window-workspace" class="game-window">
+        <div class="window-title">Hermes 工作区 / Agent 文档</div>
+        <div class="workspace-layout">
+          <div id="workspace-list" class="workspace-list"></div>
+          <pre id="workspace-view" class="workspace-view">选择一个 .md 文件查看。</pre>
+        </div>
+      </article>
+
+      <article id="window-settings" class="game-window">
+        <div class="window-title">LifeEngine 设定面板</div>
+        <div id="settings-panel" class="settings-panel"></div>
+      </article>
+
+      <article id="window-trace" class="game-window">
+        <div class="window-title">Trace / Journal</div>
+        <div id="trace-list" class="trace-list"></div>
+      </article>
+    </section>
+
+    <aside id="drawer" class="drawer">
+      <div class="drawer-head">
+        <div>
+          <div class="eyebrow" id="drawer-kind">DETAIL</div>
+          <h2 id="drawer-title">详情</h2>
+        </div>
+        <button id="drawer-close" class="btn ghost">关闭</button>
+      </div>
+      <div id="drawer-body" class="drawer-body"></div>
+    </aside>
+  </main>
 
   <script src="/static/app.js"></script>
 </body>

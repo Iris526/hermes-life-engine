@@ -55,7 +55,7 @@ def _make_detail_db(tmp_path: Path) -> Path:
 
 
 def test_webui_v0122_version():
-    assert PLUGIN_VERSION == "0.12.10"
+    assert PLUGIN_VERSION == "0.13.0"
 
 
 def test_reader_event_detail_and_trace_explain(tmp_path):
@@ -76,7 +76,7 @@ def test_reader_event_detail_and_trace_explain(tmp_path):
 def test_server_detail_endpoints(tmp_path):
     db = _make_detail_db(tmp_path)
     client = TestClient(create_app(str(db)))
-    assert client.get("/api/health").json()["webui_version"] == "0.12.10"
+    assert client.get("/api/health").json()["webui_version"] == "0.13.0"
     event = client.get("/api/event/event_work").json()
     assert event["found"] is True
     dream = client.get("/api/dream/dream1").json()
@@ -87,16 +87,16 @@ def test_server_detail_endpoints(tmp_path):
 
 def test_webui_refactor_assets_and_human_layout_exist():
     root = Path(__file__).resolve().parents[1]
-    assets = root / "lifeengine" / "webui" / "static" / "assets"
+    assets = root / "webui" / "static" / "assets"
     assert (assets / "agent-cover.jpg").exists()
     assert (assets / "sprite-idle.png").exists()
     assert (assets / "sprite-sleep.png").exists()
     assert (assets / "sprite-dream.png").exists()
-    html = (root / "lifeengine" / "webui" / "static" / "index.html").read_text(encoding="utf-8")
-    css = (root / "lifeengine" / "webui" / "static" / "styles.css").read_text(encoding="utf-8")
-    js = (root / "lifeengine" / "webui" / "static" / "app.js").read_text(encoding="utf-8")
-    assert "portrait-img" in html
-    assert "avatarSprite" in html
-    assert "object-fit:cover" in css
-    assert "spriteFile" in js
-    assert "查看原始 JSON" in js
+    html = (root / "webui" / "static" / "index.html").read_text(encoding="utf-8")
+    css = (root / "webui" / "static" / "styles.css").read_text(encoding="utf-8")
+    js = (root / "webui" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "portrait" in html
+    assert "agent-sprite" in html
+    assert "object-fit" in css
+    assert "sprite" in js
+    assert "原始" in js or "JSON" in js

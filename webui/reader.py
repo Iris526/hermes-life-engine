@@ -522,6 +522,104 @@ class LifeEngineReader:
                     out.update({"found": True, "references": refs})
             return out
 
+
+    def workspace_roots(self) -> list[dict[str, Any]]:
+        """Return safe workspace roots inferred from the selected LifeEngine DB.
+
+        The WebUI only exposes text/markdown files through explicit read APIs.  It
+        does not recursively dump arbitrary workspaces into the live snapshot.
+        """
+        roots: list[Path] = []
+        hermes_home = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser().resolve()
+        roots.append(hermes_home)
+        life_dir = self.selection.life_dir.resolve()
+        if life_dir.name == "lifeengine":
+            roots.append(life_dir.parent)
+        roots.append(life_dir)
+        try:
+            roots.append(Path.cwd().resolve())
+        except Exception:
+            pass
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for r in roots:
+            try:
+                rr = r.resolve()
+            except Exception:
+                continue
+            key = str(rr)
+            if key in seen or not rr.exists() or not rr.is_dir():
+                continue
+            seen.add(key)
+            out.append({"label": "Hermes Profile" if rr == hermes_home else rr.name, "path": key})
+        return out
+
+    def workspace_docs(self, limit: int = 80, include_content: bool = False) -> dict[str, Any]:
+        """List markdown workspace files for the game UI library panel."""
+        ignore_dirs = {".git", "node_modules", "__pycache__", ".pytest_cache", ".venv", "venv", "site-packages"}
+        wanted_names = {"SOUL.md", "AGENT.md", "AGENTS.md", "agent.md", "agents.md", "README.md", "readme.md"}
+        docs: list[dict[str, Any]] = []
+        for root_info in self.workspace_roots():
+            root = Path(root_info["path"])
+            candidates: list[Path] = []
+            try:
+                for child in sorted(root.iterdir()):
+                    if child.name in ignore_dirs:
+                        continue
+                    if child.is_file() and (child.suffix.lower() == ".md" or child.name in wanted_names):
+                        candidates.append(child)
+                    elif child.is_dir() and child.name not in ignore_dirs:
+                        # One shallow level is enough for agent docs without turning
+                        # the WebUI into an accidental filesystem crawler.
+                        for sub in sorted(child.iterdir()):
+                            if sub.is_file() and (sub.suffix.lower() == ".md" or sub.name in wanted_names):
+                                candidates.append(sub)
+            except Exception:
+                continue
+            for f in candidates:
+                try:
+                    st = f.stat()
+                    rel = str(f.relative_to(root))
+                    item = {
+                        "root_label": root_info["label"],
+                        "root_path": str(root),
+                        "relative_path": rel,
+                        "path": str(f.resolve()),
+                        "name": f.name,
+                        "size_bytes": st.st_size,
+                        "modified_at": _dt.datetime.fromtimestamp(st.st_mtime).isoformat(),
+                    }
+                    if include_content and st.st_size <= 120_000:
+                        text = f.read_text(encoding="utf-8", errors="replace")
+                        item["content"] = text[:60000]
+                    docs.append(item)
+                    if len(docs) >= limit:
+                        return {"roots": self.workspace_roots(), "docs": docs}
+                except Exception:
+                    continue
+        return {"roots": self.workspace_roots(), "docs": docs}
+
+    def workspace_file(self, path: str) -> dict[str, Any]:
+        """Read one safe text file from a known workspace root."""
+        requested = Path(path).expanduser().resolve()
+        allowed_suffixes = {".md", ".txt", ".yaml", ".yml", ".json", ".toml", ".ini"}
+        roots = [Path(r["path"]).resolve() for r in self.workspace_roots()]
+        if not any(str(requested).startswith(str(root) + os.sep) or requested == root for root in roots):
+            raise PermissionError("文件不在已选择的 Hermes/LifeEngine 工作区内。")
+        if requested.suffix.lower() not in allowed_suffixes:
+            raise PermissionError("WebUI 只读取 markdown/text/config 类文本文件。")
+        st = requested.stat()
+        if st.st_size > 240_000:
+            raise ValueError("文件过大，WebUI 只预览 240KB 以下文本。")
+        text = requested.read_text(encoding="utf-8", errors="replace")
+        return {
+            "path": str(requested),
+            "name": requested.name,
+            "size_bytes": st.st_size,
+            "modified_at": _dt.datetime.fromtimestamp(st.st_mtime).isoformat(),
+            "content": text,
+        }
+
     def snapshot(self, owner_kind: str, owner_id: str, period: str = "today", date: str | None = None) -> dict[str, Any]:
         state = self.realtime_state(owner_kind, owner_id)
         current = self.current_event(owner_kind, owner_id, state)
@@ -534,6 +632,7 @@ class LifeEngineReader:
         pro = self.proactive(owner_kind, owner_id, limit=10)
         collections = self.collections(owner_kind, owner_id, limit=50)
         sprite = map_avatar_state(state, current, sleep_day, review, delayed)
+        workspace = self.workspace_docs(limit=20, include_content=False)
         payload = {
             "meta": self.meta(),
             "owners": self.owners(),
@@ -549,6 +648,7 @@ class LifeEngineReader:
             "delayed_replies": delayed,
             "proactive": pro,
             "collections": collections,
+            "workspace": workspace,
             "doctor": self.doctor_latest(owner_kind, owner_id),
             "recent_events": self.events(owner_kind, owner_id, limit=30),
             "trace": self.trace_latest(limit=15),

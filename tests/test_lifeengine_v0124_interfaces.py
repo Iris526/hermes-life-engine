@@ -13,7 +13,7 @@ def hermes_home(monkeypatch):
 
 
 def test_v0124_version_and_interface_catalog():
-    assert PLUGIN_VERSION == "0.12.10"
+    assert PLUGIN_VERSION == "0.13.0"
     rt = LifeEngineRuntime()
     try:
         out = rt.interface("catalog")

@@ -74,7 +74,7 @@ class WebUIState:
 
 def create_app(life_dir: str | None = None) -> FastAPI:
     state = WebUIState(life_dir)
-    app = FastAPI(title="LifeEngine WebUI", version="0.12.10")
+    app = FastAPI(title="LifeEngine WebUI", version="0.13.0")
     app.state.lifeengine_webui = state
     app.add_middleware(
         CORSMiddleware,
@@ -94,7 +94,7 @@ def create_app(life_dir: str | None = None) -> FastAPI:
         try:
             reader = state.reader()
             meta = reader.meta()
-            return {"ok": True, "webui_version": "0.12.10", "meta": meta}
+            return {"ok": True, "webui_version": "0.13.0", "meta": meta}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -164,6 +164,17 @@ def create_app(life_dir: str | None = None) -> FastAPI:
     @app.get("/api/trace/latest")
     def trace_latest(limit: int = 20) -> dict[str, Any]:
         return {"items": state.reader().trace_latest(limit=limit)}
+
+    @app.get("/api/workspace/docs")
+    def workspace_docs(include_content: bool = False, limit: int = 80) -> dict[str, Any]:
+        return state.reader().workspace_docs(limit=limit, include_content=include_content)
+
+    @app.get("/api/workspace/file")
+    def workspace_file(path: str = Query(...)) -> dict[str, Any]:
+        try:
+            return state.reader().workspace_file(path)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @app.post("/api/action")
     def action(req: ActionRequest) -> dict[str, Any]:

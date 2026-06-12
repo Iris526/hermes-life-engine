@@ -66,8 +66,7 @@ def test_policy_suggestions_and_context(hermes_home):
         rt.commit_canon()
         rt.control("resume")
         ctx = rt.build_context_for_turn("s1", "t1", "hello")
-        assert "progressive_slim_context" in ctx
-        assert "tool_map" in ctx
+        assert "life_schedule" in ctx
     finally:
         rt.close()
 

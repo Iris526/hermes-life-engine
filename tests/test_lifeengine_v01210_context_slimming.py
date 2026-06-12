@@ -9,7 +9,7 @@ def test_v01210_schema_and_context_policy(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     rt = LifeEngineRuntime()
     try:
-        assert PLUGIN_VERSION == "0.12.10"
+        assert PLUGIN_VERSION == "0.13.0"
         assert _SCHEMA_VERSION == 45
         assert rt.conn.execute("PRAGMA user_version").fetchone()[0] == 45
         row = rt.conn.execute("SELECT name FROM sqlite_master WHERE name='prompt_context_runs'").fetchone()
@@ -43,7 +43,7 @@ def test_context_mode_micro(tmp_path, monkeypatch):
     rt = LifeEngineRuntime()
     try:
         rt.context("set", mode="micro", budget_chars=2400)
-        rt.setup("v0.12.10 context micro test agent")
+        rt.setup("v0.13.0 context micro test agent")
         rt.commit_canon()
         rt.control("resume")
         ctx = rt.build_context_for_turn("s1", "t2", "帮我看看衣柜和穿搭")
