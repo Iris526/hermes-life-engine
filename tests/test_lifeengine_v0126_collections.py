@@ -16,8 +16,8 @@ def hermes_home(monkeypatch):
 
 
 def test_version_schema_and_collection_tables():
-    assert PLUGIN_VERSION == "0.12.9"
-    assert _SCHEMA_VERSION == 44
+    assert PLUGIN_VERSION == "0.12.10"
+    assert _SCHEMA_VERSION == 45
     rt = LifeEngineRuntime()
     try:
         tables = {r[0] for r in rt.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

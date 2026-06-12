@@ -22,6 +22,12 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_interface.add_argument("view_or_intent", nargs="?")
     p_interface.add_argument("--payload", default="{}", help="JSON payload for interface action")
 
+    p_context = sub.add_parser("context", help="Prompt/context slimming policy and injection history")
+    p_context.add_argument("action", nargs="?", default="policy", choices=["policy", "summary", "explain", "runs", "history", "set", "mode"])
+    p_context.add_argument("mode", nargs="?", default=None)
+    p_context.add_argument("budget_chars", nargs="?", type=int, default=None)
+    p_context.add_argument("--limit", type=int, default=20)
+
     p_living = sub.add_parser("living", help="Concrete living layer: rhythm, Canon consistency, inventory presets, paper notes")
     p_living.add_argument("action", nargs="?", default="summary", choices=["summary", "consistency", "init_inventory", "day_rhythm", "decompose_abstract", "paper_notes", "create_note", "diary_draft"])
     p_living.add_argument("text", nargs="*", help="Optional note text or additional args")
@@ -410,6 +416,13 @@ def handle_cli(args) -> None:
             if iaction == "write" and getattr(args, "view_or_intent", None):
                 payload["intent"] = args.view_or_intent
             print(format_result(rt.interface(iaction, **payload)))
+        elif action == "context":
+            payload = {"limit": getattr(args, "limit", 20)}
+            if getattr(args, "mode", None):
+                payload["mode"] = args.mode
+            if getattr(args, "budget_chars", None):
+                payload["budget_chars"] = args.budget_chars
+            print(format_result(rt.context(args.action, **payload)))
         elif not action or action == "status":
             print(format_result(rt.status()))
         elif action == "schedule":
@@ -875,6 +888,7 @@ def _simple_help() -> str:
         "  /life policy         查看睡眠/回复/梦分享策略\n"
         "  /life review         人类可读待办/建议列表\n"
         "  /life behavior       查看/设置行为映射（内部真相源不对用户暴露）\n"
+        "  /life context        查看上下文瘦身策略（渐进式披露）\n"
         "  /life closet         查看衣橱/鞋柜/袜子/配饰/梳妆台\n"
         "  /life webui          启动 WebUI 观察台\n"
         "  /life doctor         健康检查\n"
@@ -939,6 +953,18 @@ def slash_life(raw_args: str) -> str:
             if action == "add_source" and len(rest) > 2:
                 payload["name"] = " ".join(rest[2:])
             return format_result(rt.behavior(action, **payload))
+
+        if cmd in {"context", "上下文", "prompt", "提示词"}:
+            action = rest[0] if rest else "policy"
+            payload = {}
+            if action in {"set", "mode"}:
+                if len(rest) > 1:
+                    payload["mode"] = rest[1]
+                if len(rest) > 2 and rest[2].isdigit():
+                    payload["budget_chars"] = int(rest[2])
+            if action in {"runs", "history"} and len(rest) > 1 and rest[1].isdigit():
+                payload["limit"] = int(rest[1])
+            return format_result(rt.context(action, **payload))
 
         if cmd in {"closet", "衣橱", "衣柜", "鞋柜", "袜子", "配饰", "梳妆台"}:
             action = rest[0] if rest else "summary"

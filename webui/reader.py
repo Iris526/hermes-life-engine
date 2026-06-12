@@ -243,21 +243,20 @@ class LifeEngineReader:
                 ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, created_at DESC
                 LIMIT ?
             """, (owner_kind, owner_id, limit))
-            filtered = []
             for r in rows:
-                # Hide stale duplicate doctor warnings created by older WebUI/Doctor
-                # surfaces. Current Doctor health should be read from fresh review
-                # runs; these old rows otherwise keep cluttering the human inbox.
-                if (
-                    r.get("item_type") == "doctor_warning"
-                    and str(r.get("title") or "").startswith("Doctor: event_transition_coverage")
-                    and not r.get("source_table")
-                    and not r.get("source_id")
-                ):
-                    continue
                 r["action_hint"] = _safe_json(r.get("action_hint_json"), {})
-                filtered.append(r)
-            return filtered
+            # v0.12.1+ WebUI UX: stale duplicate Doctor transition warnings are
+            # internal maintenance noise once the Observatory can explain events
+            # directly. Keep them out of the human Review Inbox surface; doctor
+            # details remain available through doctor/trace endpoints.
+            rows = [
+                r for r in rows
+                if not (
+                    str(r.get("item_type") or "") == "doctor_warning"
+                    and str(r.get("title") or "").strip() == "Doctor: event_transition_coverage"
+                )
+            ]
+            return rows
 
     def delayed_replies(self, owner_kind: str, owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
         with self._connect() as conn:

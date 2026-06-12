@@ -940,3 +940,24 @@ LIFE_BEHAVIOR = {
         "required": []
     }
 }
+
+
+LIFE_CONTEXT = {
+    "name": "life_context",
+    "description": (
+        "Inspect and tune LifeEngine prompt/context slimming. Read-only by default. "
+        "Use this to see progressive-disclosure policy and recent context injection runs. "
+        "Do not use prompts as a state guarantee; use LifeOps and domain tools for durable facts."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            **OWNER_PROPS,
+            "action": {"type": "string", "description": "policy/summary/explain/runs/set."},
+            "mode": {"type": "string", "description": "micro/slim/balanced/debug for action=set."},
+            "budget_chars": {"type": "integer", "description": "Optional character budget for injected context."},
+            "limit": {"type": "integer"},
+        },
+        "required": [],
+    },
+}

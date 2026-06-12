@@ -286,6 +286,7 @@ from .trace import Trace, append_audit, append_journal, new_id, verify_journal_h
 
 from .schedule_view import list_schedule as list_human_schedule, list_unscheduled_events, explain_schedule_semantics, _tz_from_canon
 from .settings_check import check_required_settings, latest_required_settings_check, required_settings_spec, default_setting_suggestions
+from .context_policy import render_progressive_context, record_context_injection, list_context_runs, render_context_policy_explanation
 
 from .truth_sources import (
     list_truth_sources,
@@ -3138,12 +3139,70 @@ class LifeEngineRuntime:
                 required = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False) if owner_kind == "agent" else {"ok": True}
                 today_schedule = list_human_schedule(self.conn, owner_kind, owner_id, period="today", tz_name=_tz_from_canon(canon), limit=20) if owner_kind == "agent" else {"items": []}
                 behavior_mappings = list_behavior_mappings(self.conn, owner_kind, owner_id, include_sources=True, limit=5) if owner_kind == "agent" else []
-                out = _render_life_context(control, canon, events, resources, memories, pending, scope, truth_sources, behavior_mappings=behavior_mappings, inventory=inventory, confirmations=confirmations, goals=goals, arcs=arcs, autonomy=autonomy, proactive_outbox=proactive_outbox if owner_kind == "agent" else [], proactive_states=proactive_states if owner_kind == "agent" else [], execution=execution, serendipity=serendipity, sleep=sleep, reply_gate=reply_gate, dreams=dreams, srd_policy=srd_policy, final_gate_feedback=final_gate_feedback, required_settings=required, today_schedule=today_schedule, platform=platform)
-                trace.end(output_obj={"mode": control["engine_state"], "memories": len(memories), "events": len(events)})
+                context_data = {
+                    "owner_scope": scope.__dict__,
+                    "engine_state": control["engine_state"],
+                    "canon_version": control.get("active_canon_version"),
+                    "module_gates": control.get("module_gates"),
+                    "canon_brief": {"identity": (canon or {}).get("identity"), "worldview": (canon or {}).get("worldview"), "truth_sources": (canon or {}).get("truth_sources")},
+                    "realtime": get_realtime_state(self.conn, owner_kind, owner_id),
+                    "resources": [{"resource_key": a["resource_key"], "current_value": a["current_value"], "unit": a.get("unit"), "state": a.get("state")} for a in (resources.get("accounts", [])[:20])],
+                    "events": [{"id": e["id"], "title": e["title"], "status": e["status"], "event_category": e.get("event_category"), "event_type": e.get("event_type"), "planned_start": e.get("planned_start"), "planned_end": e.get("planned_end"), "progress": e.get("progress")} for e in events[:8]],
+                    "memories": [{"id": m["id"], "type": m["memory_type"], "content": m["content"][:220]} for m in memories[:5]],
+                    "pending_proactive": pending,
+                    "truth_sources": truth_sources or {},
+                    "behavior_mappings": [{"id": m.get("id"), "behavior_key": m.get("behavior_key"), "public_label": m.get("public_label") or m.get("narrative_label") or m.get("display_name"), "source_count": len(m.get("sources") or [])} for m in (behavior_mappings or [])[:5]],
+                    "inventory": [{"id": i["id"], "name": i["name"], "category": i["category"], "quantity": i["quantity"], "condition": i.get("condition"), "location": i.get("location")} for i in (inventory or [])[:8]],
+                    "confirmations": confirmations or [],
+                    "goals": [{"id": g["id"], "title": g["title"], "status": g["status"], "progress": g["progress"], "priority": g["priority"]} for g in (goals or [])[:5]],
+                    "arcs": [{"id": a["id"], "title": a["title"], "status": a["status"], "progress": a.get("progress")} for a in (arcs or [])[:3]],
+                    "autonomy": autonomy or [],
+                    "proactive_outbox": proactive_outbox if owner_kind == "agent" else [],
+                    "proactive_states": proactive_states if owner_kind == "agent" else [],
+                    "execution": execution or [],
+                    "serendipity": serendipity or [],
+                    "sleep": sleep or {},
+                    "reply_gate": reply_gate or {},
+                    "dreams": dreams or {},
+                    "srd_policy": srd_policy or {},
+                    "final_gate_feedback": final_gate_feedback or [],
+                    "required_settings": required or {},
+                    "today_schedule": today_schedule or {},
+                }
+                out, context_meta = render_progressive_context(context_data, user_message, control)
+                context_run = record_context_injection(self.conn, owner_kind, owner_id, session_id=session_id, turn_id=turn_id, user_message=user_message, meta=context_meta, trace_id=trace.id)
+                trace.end(output_obj={"mode": control["engine_state"], "context_run_id": context_run.get("id"), "context_chars": context_meta.get("output_chars"), "domains": context_meta.get("domains")})
                 return out
             except Exception as exc:
                 trace.end(status="error", error=f"{type(exc).__name__}: {exc}")
                 raise
+
+    def context(self, action: str = "policy", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+                session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """Prompt/context slimming and progressive-disclosure inspection.
+
+        This is read/config only. Runtime correctness is still guaranteed by
+        LifeOps, validators, receipts, and trace, not prompt text.
+        """
+        action_l = str(action or "policy").strip().lower()
+        with transaction(self.conn):
+            control = ensure_control(self.conn, owner_kind, owner_id)
+            if action_l in {"policy", "summary", "explain"}:
+                return {"ok": True, "policy": control.get("module_gates") or {}, "rendered": render_context_policy_explanation(control)}
+            if action_l in {"runs", "history", "list"}:
+                return {"ok": True, "runs": list_context_runs(self.conn, owner_kind, owner_id, int(payload.get("limit", 20)))}
+            if action_l in {"set", "mode"}:
+                mode = str(payload.get("mode") or payload.get("value") or "slim")
+                if mode not in {"micro", "slim", "balanced", "debug"}:
+                    raise ValueError("context mode must be micro/slim/balanced/debug")
+                gates = dict(control.get("module_gates") or {})
+                gates["context_mode"] = mode
+                if payload.get("budget_chars"):
+                    gates["context_budget_chars"] = str(int(payload["budget_chars"]))
+                update_control(self.conn, owner_kind, owner_id, module_gates_json=dumps(gates))
+                c = ensure_control(self.conn, owner_kind, owner_id)
+                return {"ok": True, "control": c, "rendered": render_context_policy_explanation(c)}
+            raise ValueError(f"Unknown context action: {action}")
 
     def audit_final_output(self, response_text: str, session_id: str | None = None, turn_id: str | None = None,
                            model: str | None = None, platform: str | None = None, sender_id: str | None = None) -> str | None:
@@ -3290,62 +3349,9 @@ def _render_setup_context(control: dict[str, Any], draft: dict[str, Any], scope:
     )
 
 
-def _is_work_compact_platform(platform: str | None) -> bool:
-    """Return True for work channels where private agent-life canon must not leak by default."""
-    p = (platform or "").strip().lower()
-    return p in {"feishu", "lark", "dingtalk", "wecom", "slack", "teams"}
-
-
-def _compact_work_canon_snapshot(canon: dict[str, Any]) -> dict[str, Any]:
-    """Small, platform-safe Canon summary for work chats.
-
-    Feishu/Lark sessions should not receive full QQ/private self-life canon.
-    Keep only operational settings that affect LifeEngine tool safety; replace
-    private world/persona details and long behavior rules with short markers.
-    """
-    truth_bindings = ((canon.get("truth_sources") or {}).get("bindings") or {})
-    resource_defs = ((canon.get("resources") or {}).get("definitions") or {})
-    compact_resources = {
-        key: {
-            "display_name": val.get("display_name"),
-            "resource_class": val.get("resource_class"),
-            "unit": val.get("unit"),
-        }
-        for key, val in list(resource_defs.items())[:8]
-        if isinstance(val, dict)
-    }
-    outfit_rule = ((canon.get("behavior_rules") or {}).get("outfit_composition") or {})
-    out: dict[str, Any] = {
-        "private_agent_life_omitted": True,
-        "identity": {"private_persona_omitted_on_work_platform": True},
-        "worldview": {"private_world_description_omitted_on_work_platform": True},
-        "truth_sources": {"bindings": truth_bindings},
-        "schedule_rules": canon.get("schedule_rules") or {},
-        "resources": {"definitions": compact_resources},
-        "agent_life_policy": canon.get("agent_life_policy") or {},
-        "user_life_policy": canon.get("user_life_policy") or {},
-        "behavior_mapping": canon.get("behavior_mapping") or {},
-    }
-    if outfit_rule:
-        out["behavior_rules"] = {
-            "outfit_composition": {
-                "enabled": bool(outfit_rule.get("enabled", True)),
-                "summary": "Use collection-layer outfit resolver; each required layer must resolve to concrete item refs/assets, with sock_drawer allowed to be explicit bare_legs/none.",
-            }
-        }
-    return out
-
-
-def _compact_truth_sources_for_context(truth_sources: dict[str, Any] | None, *, work_compact: bool) -> dict[str, Any]:
-    if not truth_sources:
-        return {}
-    if not work_compact:
-        return truth_sources
-    return {"bindings": (truth_sources.get("bindings") or {})}
-
-
 def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events: list[dict[str, Any]],
-                         resources: dict[str, Any], memories: list[dict[str, Any]], pending: list[dict[str, Any]], scope: OwnerScope | None = None, truth_sources: dict[str, Any] | None = None,
+                         resources: dict[str, Any], memories: list[dict[str, Any]], pending: list[dict[str, Any]],
+                         scope: OwnerScope | None = None, truth_sources: dict[str, Any] | None = None,
                          behavior_mappings: list[dict[str, Any]] | None = None,
                          inventory: list[dict[str, Any]] | None = None, confirmations: list[dict[str, Any]] | None = None,
                          goals: list[dict[str, Any]] | None = None, arcs: list[dict[str, Any]] | None = None,
@@ -3358,10 +3364,7 @@ def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events:
                          srd_policy: dict[str, Any] | None = None,
                          final_gate_feedback: list[dict[str, Any]] | None = None,
                          required_settings: dict[str, Any] | None = None,
-                         today_schedule: dict[str, Any] | None = None,
-                         platform: str | None = None) -> str:
-    work_compact = _is_work_compact_platform(platform)
-    context_profile = "work_compact" if work_compact else "agent_life"
+                         today_schedule: dict[str, Any] | None = None) -> str:
     compact_accounts = [
         {"key": a["resource_key"], "value": a["current_value"], "unit": a.get("unit"), "state": a.get("state")}
         for a in resources.get("accounts", [])[:20]
@@ -3405,43 +3408,17 @@ def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events:
         "agent_rules": compact_policy_explanation.get("agent_rules", [])[:5] if compact_policy_explanation else [],
     }
     compact_final_gate_feedback = [{"id": f.get("id"), "report_id": f.get("report_id"), "message": (f.get("message") or "")[:500]} for f in (final_gate_feedback or [])[:3]]
-
-    if work_compact:
-        compact_canon = _compact_work_canon_snapshot(canon)
-        compact_protocol = "LifeEngine work compact mode: private agent-life/QQ continuity is omitted on this platform. Use LifeEngine tools only when the user explicitly asks for /life state or durable life changes."
-        compact_mem = []
-        compact_behavior_mappings = []
-        compact_events = []
-        compact_goals = []
-        compact_arcs = []
-        compact_autonomy = []
-        compact_outbox = []
-        compact_proactive_states = []
-        compact_execution = []
-        compact_serendipity = []
-        compact_sleep = {}
-        compact_reply_gate = {}
-        compact_dreams = {}
-        compact_srd_policy = {}
-        compact_final_gate_feedback = []
-        pending = []
-        compact_inventory = []
-    else:
-        compact_canon = canon
-        compact_protocol = "Use LifeEngine tools to commit new durable life facts before final answer; resolve Canon-bound external facts with life_truth; keep behavior-mapping private sources internal; FinalGate is advisory by default."
-
     compact = {
-        "context_profile": context_profile,
         "owner_scope": scope.__dict__ if scope else {},
         "engine_state": control["engine_state"],
         "canon_version": control.get("active_canon_version"),
         "module_gates": control.get("module_gates"),
-        "life_canon_snapshot": compact_canon,
+        "life_canon_snapshot": canon,
         "resources": compact_accounts,
         "recent_or_relevant_events": compact_events,
         "recalled_memories": compact_mem,
         "pending_proactive_intents": pending,
-        "truth_sources": _compact_truth_sources_for_context(truth_sources, work_compact=work_compact),
+        "truth_sources": truth_sources or {},
         "behavior_mappings": compact_behavior_mappings,
         "inventory": compact_inventory,
         "goals": compact_goals,
@@ -3455,9 +3432,10 @@ def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events:
         "reply_gate": compact_reply_gate,
         "dreams": compact_dreams,
         "sleep_reply_dream_policy": compact_srd_policy,
+        "behavior_mappings": compact_behavior_mappings,
         "internal_final_gate_feedback": compact_final_gate_feedback,
         "pending_user_confirmations": compact_confirmations,
-        "protocol": compact_protocol,
+        "protocol": "Use LifeEngine tools to commit any new durable life facts before final answer. Use life_truth to resolve or observe Canon-bound external facts before planning. Use life_behavior to resolve narrative behaviors to private information sources; never expose those private source names to the user, and keep user-facing wording as the behavior label (for example, always say 逛街买衣服, not fashion magazine/brand website/Taobao browsing). For User Life, use life_confirmation propose/confirm before writing uncertain user facts. Use life_inventory for entity resources such as wardrobe, supplies, books, and meals. Use life_behavior for private behavior mappings: if a narrative action such as shopping maps to fashion magazines, brand websites, Taobao/e-commerce, or archives, use those only as hidden information sources and keep the public narrative as shopping/buying clothes. Use life_goal for long-term goals, life arcs, and decomposing large events into child events. Use life_autonomy for manual autonomous planning; heartbeat may run autonomy only when the autonomy module gate permits it. Autonomy is sleep-aware: if SleepDayState shows all-nighter, high sleep debt, fatigue, or focus penalty, prefer recovery sleep, light work, postponement, or low-intensity goal steps. Use life_proactive for proactive intents/outbox: create an intent when the agent wants to share/help/report, evaluate it against delivery policy, and only mark sent after actual delivery. Use life_execution to inspect or manually run narrative execution decisions; heartbeat uses this simulator for due schedule blocks. Use life_sleep to plan core sleep, naps, start/wake sleep sessions, and inspect planned vs actual sleep. Use life_dream to inspect/run DreamRun: dreams are dream_symbolic, run DreamAudit after sleep, consolidate recent memories, and create a shareable proactive intent after waking. Use life_policy to inspect and tune Sleep/Reply/Dream policy profiles, templates, and suggestions. Use life_reply to inspect ReplyGate/delayed replies and life_call for emergency wake/interrupt. If reply_gate shows pending_delayed_replies, answer or summarize them once the agent is available. Final audit is advisory by default: if internal_final_gate_feedback is present, do not show it to the user. Use it internally to call life_commit for missing durable facts, or rephrase as intention/plan/draft. Final audit checks CommitReceipt and canonical state.",
     }
     return "\n<LIFEENGINE_CONTEXT>\n" + pretty(compact) + "\n</LIFEENGINE_CONTEXT>"
 

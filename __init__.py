@@ -24,6 +24,7 @@ def register(ctx):
     for name, schema, handler, desc, emoji in [
         ("life_status", schemas.LIFE_STATUS, tools.life_status, "Read LifeEngine status", "🫀"),
         ("life_interface", schemas.LIFE_INTERFACE, tools.life_interface, "Unified safe LifeEngine read/write interface catalog", "🧩"),
+        ("life_context", schemas.LIFE_CONTEXT, tools.life_context, "Prompt/context slimming policy and injection trace", "🪶"),
         ("life_living", schemas.LIFE_LIVING, tools.life_living, "Concrete living rhythm, Canon consistency, inventory presets, and paper notes", "🏮"),
         ("life_behavior", schemas.LIFE_BEHAVIOR, tools.life_behavior, "Private behavior mappings from narrative actions to hidden truth/information sources", "🗺️"),
         ("life_collection", schemas.LIFE_COLLECTION, tools.life_collection, "Editable closet, cabinets, collection rules, and outfit composition", "👗"),
@@ -65,7 +66,7 @@ def register(ctx):
     ctx.register_hook("on_session_start", hooks.on_session_start)
     ctx.register_hook("on_session_end", hooks.on_session_end)
 
-    ctx.register_command("life", slash_life, description="Manage LifeEngine", args_hint="help|status|setup|commit|pause|resume|run|call|schedule|review|config|living|closet|behavior|doctor|backup|advanced")
+    ctx.register_command("life", slash_life, description="Manage LifeEngine", args_hint="help|status|setup|commit|pause|resume|run|call|schedule|review|config|living|closet|behavior|context|doctor|backup|advanced")
     ctx.register_cli_command(
         name="lifeengine",
         help="Manage embedded LifeEngine",

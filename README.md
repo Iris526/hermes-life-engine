@@ -1,9 +1,9 @@
-# LifeEngine Hermes Plugin v0.12.9
+# LifeEngine Hermes Plugin v0.12.10
 
 LifeEngine is an embedded, SQLite/sqlite-vec based Agent life runtime for Hermes. It gives an Agent its own Life Canon, resources, schedule, events, sleep, dreams, realtime state, autonomy, proactive intents, review inbox, traceable life journal, and a WebUI observatory.
 
-- Plugin version: `0.12.9`
-- DB schema version: `44`
+- Plugin version: `0.12.10`
+- DB schema version: `45`
 - sqlite-vec: required by LifeEngine runtime
 - Integration: Hermes directory plugin; no core-loop fork
 
@@ -32,6 +32,28 @@ Agent tool:
 
 Important rule: the Agent may use the private execution plan internally, but in
 conversation it must keep the public narrative label, e.g. “逛街买衣服”.
+
+
+## v0.12.10 — Prompt / Context Slimming
+
+LifeEngine now injects a progressive, turn-local context capsule instead of a large state dump. Correctness is still enforced by code: LifeOps, validators, receipts, trace, FinalGate advisory, and domain tools. Prompt text only carries concrete, relevant rules for the current turn.
+
+Human command:
+
+```text
+/life context
+/life context runs
+/life context set slim
+/life context set micro 2400
+```
+
+Agent tool:
+
+```json
+{"action":"policy"}
+```
+
+Key rule: details must be fetched by tools on demand, not preloaded into every turn.
 
 ## Install
 
@@ -101,7 +123,7 @@ v0.12.8 adds the concrete living layer: Canon consistency doctor, Guimingguan-st
 The current design document is bundled in the zip:
 
 ```text
-docs/lifeengine_total_design_v0_12_9.md
+docs/lifeengine_total_design_v0_12_10.md
 ```
 
 ## New in v0.12.8
@@ -137,7 +159,7 @@ New items are not allowed to appear only in prose. They enter a collection first
 The current design document is bundled as:
 
 ```text
-docs/lifeengine_total_design_v0_12_9.md
+docs/lifeengine_total_design_v0_12_10.md
 ```
 
 ## v0.12.8 Behavior Mapping

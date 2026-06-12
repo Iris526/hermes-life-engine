@@ -57,7 +57,7 @@ def _make_detail_db(tmp_path: Path) -> Path:
 
 
 def test_webui_v0121_version():
-    assert PLUGIN_VERSION == "0.12.9"
+    assert PLUGIN_VERSION == "0.12.10"
 
 
 def test_reader_event_detail_and_trace_explain(tmp_path):
@@ -78,7 +78,7 @@ def test_reader_event_detail_and_trace_explain(tmp_path):
 def test_server_detail_endpoints(tmp_path):
     db = _make_detail_db(tmp_path)
     client = TestClient(create_app(str(db)))
-    assert client.get("/api/health").json()["webui_version"] == "0.12.9"
+    assert client.get("/api/health").json()["webui_version"] == "0.12.10"
     event = client.get("/api/event/event_work").json()
     assert event["found"] is True
     dream = client.get("/api/dream/dream1").json()

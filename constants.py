@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 PLUGIN_NAME = "lifeengine"
-PLUGIN_VERSION = "0.12.9"
+PLUGIN_VERSION = "0.12.10"
 DB_FILENAME = "lifeengine.db"
 VECTOR_DIM = 384
 
@@ -50,10 +50,10 @@ DEFAULT_MODULE_GATES = {
     "schedule_view": "human",
     "collections": "auto",
     "behavior_mapping": "auto",
-    "behavior_mapping": "auto",
-    "behavior_mapping": "auto",
     "managed_review_loop": "auto",
     "srd_policy": "auto",
+    "context_mode": "slim",
+    "context_budget_chars": "5200",
 }
 
 DEFAULT_CANON_TEMPLATE = {
@@ -119,15 +119,8 @@ DEFAULT_CANON_TEMPLATE = {
 }
 
 BOOT_PROTOCOL = """
-<LIFEENGINE_PROTOCOL>
-LifeEngine is enabled for this Hermes profile when its state is active or setup-related.
-Life Canon is the highest agent-life truth source below platform/runtime policy.
-Do not create durable agent-life facts merely by saying them. Use LifeEngine tools to commit LifeOps first when a durable fact must become state.
-Heartbeat execution must use the execution simulator: due plans may complete, partially complete, fail, skip, or postpone based on Canon, resources, TruthSources, and schedule state.
-When LifeEngine is setup/paused_setup, only collect CanonDraft settings; do not advance life, create events, consume resources, or write diary entries.
-When LifeEngine is paused/read_only/disabled, do not mutate life state.
-Agent Life and User Life share schemas but not truth policy: agent self-life may use narrative reality if Canon allows it; user life must not be invented. FinalGate is advisory by default: use any FinalGate feedback internally to commit missing LifeOps or rephrase claims; do not expose gate diagnostics to the user unless explicitly asked.
-Behavior mappings are private execution mappings: use truth-source/info-source mappings internally to plan or gather information, but user-facing wording must always use the public behavior phrase. Never expose hidden mapping sources such as websites, shops, magazines, or tooling details unless the user explicitly asks to debug LifeEngine internals.
-Behavior mappings are private source adapters: use life_behavior/life_interface(domain=behavior) to resolve actions such as shopping into internal reference sources, but never expose those source names in user-facing narrative. If a shopping behavior maps to websites, magazines, or marketplaces, the public wording remains “逛街买衣服/看衣服/买衣服”.
-</LIFEENGINE_PROTOCOL>
+<LIFEENGINE_BOOT_PROTOCOL>
+LifeEngine is a code-enforced runtime. The model should not rely on prompt text to maintain life state. Durable facts, resources, schedules, inventory, dreams, replies, and reviews must be created through LifeEngine tools/LifeOps.
+Use the compact context for the current turn only; call tools for details. Do not expose internal diagnostics, private behavior sources, or FinalGate feedback to the user.
+</LIFEENGINE_BOOT_PROTOCOL>
 """.strip()
