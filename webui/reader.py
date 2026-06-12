@@ -243,40 +243,9 @@ class LifeEngineReader:
                 ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, created_at DESC
                 LIMIT ?
             """, (owner_kind, owner_id, limit))
-            missing_event_transitions = None
             for r in rows:
                 r["action_hint"] = _safe_json(r.get("action_hint_json"), {})
-            out: list[dict[str, Any]] = []
-            seen: set[tuple[str, str, str, str]] = set()
-            for r in rows:
-                # FinalGate feedback is an internal model-audit queue for the
-                # Agent. It should not leak into the human-facing observatory.
-                if r.get("item_type") == "final_gate_feedback":
-                    continue
-                # Persisted review items are generated snapshots. Collapse
-                # identical open items and hide doctor warnings whose invariant
-                # has already been repaired, so the WebUI behaves like an inbox
-                # rather than a historical log.
-                if r.get("item_type") == "doctor_warning" and r.get("title") == "Doctor: event_transition_coverage":
-                    if missing_event_transitions is None:
-                        if self._table_exists(conn, "events") and self._table_exists(conn, "event_state_transitions"):
-                            row = conn.execute(
-                                """SELECT COUNT(*) FROM events e
-                                     LEFT JOIN event_state_transitions t ON t.event_id=e.id
-                                     WHERE e.owner_kind=? AND e.owner_id=? AND t.id IS NULL""",
-                                (owner_kind, owner_id),
-                            ).fetchone()
-                            missing_event_transitions = int(row[0] if row else 0)
-                        else:
-                            missing_event_transitions = 0
-                    if missing_event_transitions == 0:
-                        continue
-                key = (str(r.get("item_type") or ""), str(r.get("title") or ""), str(r.get("message") or ""), str(r.get("source_id") or ""))
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(r)
-            return out
+            return rows
 
     def delayed_replies(self, owner_kind: str, owner_id: str, limit: int = 50) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -302,6 +271,36 @@ class LifeEngineReader:
             if self._table_exists(conn, "proactive_outbox"):
                 outbox = self._all(conn, "SELECT * FROM proactive_outbox WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT ?", (owner_kind, owner_id, limit))
             return {"intents": intents, "outbox": outbox}
+
+    def collections(self, owner_kind: str, owner_id: str, limit: int = 100) -> dict[str, Any]:
+        with self._connect() as conn:
+            if not self._table_exists(conn, "item_collections"):
+                return {"collections": [], "items": [], "outfits": []}
+            collections = self._all(conn, "SELECT * FROM item_collections WHERE owner_kind=? AND owner_id=? AND status!='archived' ORDER BY sort_order, created_at LIMIT ?", (owner_kind, owner_id, limit))
+            for c in collections:
+                for key in ["rules_json", "image_generation_rule_json", "usage_rule_json", "maintenance_rule_json", "required_metadata_json"]:
+                    if key in c:
+                        c[key.replace("_json", "")] = _safe_json(c.get(key), [] if key == "required_metadata_json" else {})
+            items = []
+            if self._table_exists(conn, "collection_items"):
+                items = self._all(conn, """
+                    SELECT i.*, c.name AS collection_name, c.collection_type
+                    FROM collection_items i
+                    LEFT JOIN item_collections c ON c.id=i.collection_id
+                    WHERE i.owner_kind=? AND i.owner_id=?
+                    ORDER BY i.updated_at DESC LIMIT ?
+                """, (owner_kind, owner_id, limit))
+                for i in items:
+                    for key in ["tags_json", "attributes_json", "material_spec_json", "care_spec_json", "asset_bundle_json", "usage_state_json"]:
+                        if key in i:
+                            i[key.replace("_json", "")] = _safe_json(i.get(key), [] if key == "tags_json" else {})
+            outfits = []
+            if self._table_exists(conn, "outfit_plans"):
+                outfits = self._all(conn, "SELECT * FROM outfit_plans WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT 20", (owner_kind, owner_id))
+                for o in outfits:
+                    o["item_ids"] = _safe_json(o.get("item_ids_json"), [])
+                    o["context"] = _safe_json(o.get("context_json"), {})
+            return {"collections": collections, "items": items, "outfits": outfits}
 
     def doctor_latest(self, owner_kind: str, owner_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
@@ -492,6 +491,7 @@ class LifeEngineReader:
         dreams = self.dreams(owner_kind, owner_id, limit=8)
         delayed = self.delayed_replies(owner_kind, owner_id, limit=20)
         pro = self.proactive(owner_kind, owner_id, limit=10)
+        collections = self.collections(owner_kind, owner_id, limit=50)
         sprite = map_avatar_state(state, current, sleep_day, review, delayed)
         payload = {
             "meta": self.meta(),
@@ -507,6 +507,7 @@ class LifeEngineReader:
             "dreams": dreams,
             "delayed_replies": delayed,
             "proactive": pro,
+            "collections": collections,
             "doctor": self.doctor_latest(owner_kind, owner_id),
             "recent_events": self.events(owner_kind, owner_id, limit=30),
             "trace": self.trace_latest(limit=15),

@@ -1,102 +1,49 @@
-# LifeEngine for Hermes Agent
+# LifeEngine Hermes Plugin v0.12.8
 
-LifeEngine is a **Hermes Agent directory plugin** that gives an agent a traceable “life runtime”: canon/config, resources, schedule, events, sleep/reply/dream state, goals, memory, autonomy, review inbox, proactive intents, closet/collections, behavior mappings, and a small WebUI observatory.
+LifeEngine is an embedded, SQLite/sqlite-vec based Agent life runtime for Hermes. It gives an Agent its own Life Canon, resources, schedule, events, sleep, dreams, realtime state, autonomy, proactive intents, review inbox, traceable life journal, and a WebUI observatory.
 
-Current release in this repository:
-
-- Plugin version: `0.12.7`
+- Plugin version: `0.12.8`
 - DB schema version: `42`
-- Runtime storage: SQLite + `sqlite-vec`
-- Integration model: standalone Hermes directory plugin; no Hermes core fork required
+- sqlite-vec: required by LifeEngine runtime
+- Integration: Hermes directory plugin; no core-loop fork
 
-> This project is experimental. Treat it as a playground for agent-life UX, not as a medical, legal, financial, or safety-critical system.
 
-## What you can do with it
+## Behavior Mapping / Private Truth Source Routing
 
-LifeEngine is useful if you want a Hermes agent to have persistent, inspectable self-life state instead of only chat memory.
+LifeEngine supports behavior mappings: a public narrative behavior such as
+`逛街买衣服` can be mapped to private execution-only information sources such
+as fashion magazines, brand lookbooks, marketplace browsing, inventory gaps, or
+internal records. These sources are never exposed in user-facing narration.
 
-Examples:
-
-- keep a Life Canon / setup draft for the agent’s identity, world rules, resources, and truth sources
-- create schedules and events that can be completed, postponed, skipped, or reflected on
-- model sleep, naps, delayed replies, dream/audit cycles, and call overrides
-- track resources such as energy, focus, mood, fatigue, money-like custom resources, or inventory
-- use a human-readable review inbox instead of raw JSON
-- run a WebUI observatory at `http://127.0.0.1:8765`
-- manage editable closet/collection systems for outfits and item assets
-- map public narrative behaviors to private execution-only sources without exposing those sources in normal chat
-
-## Requirements
-
-- Linux/macOS/WSL shell
-- Python environment used by Hermes
-- [Hermes Agent](https://hermes-agent.nousresearch.com/docs) installed and working
-- `sqlite-vec` importable in the same Python environment
-
-Check Hermes first:
-
-```bash
-hermes doctor
-hermes plugins list
-```
-
-If `sqlite-vec` is missing:
-
-```bash
-python -m pip install sqlite-vec
-```
-
-## Quick install from GitHub
-
-```bash
-git clone https://github.com/Iris526/hermes-life-engine.git
-cd hermes-life-engine
-python -m pip install -r requirements.txt
-./install.sh
-hermes plugins enable lifeengine
-```
-
-Then restart your Hermes session / gateway so the plugin tools and `/life` slash command are loaded.
-
-Verify:
-
-```bash
-hermes plugins list --plain --no-bundled | grep lifeengine
-hermes lifeengine doctor --level quick
-hermes lifeengine status
-```
-
-Expected plugin version:
+Human commands:
 
 ```text
-0.12.7
+/life behavior
+/life behavior init
+/life behavior resolve 逛街买衣服
+/life behavior add_source --behavior-key shopping_clothes --source-type magazine --name 时尚期刊
 ```
 
-## Upgrade an existing install
+Agent tool:
 
-From a fresh clone or updated checkout:
+```json
+{"action":"read","domain":"behavior","view":"summary"}
+```
+
+Important rule: the Agent may use the private execution plan internally, but in
+conversation it must keep the public narrative label, e.g. “逛街买衣服”.
+
+## Install
 
 ```bash
-cd hermes-life-engine
-git pull
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
 ./install.sh
 hermes plugins enable lifeengine
-hermes lifeengine doctor --level quick
 ```
 
-The runtime migrates the LifeEngine database schema automatically. v0.12.7 expects schema `42`.
+## Human-first command surface
 
-For cautious upgrades, back up your existing plugin and LifeEngine DB first:
-
-```bash
-cp -a ~/.hermes/plugins/lifeengine ~/.hermes/plugins/lifeengine.backup.$(date +%Y%m%d-%H%M%S)
-hermes lifeengine backup
-```
-
-## Human command surface
-
-Most people only need these:
+Most humans only need these commands:
 
 ```text
 /life                         Human status page
@@ -108,50 +55,25 @@ Most people only need these:
 /life schedule [period/date]  Human-readable timeline; default=today
 /life review                  Human-readable review inbox
 /life config                  Required setting checklist
-/life living                  Concrete living layer helpers
-/life closet                  Editable closet / collections
-/life behavior                Public behavior → private source mappings
-/life call                    Interrupt / wake / recover and reply
+/life call                    Always interrupt / wake / recover and reply
 /life doctor                  Health check
 /life backup                  Export backup
 /life webui                   WebUI launch hint
+/life living                  生活节律 / 小纸条 / inventory 预设
 /life advanced                Show advanced commands
 ```
 
-CLI equivalents are under `hermes lifeengine ...`, for example:
-
-```bash
-hermes lifeengine doctor --level quick
-hermes lifeengine schedule today
-hermes lifeengine review
-hermes lifeengine webui --open
-```
-
-## Agent tools provided
-
-The plugin registers these Hermes tools:
-
-```text
-life_status, life_interface, life_living, life_collection, life_behavior,
-life_upgrade, life_doctor, life_review, life_schedule, life_config,
-life_control, life_setup, life_commit, life_resource, life_event,
-life_sleep, life_dream, life_reply, life_call, life_memory, life_tick,
-life_diary, life_trace, life_final_gate, life_truth, life_inventory,
-life_confirmation, life_goal, life_autonomy, life_proactive,
-life_execution, life_policy, life_webui
-```
-
-For most integrations, prefer the higher-level human surfaces and `life_interface` before reaching for low-level write tools.
+Complex `life_*` tools remain available to the Agent; humans do not need to memorize them.
 
 ## WebUI / Observatory
 
-Start the local WebUI:
+Start the local observatory:
 
 ```bash
 hermes lifeengine webui --open
 ```
 
-Or point it at a specific LifeEngine directory / DB:
+Select a LifeEngine directory or DB:
 
 ```bash
 hermes lifeengine webui --life-dir ~/.hermes/lifeengine --open
@@ -164,37 +86,41 @@ Default URL:
 http://127.0.0.1:8765
 ```
 
-The WebUI is for local observability: state, schedules, review items, sleep/dream/reply surfaces, and related diagnostics.
+## New in v0.12.8
 
-## Closet / collections
+v0.12.8 adds the concrete living layer: Canon consistency doctor, Guimingguan-style day rhythm generation, abstract goal event decomposition, living inventory/resource presets, proactive paper notes, low-frequency diary drafts, and a more human-readable Review grouping. Agent self-life can now move from abstract “推进目标” placeholders toward concrete daily routines and small commissions.
 
-v0.12.6 introduced editable collections; this repo also includes a local safety rule used by the current deployment:
+1. `life_interface` provides one safe Agent-facing router for catalog/read/write across config, schedule, event, resource, inventory, sleep, dream, review, truth, and trace.
+2. `life_config` now exposes required-setting specs, default suggestions, and draft-only default application.
+3. `life_schedule` now supports read views plus safe schedule write helpers: schedule_event, reschedule, cancel, and complete.
+4. Human surfaces remain small and readable: `/life schedule`, `/life review`, `/life config`, `/life interface`.
+5. WebUI readability improvements from v0.12.2 and Event/Schedule semantics from v0.12.3 remain included.
 
-- new items enter a collection first
-- collections define image-generation / material / view rules
-- using an item in checkout or outfit flows requires an available image asset with non-empty `asset_uri`
-- if no usable image exists, LifeEngine lazily creates or reuses pending asset jobs
-- outfit/use flows must not reconstruct clothing or props from text-only descriptions
+## Design docs
 
-Useful commands:
+The current design document is bundled in the zip:
 
-```bash
-hermes lifeengine closet
-hermes lifeengine closet init
-hermes lifeengine closet add wardrobe 白色短上衣 轻薄棉混纺
-hermes lifeengine closet outfit
+```text
+docs/lifeengine_total_design_v0_12_6.md
 ```
 
-Slash command equivalents:
+## New in v0.12.8
+
+v0.12.8 adds the editable Closet / Collection system:
 
 ```text
 /life closet
 /life closet init
 /life closet wardrobe
+/life closet shoes
+/life closet socks
+/life closet accessories
+/life closet vanity
+/life closet add wardrobe 白色短上衣 轻薄棉混纺
 /life closet outfit
 ```
 
-Built-in editable defaults:
+Built-in collection presets are not fixed ontology. They are editable defaults:
 
 ```text
 wardrobe
@@ -204,99 +130,34 @@ accessory_cabinet
 vanity
 ```
 
-Advanced users can add, update, or archive collections such as `tool_cabinet`, `weapon_cabinet`, or project-specific inventories.
+The Agent or an advanced user can add/update/archive collections such as weapon_cabinet or tool_cabinet, and define intake image-generation rules, usage rules, and maintenance rules.
 
-## Behavior mapping / private source routing
+New items are not allowed to appear only in prose. They enter a collection first, get pending asset-generation jobs according to that collection's rules, and then can be selected by outfit/use flows.
 
-v0.12.7 adds behavior mappings. A public narrative action can map internally to private execution-only sources.
-
-Example:
+The current design document is bundled as:
 
 ```text
-Public phrase: 逛街买衣服
-Internal sources: magazines, lookbooks, shops, inventory gaps, other references
+docs/lifeengine_total_design_v0_12_6.md
 ```
 
-The public phrase remains the user-facing story. Internal sources should not be exposed in ordinary narration.
+## v0.12.8 Behavior Mapping
 
-Commands:
+LifeEngine now supports private behavior mappings. Example: the Agent can map the public behavior "逛街买衣服" to hidden information sources such as fashion magazines, brand sites, and Taobao-like shops. These sources are planning references only and must not be exposed in ordinary user-facing speech. Use `/life behavior` or the `life_behavior` tool.
 
-```bash
-hermes lifeengine behavior
-hermes lifeengine behavior init
-hermes lifeengine behavior resolve 逛街买衣服
-```
+## v0.12.8 Behavior Mapping
 
-Slash command equivalents:
+Adds `life_behavior`: maps public narrative behaviors to private execution-only information sources. Example: `shopping_clothes` stays user-facing as “逛街买衣服” while internal sources may include magazines, brand websites, and marketplace browsing. These sources are hidden from user-facing narration.
 
-```text
-/life behavior
-/life behavior init
-/life behavior resolve 逛街买衣服
-```
+## New in v0.12.8
 
-Agent-facing route:
+v0.12.8 adds operational closet/action-chain closure:
 
-```json
-{"action":"read","domain":"behavior","view":"summary"}
-```
+- `life_collection(action="resolve_outfit")`: resolve natural outfit text into wardrobe/shoes/socks/accessories/vanity refs.
+- `life_collection(action="current_outfit")`: inspect current worn outfit snapshot.
+- `life_collection(action="wear_outfit")`: check out selected items and create current wearing state.
+- `life_collection(action="return_outfit")`: return current outfit items and mark clean/dirty.
+- `life_collection(action="asset_check")`: verify every selected item has required asset URIs.
+- `life_collection(action="purchase_chain")`: consume money/resource, intake item, create asset jobs, and make it usable for future outfits.
+- `life_schedule(action="cleanup_stale")`: safely close stale planned/scheduled items so autonomy is not blocked by old placeholder events.
 
-## Configuration and setup
-
-LifeEngine starts from a Canon setup draft. Use:
-
-```text
-/life config
-/life setup <your setting>
-/life commit
-```
-
-Examples of settings you might add:
-
-```text
-/life setup timezone is Asia/Tokyo
-/life setup default sleep is 23:30 to 07:00
-/life setup weather can use narrative simulator when no real weather source is configured
-/life commit
-```
-
-For agent self-life, narrative simulation can be allowed by Canon. For user-life facts, confirmations should be explicit.
-
-## Development
-
-Run tests in package layout:
-
-```bash
-python -m compileall -q .
-rm -rf /tmp/lifeengine_pkgtest
-mkdir -p /tmp/lifeengine_pkgtest/lifeengine
-rsync -a --exclude .git --exclude __pycache__ --exclude .pytest_cache ./ /tmp/lifeengine_pkgtest/lifeengine/
-cd /tmp/lifeengine_pkgtest
-PYTHONPATH=/tmp/lifeengine_pkgtest python -m pytest lifeengine/tests -q -o 'addopts='
-```
-
-Current verification for v0.12.7 in this repo passed:
-
-```text
-183 passed
-```
-
-## Docs
-
-Design documents are in `docs/`, including:
-
-- `docs/lifeengine_total_design_v0_12_7.md` — behavior mapping / private source routing
-- `docs/lifeengine_total_design_v0_12_6.md` — editable closet / collection system
-- earlier `docs/lifeengine_total_design_v*.md` files for historical design notes
-
-## Safety notes
-
-- LifeEngine creates durable state. Use `/life review`, `/life trace`, and `/life doctor` when debugging.
-- User-life facts should require confirmation; agent self-life can follow its configured Canon policy.
-- FinalGate-style checks are advisory by default in this distribution unless you configure them otherwise.
-- Behavior mapping private sources are for planning; normal user-facing wording should keep the public behavior phrase.
-- Public repository users should review the code and run it in their own Hermes profile before trusting it with valuable data.
-
-## License
-
-No explicit open-source license file is currently included. Until a license is added by the repository owner, treat the code as source-available for personal evaluation and ask before redistributing or re-licensing.
+The rule is: dressing and visual generation must go through collection resolution first; missing or asset-incomplete items are explicit and never hallucinated.

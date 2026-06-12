@@ -14,49 +14,6 @@ from .trace import append_journal, new_id
 from .resources import apply_delta
 
 
-def _merge_media_attributes(
-    attributes: dict[str, Any] | None,
-    *,
-    image_path: str | None = None,
-    image_url: str | None = None,
-    media: dict[str, Any] | list[Any] | None = None,
-) -> dict[str, Any]:
-    """Normalize item image/media references into attributes.media.
-
-    Inventory items intentionally keep a flexible attributes_json column. This
-    helper gives wardrobe/tools a stable media convention without a DB migration:
-    callers may pass image_path/image_url or a media object, and the item stores
-    the result under attributes["media"].
-    """
-    attrs = dict(attributes or {})
-    existing = attrs.get("media")
-    if isinstance(existing, dict):
-        media_payload: dict[str, Any] = dict(existing)
-    else:
-        media_payload = {}
-
-    if isinstance(media, dict):
-        media_payload.update(media)
-    elif isinstance(media, list):
-        media_payload["references"] = list(media)
-
-    if image_path or image_url:
-        primary: dict[str, Any] = {"role": "primary"}
-        if image_path:
-            primary["path"] = str(image_path)
-        if image_url:
-            primary["url"] = str(image_url)
-        media_payload["primary_image"] = primary
-        refs = list(media_payload.get("references") or [])
-        if primary not in refs:
-            refs.insert(0, primary)
-        media_payload["references"] = refs
-
-    if media_payload:
-        attrs["media"] = media_payload
-    return attrs
-
-
 class InventoryError(ValueError):
     pass
 
@@ -77,9 +34,6 @@ def create_inventory_item(
     quantity: float = 1,
     unit: str | None = None,
     attributes: dict[str, Any] | None = None,
-    image_path: str | None = None,
-    image_url: str | None = None,
-    media: dict[str, Any] | list[Any] | None = None,
     acquired_at: str | None = None,
     acquired_by_event_id: str | None = None,
     acquired_by_transaction_id: str | None = None,
@@ -98,7 +52,6 @@ def create_inventory_item(
     if quantity < 0:
         raise InventoryError("inventory quantity cannot be negative")
     item_id = new_id("item")
-    attributes = _merge_media_attributes(attributes, image_path=image_path, image_url=image_url, media=media)
     conn.execute(
         """INSERT INTO inventory_items(id, owner_kind, owner_id, name, category, subcategory, quantity,
                unit, attributes_json, acquired_at, acquired_by_event_id, acquired_by_transaction_id,
@@ -179,15 +132,8 @@ def update_inventory_item(conn, owner_kind: str, owner_id: str, *, item_id: str,
     for k, v in fields.items():
         if k in allowed and v is not None:
             updates[k] = v
-    media_keys = {"attributes", "image_path", "image_url", "media"}
-    if any(k in fields and fields[k] is not None for k in media_keys):
-        base_attrs = fields.get("attributes") if fields.get("attributes") is not None else current.get("attributes")
-        updates["attributes_json"] = dumps(_merge_media_attributes(
-            base_attrs if isinstance(base_attrs, dict) else {},
-            image_path=fields.get("image_path"),
-            image_url=fields.get("image_url"),
-            media=fields.get("media"),
-        ))
+    if "attributes" in fields and fields["attributes"] is not None:
+        updates["attributes_json"] = dumps(fields["attributes"])
     if not updates:
         return current
     sets = ", ".join([f"{k}=?" for k in updates] + ["updated_at=datetime('now')"])

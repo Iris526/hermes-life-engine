@@ -33,7 +33,7 @@ def test_v0114_schema_and_acceptance_tables(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
-        assert PLUGIN_VERSION == "0.12.7"
+        assert PLUGIN_VERSION == "0.12.6"
         assert _SCHEMA_VERSION >= 29
         assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 29
         tables = {r[0] for r in rt.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

@@ -35,9 +35,6 @@ DEFAULT_COLLECTION_PRESETS: dict[str, dict[str, Any]] = {
             "checkout_for": ["outfit", "sleepwear", "work", "travel", "daily_life"],
             "return_states": ["clean", "dirty", "airing", "repair_needed"],
             "cannot_use_when": ["dirty", "repair_needed", "archived"],
-            "requires_visual_reference_on_use": True,
-            "prohibit_text_only_reconstruction": True,
-            "lazy_generate_missing_assets": True,
         },
         "required_metadata": ["category", "color_family", "season", "style_tags", "material", "warmth", "formalness"],
     },
@@ -54,9 +51,6 @@ DEFAULT_COLLECTION_PRESETS: dict[str, dict[str, Any]] = {
             "checkout_for": ["outfit", "outdoor", "indoor", "rain"],
             "return_states": ["clean", "dirty", "airing", "repair_needed"],
             "weather_filter": True,
-            "requires_visual_reference_on_use": True,
-            "prohibit_text_only_reconstruction": True,
-            "lazy_generate_missing_assets": True,
         },
         "required_metadata": ["shoe_type", "color_family", "weather_suitability", "material", "comfort", "season"],
     },
@@ -69,7 +63,7 @@ DEFAULT_COLLECTION_PRESETS: dict[str, dict[str, Any]] = {
             "must": ["不画穿在脚上", "重点展示长度、图案、厚薄、材质"],
             "exclude": ["worn_on_feet"],
         },
-        "usage_rule": {"quantity_managed": True, "return_states": ["laundry", "clean", "worn_out"], "requires_visual_reference_on_use": True, "prohibit_text_only_reconstruction": True, "lazy_generate_missing_assets": True},
+        "usage_rule": {"quantity_managed": True, "return_states": ["laundry", "clean", "worn_out"]},
         "required_metadata": ["sock_type", "length", "thickness", "material", "color_family", "quantity_per_pair"],
     },
     "accessory_cabinet": {
@@ -81,7 +75,7 @@ DEFAULT_COLLECTION_PRESETS: dict[str, dict[str, Any]] = {
             "must": ["单品为主", "展示材质、吊坠/纹样/扣具细节"],
             "exclude": ["default_worn_on_body"],
         },
-        "usage_rule": {"stackable": True, "checkout_for": ["outfit", "ritual", "identity", "work"], "requires_visual_reference_on_use": True, "prohibit_text_only_reconstruction": True, "lazy_generate_missing_assets": True},
+        "usage_rule": {"stackable": True, "checkout_for": ["outfit", "ritual", "identity", "work"]},
         "required_metadata": ["accessory_type", "material", "color_family", "style_tags", "symbolic_meaning"],
     },
     "vanity": {
@@ -93,7 +87,7 @@ DEFAULT_COLLECTION_PRESETS: dict[str, dict[str, Any]] = {
             "must": ["妆容可以用 face chart；发型必须展示正侧背", "不强制完整穿搭图"],
             "exclude": ["unrelated_outfit_full_body"],
         },
-        "usage_rule": {"recipe_allowed": True, "checkout_for": ["makeup", "hairstyle", "daily_grooming", "occasion"], "requires_visual_reference_on_use": True, "prohibit_text_only_reconstruction": True, "lazy_generate_missing_assets": True},
+        "usage_rule": {"recipe_allowed": True, "checkout_for": ["makeup", "hairstyle", "daily_grooming", "occasion"]},
         "required_metadata": ["vanity_type", "style_tags", "palette", "hair_accessories", "time_cost_minutes"],
     },
 }
@@ -335,34 +329,6 @@ def list_item_assets(conn, owner_kind: str, owner_id: str, *, item_id: str, stat
     return [_row_to_asset(r) for r in conn.execute(sql, params).fetchall()]
 
 
-def available_item_assets(conn, owner_kind: str, owner_id: str, *, item_id: str, limit: int = 20) -> list[dict[str, Any]]:
-    """Return fulfilled image references for an item."""
-    return [
-        a for a in list_item_assets(conn, owner_kind, owner_id, item_id=item_id, status="available", limit=limit)
-        if a.get("asset_uri")
-    ]
-
-
-def ensure_visual_references(conn, owner_kind: str, owner_id: str, *, item_id: str, lazy_generate: bool = True,
-                             source: str = "life_collection") -> dict[str, Any]:
-    """Guard against text-only reconstruction; lazily create missing asset jobs."""
-    item = get_collection_item(conn, owner_kind, owner_id, item_id, include_assets=True)
-    refs = available_item_assets(conn, owner_kind, owner_id, item_id=item_id)
-    if refs:
-        return {"usable": True, "item": item, "references": refs, "created_assets": [], "reason": "available visual references found"}
-    created: list[dict[str, Any]] = []
-    if lazy_generate:
-        created = generate_assets(conn, owner_kind, owner_id, item_id=item_id, source=source).get("created_assets", [])
-        item = get_collection_item(conn, owner_kind, owner_id, item_id, include_assets=True)
-    return {
-        "usable": False,
-        "item": item,
-        "references": [],
-        "created_assets": created,
-        "reason": "missing available visual references; lazy asset jobs created" if created else "missing available visual references; pending asset jobs already exist",
-    }
-
-
 def generate_assets(conn, owner_kind: str, owner_id: str, *, item_id: str, source: str = "life_collection") -> dict[str, Any]:
     item = get_collection_item(conn, owner_kind, owner_id, item_id)
     collection = get_collection(conn, owner_kind, owner_id, collection_id=item["collection_id"])
@@ -385,37 +351,15 @@ def set_item_asset_uri(conn, owner_kind: str, owner_id: str, *, asset_id: str, a
     if metadata:
         meta.update(metadata)
     conn.execute("UPDATE collection_item_assets SET asset_uri=?, status=?, metadata_json=?, updated_at=datetime('now') WHERE id=?", (asset_uri, status, dumps(meta), asset_id))
-    if asset_uri and status == "available":
-        item = get_collection_item(conn, owner_kind, owner_id, old["item_id"])
-        bundle = dict(item.get("asset_bundle") or {})
-        if not bundle.get("primary_image"):
-            bundle["primary_image"] = asset_uri
-        bundle["status"] = "available"
-        refs = list(bundle.get("reference_assets") or [])
-        ref = {"asset_id": asset_id, "asset_type": old.get("asset_type"), "view_name": old.get("view_name"), "asset_uri": asset_uri}
-        if all(r.get("asset_id") != asset_id for r in refs if isinstance(r, dict)):
-            refs.append(ref)
-        bundle["reference_assets"] = refs
-        update_collection_item(conn, owner_kind, owner_id, item_id=old["item_id"], asset_bundle=bundle, source=source)
     append_journal(conn, owner_kind, owner_id, "collection_item_asset_updated", {"asset_id": asset_id, "asset_uri": asset_uri, "status": status}, source)
     return _row_to_asset(conn.execute("SELECT * FROM collection_item_assets WHERE id=?", (asset_id,)).fetchone())
 
 
-def check_out_item(conn, owner_kind: str, owner_id: str, *, item_id: str, reason: str = "checkout", event_id: str | None = None,
-                   require_visual_reference: bool = True, source: str = "life_collection") -> dict[str, Any]:
-    visual = ensure_visual_references(conn, owner_kind, owner_id, item_id=item_id, lazy_generate=True, source=source) if require_visual_reference else {"usable": True, "references": []}
-    if require_visual_reference and not visual.get("usable"):
-        return {
-            "ok": False,
-            "error": "visual_reference_required",
-            "item": visual.get("item"),
-            "created_assets": visual.get("created_assets", []),
-            "rendered": render_visual_reference_required(visual.get("item") or {}, visual.get("created_assets", [])),
-        }
-    item = update_collection_item(conn, owner_kind, owner_id, item_id=item_id, availability_state="in_use", usage_state={"checked_out_at": now_iso(), "reason": reason, "event_id": event_id, "reference_assets": visual.get("references", [])}, source=source)
+def check_out_item(conn, owner_kind: str, owner_id: str, *, item_id: str, reason: str = "checkout", event_id: str | None = None, source: str = "life_collection") -> dict[str, Any]:
+    item = update_collection_item(conn, owner_kind, owner_id, item_id=item_id, availability_state="in_use", usage_state={"checked_out_at": now_iso(), "reason": reason, "event_id": event_id}, source=source)
     usage_id = new_id("coluse")
     conn.execute("INSERT INTO collection_usage_history(id, owner_kind, owner_id, item_id, operation, event_id, reason, status) VALUES(?,?,?,?,?,?,?,?)", (usage_id, owner_kind, owner_id, item_id, "checkout", event_id, reason, "done"))
-    return {"ok": True, "item": item, "usage_id": usage_id, "reference_assets": visual.get("references", [])}
+    return {"ok": True, "item": item, "usage_id": usage_id}
 
 
 def return_item(conn, owner_kind: str, owner_id: str, *, item_id: str, cleanliness_state: str = "dirty", reason: str = "return", event_id: str | None = None, source: str = "life_collection") -> dict[str, Any]:
@@ -441,40 +385,24 @@ def maintain_item(conn, owner_kind: str, owner_id: str, *, item_id: str, mainten
 
 
 def build_outfit(conn, owner_kind: str, owner_id: str, *, occasion: str = "daily", weather: str | None = None, mood: str | None = None,
-                 event_id: str | None = None, lazy_generate: bool = True, source: str = "life_collection") -> dict[str, Any]:
+                 event_id: str | None = None, source: str = "life_collection") -> dict[str, Any]:
     ensure_default_collections(conn, owner_kind, owner_id)
     picks: dict[str, Any] = {}
-    reference_assets: dict[str, list[dict[str, Any]]] = {}
-    missing_visual_references: list[dict[str, Any]] = []
     for ctype in ["wardrobe", "shoe_cabinet", "sock_drawer", "accessory_cabinet", "vanity"]:
         items = list_collection_items(conn, owner_kind, owner_id, collection_type=ctype, availability_state="available", limit=20)
         usable = [i for i in items if i.get("cleanliness_state") not in {"dirty", "laundry", "repair_needed"} and i.get("status") == "active"]
-        picks[ctype] = None
-        for item in usable:
-            visual = ensure_visual_references(conn, owner_kind, owner_id, item_id=item["id"], lazy_generate=lazy_generate, source=source)
-            if visual.get("usable"):
-                picks[ctype] = visual["item"]
-                reference_assets[ctype] = visual.get("references", [])
-                break
-            missing_visual_references.append({"collection_type": ctype, "item_id": item["id"], "name": item.get("name"), "created_assets": visual.get("created_assets", []), "reason": visual.get("reason")})
+        picks[ctype] = usable[0] if usable else None
     item_ids = [p["id"] for p in picks.values() if p]
-    status = "draft" if item_ids else "waiting_assets"
-    reasoning = {
-        "rule": "select clean available items only when available image asset_uri references exist; never reconstruct clothing from text only",
-        "reference_assets": reference_assets,
-        "missing_visual_references": missing_visual_references,
-        "lazy_generate_missing_assets": lazy_generate,
-    }
     plan_id = new_id("outfit")
     conn.execute(
         """INSERT INTO outfit_plans(id, owner_kind, owner_id, occasion, event_id, item_ids_json, context_json, reasoning_json, status)
              VALUES(?,?,?,?,?,?,?,?,?)""",
-        (plan_id, owner_kind, owner_id, occasion, event_id, dumps(item_ids), dumps({"weather": weather, "mood": mood}), dumps(reasoning), status),
+        (plan_id, owner_kind, owner_id, occasion, event_id, dumps(item_ids), dumps({"weather": weather, "mood": mood}), dumps({"rule": "first available clean items by collection"}), "draft"),
     )
-    append_journal(conn, owner_kind, owner_id, "outfit_plan_created", {"outfit_plan_id": plan_id, "item_ids": item_ids, "occasion": occasion, "reference_assets": reference_assets, "missing_visual_references": missing_visual_references}, source)
+    append_journal(conn, owner_kind, owner_id, "outfit_plan_created", {"outfit_plan_id": plan_id, "item_ids": item_ids, "occasion": occasion}, source)
     plan = get_outfit_plan(conn, owner_kind, owner_id, plan_id)
-    ok = bool(item_ids) or not missing_visual_references
-    return {"ok": ok, "outfit_plan": plan, "picks": picks, "reference_assets": reference_assets, "missing_visual_references": missing_visual_references, "rendered": render_outfit(plan, picks)}
+    return {"ok": True, "outfit_plan": plan, "picks": picks, "rendered": render_outfit(plan, picks)}
+
 
 def get_outfit_plan(conn, owner_kind: str, owner_id: str, outfit_plan_id: str) -> dict[str, Any]:
     row = conn.execute("SELECT * FROM outfit_plans WHERE id=? AND owner_kind=? AND owner_id=?", (outfit_plan_id, owner_kind, owner_id)).fetchone()
@@ -531,18 +459,6 @@ def render_item_assets(item: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_visual_reference_required(item: dict[str, Any], created_assets: list[dict[str, Any]] | None = None) -> str:
-    lines = ["需要资产图引用", "=============="]
-    lines.append(f"{item.get('name', '该物品')} 还没有可用的图片引用，不能只按文字描述使用。")
-    if created_assets:
-        lines.append("已按集合规则懒生成待处理资产任务：")
-        for a in created_assets:
-            lines.append(f"- {a.get('asset_type')} · {a.get('status')} · id={a.get('id')}")
-    else:
-        lines.append("已有待生成资产任务，请先生成并绑定 asset_uri。")
-    return "\n".join(lines)
-
-
 def render_outfit(plan: dict[str, Any], picks: dict[str, Any]) -> str:
     names = {
         "wardrobe": "衣服",
@@ -551,27 +467,11 @@ def render_outfit(plan: dict[str, Any], picks: dict[str, Any]) -> str:
         "accessory_cabinet": "配饰",
         "vanity": "梳妆",
     }
-    reasoning = plan.get("reasoning") or {}
-    refs = reasoning.get("reference_assets") or {}
-    missing = reasoning.get("missing_visual_references") or []
     lines = ["今日穿搭 / 造型草案", "================"]
     for key, label in names.items():
         item = picks.get(key)
-        if item:
-            uri = None
-            ref_list = refs.get(key) or []
-            if ref_list:
-                uri = ref_list[0].get("asset_uri")
-            lines.append(f"{label}：{item['name']}" + (f" · reference: {uri}" if uri else " · reference: 已记录"))
-        else:
-            lines.append(f"{label}：暂无可用条目/缺少资产图引用")
-    lines.append(f"场合：{plan.get('occasion')}；状态：{plan.get('status')}")
-    if missing:
-        lines.append("\n缺少图片引用，已按规则懒生成/复用资产任务；这些物品暂不能只靠文字描述用于出图：")
-        for m in missing:
-            created = m.get("created_assets") or []
-            job_text = "，".join([f"{a.get('asset_type')}:{a.get('id')}" for a in created]) or "已有 pending 任务"
-            lines.append(f"- {m.get('name')}（{m.get('collection_type')}）：{job_text}")
-    lines.append("说明：只从已入库集合中选择；使用/出图必须引用可用 asset_uri，禁止只按文字描述重建物品。")
+        lines.append(f"{label}：{item['name'] if item else '暂无可用条目'}")
+    lines.append(f"场合：{plan.get('occasion')}")
+    lines.append("说明：只从已入库集合中选择；缺失项不会凭空生成，会提示补充或清洗/维护。")
     return "\n".join(lines)
 

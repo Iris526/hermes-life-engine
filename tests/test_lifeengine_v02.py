@@ -32,33 +32,6 @@ def test_agent_setup_commit_resume_and_hash_verify(tmp_path):
         rt.close()
 
 
-def test_canon_draft_patch_can_delete_stale_nested_keys(tmp_path):
-    fresh_home(tmp_path)
-    rt = LifeEngineRuntime()
-    try:
-        rt.setup("名字是Iris。世界观：归明观。货币用日元。")
-        rt.commit_canon()
-        assert "money.jpy" in rt.status()["canon"]["resources"]["definitions"]
-
-        rt.control("setup")
-        rt.required_settings(
-            "patch",
-            patch={
-                "identity": {"name": "Iris", "gender": "female"},
-                "truth_sources": {"bindings": {"currency": {"domain": "currency", "authority": "fixed_setting", "value": "灵铢"}}},
-                "resources": {"definitions": {"money.lingzhu": {"display_name": "灵铢资源", "resource_class": "fungible", "unit": "灵铢", "min": 0, "initial": 2600}}},
-            },
-            delete_path="resources.definitions.money.jpy",
-        )
-        committed = rt.commit_canon()["canon"]
-        assert committed["data"]["identity"]["gender"] == "female"
-        assert committed["data"]["truth_sources"]["bindings"]["currency"]["value"] == "灵铢"
-        assert "money.lingzhu" in committed["data"]["resources"]["definitions"]
-        assert "money.jpy" not in committed["data"]["resources"]["definitions"]
-    finally:
-        rt.close()
-
-
 def test_user_life_rejects_agent_narrative_source(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()

@@ -21,7 +21,7 @@ DOMAINS: dict[str, dict[str, Any]] = {
     "schedule": {
         "label": "日程 / Schedule",
         "read": ["today", "tomorrow", "week", "day", "unscheduled", "explain"],
-        "write": ["schedule_event", "reschedule", "cancel_block", "complete_block"],
+        "write": ["schedule_event", "reschedule", "cancel_block", "complete_block", "cleanup_stale"],
         "rule": "Event 是事情；ScheduleBlock 才是具体排期。写入走 LifeOps。",
     },
     "event": {
@@ -44,8 +44,8 @@ DOMAINS: dict[str, dict[str, Any]] = {
     },
     "collection": {
         "label": "衣橱/鞋柜/梳妆台/配饰柜/袜子抽屉 / Collections",
-        "read": ["summary", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "outfits"],
-        "write": ["init", "create_collection", "update_collection", "archive_collection", "add_item", "generate_assets", "set_asset", "checkout", "return", "maintain", "outfit"],
+        "read": ["summary", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "outfits", "resolve_outfit", "current_outfit", "asset_check", "purchase_chains"],
+        "write": ["init", "create_collection", "update_collection", "archive_collection", "add_item", "generate_assets", "set_asset", "resolve_outfit", "wear_outfit", "return_outfit", "asset_check", "purchase_chain", "checkout", "return", "maintain", "outfit"],
         "rule": "集合分类是预设但可增删改；新增物品必须按集合规则生成资产图任务，再供穿搭/使用检索。",
     },
     "behavior": {

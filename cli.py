@@ -25,7 +25,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_living = sub.add_parser("living", help="Concrete living layer: rhythm, Canon consistency, inventory presets, paper notes")
     p_living.add_argument("action", nargs="?", default="summary", choices=["summary", "consistency", "init_inventory", "day_rhythm", "decompose_abstract", "paper_notes", "create_note", "diary_draft"])
     p_living.add_argument("text", nargs="*", help="Optional note text or additional args")
-    p_living.add_argument("--preset", default="default")
+    p_living.add_argument("--preset", default="guimingguan")
     p_living.add_argument("--date")
     p_living.add_argument("--timezone", default="Asia/Tokyo")
     p_living.add_argument("--event-id")
@@ -34,7 +34,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
 
 
     p_closet = sub.add_parser("closet", help="Human-friendly wardrobe/shoes/socks/accessories/vanity collections")
-    p_closet.add_argument("action", nargs="?", default="summary", choices=["summary", "init", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "add", "add_item", "create_collection", "update_collection", "archive_collection", "generate_assets", "checkout", "return", "maintain", "outfit", "outfits", "presets"])
+    p_closet.add_argument("action", nargs="?", default="summary", choices=["summary", "init", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "add", "add_item", "create_collection", "update_collection", "archive_collection", "generate_assets", "checkout", "return", "maintain", "outfit", "outfits", "presets", "resolve_outfit", "current_outfit", "wear_outfit", "return_outfit", "asset_check", "purchase_chain", "purchase_chains"])
     p_closet.add_argument("text", nargs="*", help="Optional item name/description or collection name")
     p_closet.add_argument("--collection-id")
     p_closet.add_argument("--collection-type")
@@ -46,6 +46,12 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_closet.add_argument("--description")
     p_closet.add_argument("--quantity", type=float, default=1)
     p_closet.add_argument("--occasion", default="daily")
+    p_closet.add_argument("--outfit-plan-id")
+    p_closet.add_argument("--resolution-id")
+    p_closet.add_argument("--snapshot-id")
+    p_closet.add_argument("--price", type=float)
+    p_closet.add_argument("--money-key")
+    p_closet.add_argument("--behavior-key")
     p_closet.add_argument("--limit", type=int, default=50)
 
     p_behavior = sub.add_parser("behavior", help="Private behavior mappings from public life actions to hidden information sources")
@@ -430,7 +436,7 @@ def handle_cli(args) -> None:
                 payload["text"] = " ".join(args.text)
             print(format_result(rt.living(args.action, **{k:v for k,v in payload.items() if v is not None})))
         elif action == "closet":
-            payload = {"collection_id": args.collection_id, "collection_type": args.collection_type or args.type, "item_id": args.item_id, "asset_id": args.asset_id, "asset_uri": args.asset_uri, "quantity": args.quantity, "occasion": args.occasion, "limit": args.limit}
+            payload = {"collection_id": args.collection_id, "collection_type": args.collection_type or args.type, "item_id": args.item_id, "asset_id": args.asset_id, "asset_uri": args.asset_uri, "quantity": args.quantity, "occasion": args.occasion, "outfit_plan_id": args.outfit_plan_id, "resolution_id": args.resolution_id, "snapshot_id": args.snapshot_id, "price": args.price, "money_key": args.money_key, "behavior_key": args.behavior_key, "limit": args.limit}
             if args.name:
                 payload["name"] = args.name
             elif args.text:
@@ -936,15 +942,18 @@ def slash_life(raw_args: str) -> str:
 
         if cmd in {"closet", "衣橱", "衣柜", "鞋柜", "袜子", "配饰", "梳妆台"}:
             action = rest[0] if rest else "summary"
-            aliases = {"初始化": "init", "衣橱": "wardrobe", "衣柜": "wardrobe", "鞋柜": "shoes", "袜子": "socks", "配饰": "accessories", "梳妆台": "vanity", "穿搭": "outfit", "添加": "add", "新增": "add"}
+            aliases = {"初始化": "init", "衣橱": "wardrobe", "衣柜": "wardrobe", "鞋柜": "shoes", "袜子": "socks", "配饰": "accessories", "梳妆台": "vanity", "穿搭": "outfit", "解析": "resolve_outfit", "当前穿着": "current_outfit", "穿上": "wear_outfit", "回库": "return_outfit", "资产检查": "asset_check", "购物入柜": "purchase_chain", "添加": "add", "新增": "add"}
             action = aliases.get(action, action)
             payload = {}
-            if action in {"add", "add_item"}:
+            if action in {"add", "add_item", "purchase_chain"}:
                 if len(rest) > 1:
                     payload["collection_type"] = rest[1]
                 if len(rest) > 2:
                     payload["name"] = rest[2]
                     payload["description"] = " ".join(rest[3:]) if len(rest) > 3 else rest[2]
+            elif action in {"resolve_outfit", "outfit"}:
+                if len(rest) > 1:
+                    payload["query_text"] = " ".join(rest[1:])
             elif action == "create_collection":
                 if len(rest) > 1:
                     payload["collection_type"] = rest[1]
@@ -968,7 +977,7 @@ def slash_life(raw_args: str) -> str:
             )
         if cmd in {"living", "生活", "节律", "小日子"}:
             action = rest[0] if rest else "summary"
-            payload = {"preset": "default"}
+            payload = {"preset": "guimingguan"}
             if action in {"day", "daily", "today"}:
                 action = "day_rhythm"
             if action in {"inventory", "库存初始化"}:

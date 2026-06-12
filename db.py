@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 42
+_SCHEMA_VERSION = 43
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -96,7 +96,7 @@ def migrate(conn: sqlite3.Connection) -> None:
 
     v0 -> v1 creates the original LifeEngine tables; later versions add
     receipts, truth sources, inventory, goals, autonomy, proactive, execution,
-    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets, and v0.12.7 behavior-to-truth-source mapping.
+    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets, and v0.12.8 behavior-to-truth-source mapping, and v0.12.8 outfit resolver/current outfit/action-chain closure.
     """
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
     _ensure_schema_migration_table(conn)
@@ -228,6 +228,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 42:
         _create_schema_v42(conn)
         _record_schema_migration(conn, 42, "behavior_truth_source_mapping")
+    if current < 43:
+        _create_schema_v43(conn)
+        _record_schema_migration(conn, 43, "outfit_resolver_and_action_chain_closure")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -2968,7 +2971,7 @@ def _create_schema_v40(conn: sqlite3.Connection) -> None:
           owner_kind TEXT NOT NULL,
           owner_id TEXT NOT NULL,
           date_key TEXT,
-          preset TEXT NOT NULL DEFAULT 'default',
+          preset TEXT NOT NULL DEFAULT 'guimingguan',
           action TEXT NOT NULL,
           status TEXT NOT NULL DEFAULT 'created',
           event_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -3156,7 +3159,7 @@ def _create_schema_v41(conn: sqlite3.Connection) -> None:
 
 
 def _create_schema_v42(conn: sqlite3.Connection) -> None:
-    """v0.12.7 behavior mapping / private truth-source routing."""
+    """v0.12.8 behavior mapping / private truth-source routing."""
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS behavior_mappings (
@@ -3215,5 +3218,100 @@ def _create_schema_v42(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_behavior_mapping_runs_owner
           ON behavior_mapping_runs(owner_kind, owner_id, created_at);
+        """
+    )
+
+
+def _create_schema_v43(conn: sqlite3.Connection) -> None:
+    """v0.12.8 outfit resolver, current outfit snapshots, and purchase/action chains."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS outfit_resolutions (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          query_text TEXT,
+          occasion TEXT NOT NULL DEFAULT 'daily',
+          event_id TEXT,
+          outfit_plan_id TEXT,
+          status TEXT NOT NULL DEFAULT 'resolved',
+          query_json TEXT NOT NULL DEFAULT '{}',
+          resolved_refs_json TEXT NOT NULL DEFAULT '{}',
+          missing_json TEXT NOT NULL DEFAULT '[]',
+          asset_completeness_json TEXT NOT NULL DEFAULT '{}',
+          context_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_outfit_resolutions_owner_time
+          ON outfit_resolutions(owner_kind, owner_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS outfit_snapshots (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          outfit_plan_id TEXT,
+          event_id TEXT,
+          status TEXT NOT NULL DEFAULT 'wearing',
+          worn_at TEXT,
+          removed_at TEXT,
+          refs_json TEXT NOT NULL DEFAULT '{}',
+          dirty_state_json TEXT NOT NULL DEFAULT '{}',
+          context_json TEXT NOT NULL DEFAULT '{}',
+          notes_json TEXT NOT NULL DEFAULT '{}',
+          asset_completeness_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_outfit_snapshots_owner_status
+          ON outfit_snapshots(owner_kind, owner_id, status, worn_at DESC);
+
+        CREATE TABLE IF NOT EXISTS collection_asset_checks (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          target_kind TEXT NOT NULL,
+          target_id TEXT,
+          status TEXT NOT NULL DEFAULT 'checked',
+          missing_json TEXT NOT NULL DEFAULT '[]',
+          needs_generation_json TEXT NOT NULL DEFAULT '[]',
+          complete_json TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_collection_asset_checks_owner
+          ON collection_asset_checks(owner_kind, owner_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS collection_purchase_chains (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          behavior_key TEXT,
+          event_id TEXT,
+          collection_item_id TEXT,
+          need_json TEXT NOT NULL DEFAULT '{}',
+          purchase_json TEXT NOT NULL DEFAULT '{}',
+          resource_deltas_json TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL DEFAULT 'pending',
+          result_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_collection_purchase_chains_owner
+          ON collection_purchase_chains(owner_kind, owner_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS stale_event_cleanup_runs (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          mode TEXT NOT NULL DEFAULT 'safe',
+          status TEXT NOT NULL DEFAULT 'completed',
+          cutoff_ts INTEGER,
+          affected_events_json TEXT NOT NULL DEFAULT '[]',
+          affected_blocks_json TEXT NOT NULL DEFAULT '[]',
+          result_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_stale_event_cleanup_owner
+          ON stale_event_cleanup_runs(owner_kind, owner_id, created_at DESC);
         """
     )

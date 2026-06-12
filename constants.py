@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 PLUGIN_NAME = "lifeengine"
-PLUGIN_VERSION = "0.12.7"
+PLUGIN_VERSION = "0.12.8"
 DB_FILENAME = "lifeengine.db"
 VECTOR_DIM = 384
 
@@ -49,6 +49,8 @@ DEFAULT_MODULE_GATES = {
     "human_surface": "simple",
     "schedule_view": "human",
     "collections": "auto",
+    "behavior_mapping": "auto",
+    "behavior_mapping": "auto",
     "behavior_mapping": "auto",
     "managed_review_loop": "auto",
     "srd_policy": "auto",

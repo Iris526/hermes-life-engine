@@ -91,6 +91,7 @@ from .events import (
     transition_event,
     update_schedule_block_status,
 )
+from .event_cleanup import cleanup_stale_events
 from .execution import (
     apply_serendipity_event,
     get_execution_decision,
@@ -153,6 +154,19 @@ from .collections import (
     set_item_asset_uri,
     update_collection,
     update_collection_item,
+)
+from .collection_flow import (
+    asset_completeness_for_item,
+    check_outfit_assets,
+    create_outfit_snapshot,
+    get_current_outfit,
+    list_outfit_resolutions,
+    list_outfit_snapshots,
+    list_purchase_chains,
+    purchase_to_collection,
+    resolve_outfit,
+    return_current_outfit,
+    render_current_outfit,
 )
 
 from .invariants import run_doctor as run_invariant_doctor
@@ -2582,6 +2596,9 @@ class LifeEngineRuntime:
             return self.commit_ops([{"type": "UPDATE_SCHEDULE_BLOCK_STATUS", "payload": {"schedule_block_id": payload.get("schedule_block_id") or payload.get("block_id"), "status": "cancelled", "reason": payload.get("reason") or "cancelled by life_schedule"}}], owner_kind, owner_id, "life_schedule_tool", session_id, turn_id)
         if action_l in {"complete", "complete_block", "done", "完成"}:
             return self.commit_ops([{"type": "UPDATE_SCHEDULE_BLOCK_STATUS", "payload": {"schedule_block_id": payload.get("schedule_block_id") or payload.get("block_id"), "status": "completed", "reason": payload.get("reason") or "completed by life_schedule"}}], owner_kind, owner_id, "life_schedule_tool", session_id, turn_id)
+        if action_l in {"cleanup_stale", "stale_cleanup", "expire_old", "清理过期"}:
+            with transaction(self.conn):
+                return cleanup_stale_events(self.conn, owner_kind, owner_id, cutoff_ts=payload.get("cutoff_ts"), mode=payload.get("mode") or "safe", limit=int(payload.get("limit", 100)))
 
         with transaction(self.conn):
             canon = get_active_canon(self.conn, owner_kind, owner_id)
@@ -2646,7 +2663,6 @@ class LifeEngineRuntime:
                     self.conn, owner_kind, owner_id,
                     path=payload.get("path"), value=value, section=payload.get("section"),
                     patch=patch if isinstance(patch, dict) else None, text=text,
-                    delete_path=payload.get("delete_path"), delete_paths=payload.get("delete_paths"),
                     source=str(payload.get("source") or "agent"),
                 )
                 return {"ok": True, "draft": draft, "rendered": render_draft_summary(draft)}
@@ -2694,7 +2710,7 @@ class LifeEngineRuntime:
             with transaction(self.conn):
                 return canon_consistency_check(self.conn, owner_kind, owner_id, persist=bool(payload.get("persist", True)))
         if action_l in {"init_inventory", "inventory_preset", "bootstrap_inventory"}:
-            preset = str(payload.get("preset") or "default")
+            preset = str(payload.get("preset") or "guimingguan")
             ops = inventory_preset_ops(preset)
             commit = self.commit_ops(ops, owner_kind, owner_id, "living_inventory_preset", session_id, turn_id)
             item_names = [op["payload"].get("name") for op in ops if op["type"] == "CREATE_INVENTORY_ITEM"]
@@ -2711,7 +2727,7 @@ class LifeEngineRuntime:
             return {"ok": True, "run_id": run_id, "commit": commit, "resource_keys": resource_keys, "item_names": item_names, "rendered": rendered}
         if action_l in {"day_rhythm", "rhythm", "plan_day", "generate_day", "living_day"}:
             # Concrete daily rhythm: create specific events and schedule blocks instead of abstract "推进目标" placeholders.
-            preset = str(payload.get("preset") or "default")
+            preset = str(payload.get("preset") or "guimingguan")
             date_key = payload.get("date") or payload.get("date_key")
             tz = payload.get("timezone") or "Asia/Tokyo"
             templates = rhythm_templates(date_key=date_key, tz=tz, preset=preset)
@@ -2743,7 +2759,7 @@ class LifeEngineRuntime:
                     if bid: block_ids.append(bid)
                     tx_ids.append(c2.get("transaction_id")); receipts.append((c2.get("receipt") or {}).get("receipt_id"))
             if owner_kind == "agent" and any(i.get("worth_proactive") for i in templates):
-                self.commit_ops([{"type": "CREATE_PROACTIVE_INTENT", "payload": {"target_type": "self_journal", "intent_type": "report_progress", "summary": "我给今天折了几张小日程纸条：晨巡、整理、工具包、小委托和傍晚记账。", "emotional_tone": "calm", "importance": 62, "urgency": 25, "novelty": 45, "relationship_relevance": 45, "privacy_level": "safe_to_share", "status": "generated"}}], owner_kind, owner_id, "life_rhythm_engine", session_id, turn_id)
+                self.commit_ops([{"type": "CREATE_PROACTIVE_INTENT", "payload": {"target_type": "self_journal", "intent_type": "report_progress", "summary": "我给今天折了几张归明观的小日程纸条：晨巡、香案、工具包、小委托和傍晚记账。", "emotional_tone": "calm", "importance": 62, "urgency": 25, "novelty": 45, "relationship_relevance": 45, "privacy_level": "safe_to_share", "status": "generated"}}], owner_kind, owner_id, "life_rhythm_engine", session_id, turn_id)
             rendered = "今日生活节律已生成\n================\n" + "\n".join([f"- {t['start'][11:16]}-{t['end'][11:16]} {t['title']}" for t in templates])
             with transaction(self.conn):
                 run_id = new_id("rhythm")
@@ -2777,16 +2793,13 @@ class LifeEngineRuntime:
                         return {"ok": False, "error": "no abstract goal event found", "rendered": "没有找到需要分解的抽象目标事件。"}
                     event, goal = selected
                 else:
-                    erow = self.conn.execute("SELECT * FROM events WHERE id=? AND owner_kind=? AND owner_id=?", (event_id, owner_kind, owner_id)).fetchone()
-                    if not erow:
-                        return {"ok": False, "error": "abstract event not found", "rendered": f"未找到事件：{event_id}"}
-                    event = dict(erow)
+                    event = dict(self.conn.execute("SELECT * FROM events WHERE id=? AND owner_kind=? AND owner_id=?", (event_id, owner_kind, owner_id)).fetchone())
                     grow = self.conn.execute("SELECT g.* FROM event_goal_links l JOIN goals g ON g.id=l.goal_id WHERE l.event_id=? LIMIT 1", (event_id,)).fetchone()
                     goal = dict(grow) if grow else {}
                 goal_id = goal.get("id") or event.get("goal_id")
             if not goal_id:
                 return {"ok": False, "error": "abstract event has no linked goal"}
-            children = abstract_goal_children(date_key=payload.get("date"), tz=payload.get("timezone") or "Asia/Tokyo", preset=str(payload.get("preset") or "default"))
+            children = abstract_goal_children(date_key=payload.get("date"), tz=payload.get("timezone") or "Asia/Tokyo", preset=str(payload.get("preset") or "guimingguan"))
             commit = self.commit_ops([{"type": "DECOMPOSE_EVENT", "payload": {"parent_event_id": event["id"], "goal_id": goal_id, "children": children, "decomposition_type": "life_rhythm", "strategy": "concrete_daily_children", "source": "life_rhythm_decomposer", "link_children_to_goal": True}}], owner_kind, owner_id, "life_rhythm_decomposer", session_id, turn_id)
             rendered = "抽象目标事件已分解为具体日常\n==============================\n" + "\n".join([f"- {c['title']}" for c in children])
             return {"ok": True, "parent_event_id": event["id"], "goal_id": goal_id, "commit": commit, "rendered": rendered}
@@ -2902,6 +2915,25 @@ class LifeEngineRuntime:
         """
         action_l = str(action or "summary").strip().lower()
         with transaction(self.conn):
+            if action_l in {"resolve_outfit", "resolver", "resolve", "解析穿搭", "穿搭解析"}:
+                return resolve_outfit(self.conn, owner_kind, owner_id, query_text=payload.get("query_text") or payload.get("text") or payload.get("name") or payload.get("summary"), occasion=payload.get("occasion") or "daily", event_id=payload.get("event_id"), context=payload.get("context") or {}, source="life_collection_tool")
+            if action_l in {"current_outfit", "current", "wearing", "当前穿着"}:
+                snap = get_current_outfit(self.conn, owner_kind, owner_id)
+                return {"ok": True, "current_outfit": snap, "rendered": render_current_outfit(snap)}
+            if action_l in {"outfit_snapshots", "wear_history", "snapshots"}:
+                snaps = list_outfit_snapshots(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 20)))
+                return {"ok": True, "outfit_snapshots": snaps, "rendered": "穿着记录\n========\n" + ("\n".join([f"- {x.get('worn_at')} · {x.get('status')} · {x.get('id')}" for x in snaps]) or "暂无。")}
+            if action_l in {"wear_outfit", "wear_resolved", "wear_plan", "穿上"}:
+                return create_outfit_snapshot(self.conn, owner_kind, owner_id, outfit_plan_id=payload.get("outfit_plan_id"), resolution_id=payload.get("resolution_id"), event_id=payload.get("event_id"), source="life_collection_tool")
+            if action_l in {"return_outfit", "change_outfit", "脱下", "回库穿搭"}:
+                return return_current_outfit(self.conn, owner_kind, owner_id, snapshot_id=payload.get("snapshot_id"), cleanliness_state=payload.get("cleanliness_state", "dirty"), source="life_collection_tool")
+            if action_l in {"asset_check", "check_assets", "asset_completeness", "完整度"}:
+                return check_outfit_assets(self.conn, owner_kind, owner_id, item_id=payload.get("item_id"), outfit_plan_id=payload.get("outfit_plan_id"), resolution_id=payload.get("resolution_id"))
+            if action_l in {"purchase_chain", "buy_to_closet", "purchase_item", "购物入柜", "买入入柜"}:
+                return purchase_to_collection(self.conn, owner_kind, owner_id, collection_type=payload.get("collection_type") or payload.get("type") or "wardrobe", name=payload.get("name") or payload.get("item_name") or "未命名新物品", description=payload.get("description") or payload.get("text"), price=payload.get("price"), money_key=payload.get("money_key") or payload.get("resource_key"), need=payload.get("need") or {}, behavior_key=payload.get("behavior_key") or "shopping_clothes", source="life_collection_tool")
+            if action_l in {"purchase_chains", "shopping_chains"}:
+                chains = list_purchase_chains(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 20)))
+                return {"ok": True, "purchase_chains": chains, "rendered": "购买→入柜链路\n================\n" + ("\n".join([f"- {c.get('created_at')} · {c.get('status')} · {((c.get('purchase') or {}).get('name'))}" for c in chains]) or "暂无。")}
             if action_l in {"summary", "status", "closet"}:
                 ensure_default_collections(self.conn, owner_kind, owner_id)
                 collections = list_collections(self.conn, owner_kind, owner_id)
@@ -2993,7 +3025,8 @@ class LifeEngineRuntime:
                 return maintain_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], maintenance_type=payload.get("maintenance_type") or action_l, reason=payload.get("reason") or action_l)
             if action_l in {"outfit", "build_outfit", "style", "wear_today"}:
                 ensure_default_collections(self.conn, owner_kind, owner_id)
-                return build_outfit(self.conn, owner_kind, owner_id, occasion=payload.get("occasion") or "daily", weather=payload.get("weather"), mood=payload.get("mood"), event_id=payload.get("event_id"))
+                # v0.12.8: default outfit action is resolver-first, so missing cabinets/assets are explicit.
+                return resolve_outfit(self.conn, owner_kind, owner_id, query_text=payload.get("query_text") or payload.get("text") or "今日穿搭", occasion=payload.get("occasion") or "daily", event_id=payload.get("event_id"), context={"weather": payload.get("weather"), "mood": payload.get("mood")}, source="life_collection_tool")
             if action_l in {"outfits", "list_outfits"}:
                 plans = list_outfit_plans(self.conn, owner_kind, owner_id, status=payload.get("status"), limit=int(payload.get("limit", 20)))
                 return {"ok": True, "outfit_plans": plans, "rendered": "造型草案\n========\n" + ("\n".join([f"- {p['created_at']} · {p['occasion']} · {p['status']}" for p in plans]) or "暂无。")}

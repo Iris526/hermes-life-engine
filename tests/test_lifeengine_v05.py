@@ -65,20 +65,7 @@ def test_inventory_item_meal_and_receipt_final_gate(tmp_path):
     rt = LifeEngineRuntime()
     try:
         activate_agent(rt)
-        item = rt.inventory(
-            "add",
-            session_id="s5",
-            turn_id="t5",
-            name="藏青色百褶裙",
-            category="clothing",
-            quantity=1,
-            unit="件",
-            condition="new",
-            location="衣柜",
-            image_path="/root/.hermes/assets/iris-wardrobe/navy-pleated-skirt.jpg",
-            media={"caption": "衣橱参考图"},
-            source="agent_narrative_assertion",
-        )
+        item = rt.inventory("add", session_id="s5", turn_id="t5", name="藏青色百褶裙", category="clothing", quantity=1, unit="件", condition="new", location="衣柜", source="agent_narrative_assertion")
         assert item["ok"] is True
         tx_id = item["transaction_id"]
         explained = rt.traces("explain", transaction_id=tx_id)
@@ -86,15 +73,6 @@ def test_inventory_item_meal_and_receipt_final_gate(tmp_path):
         assert rt.audit_final_output("我的衣柜里有一条藏青色百褶裙。", session_id="s5", turn_id="t5") is None
         inv = rt.inventory("list", category="clothing")["items"]
         assert inv and inv[0]["name"] == "藏青色百褶裙"
-        media = inv[0]["attributes"]["media"]
-        assert media["caption"] == "衣橱参考图"
-        assert media["primary_image"]["path"].endswith("navy-pleated-skirt.jpg")
-        assert media["references"][0]["role"] == "primary"
-
-        updated = rt.inventory("update", item_id=inv[0]["id"], image_url="https://example.test/skirt.png")
-        updated_media = updated["results"][0]["result"]["attributes"]["media"]
-        assert updated_media["primary_image"]["url"] == "https://example.test/skirt.png"
-        assert updated_media["caption"] == "衣橱参考图"
 
         meal = rt.inventory("meal", meal_type="lunch", food_items=["咖喱饭"], satisfaction=6, notes="有点辣", source="agent_retro_assertion")
         assert meal["ok"] is True

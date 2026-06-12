@@ -1,4 +1,4 @@
-# LifeEngine v0.12.7 — Behavior Mapping / Private Truth Source Routing
+# LifeEngine v0.12.8 — Behavior Mapping / Private Truth Source Routing
 
 ## 1. Purpose
 

@@ -131,20 +131,20 @@ def render_canon_consistency(status: str, issues: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-TEMPLE_LIFE_INVENTORY = [
-    {"name": "符纸", "category": "daily_supply", "subcategory": "talisman", "quantity": 24, "unit": "张", "location": "小道观·偏柜", "notes": "日常净符和小委托会消耗。"},
-    {"name": "朱砂墨", "category": "daily_supply", "subcategory": "ink", "quantity": 1, "unit": "瓶", "location": "小道观·案头"},
-    {"name": "香", "category": "daily_supply", "subcategory": "incense", "quantity": 18, "unit": "支", "location": "小道观·香盒"},
+GUIMINGGUAN_INVENTORY = [
+    {"name": "符纸", "category": "daily_supply", "subcategory": "talisman", "quantity": 24, "unit": "张", "location": "归明观·偏柜", "notes": "日常净符和小委托会消耗。"},
+    {"name": "朱砂墨", "category": "daily_supply", "subcategory": "ink", "quantity": 1, "unit": "瓶", "location": "归明观·案头"},
+    {"name": "香", "category": "daily_supply", "subcategory": "incense", "quantity": 18, "unit": "支", "location": "归明观·香盒"},
     {"name": "小型结界仪", "category": "tool", "subcategory": "barrier_meter", "quantity": 1, "unit": "台", "condition": "good", "location": "随身工具包"},
     {"name": "铜铃", "category": "tool", "subcategory": "ritual_bell", "quantity": 1, "unit": "只", "location": "随身"},
-    {"name": "小道观钥匙", "category": "tool", "subcategory": "key", "quantity": 1, "unit": "把", "location": "随身"},
-    {"name": "委托记录册", "category": "book", "subcategory": "commission_log", "quantity": 1, "unit": "本", "location": "小道观·柜台"},
-    {"name": "干净道袍", "category": "clothing", "subcategory": "robe", "quantity": 2, "unit": "套", "condition": "clean", "location": "小道观·衣柜"},
-    {"name": "茶叶", "category": "food", "subcategory": "tea", "quantity": 1, "unit": "罐", "location": "小道观·茶柜"},
-    {"name": "十二城小点心", "category": "food", "subcategory": "snack", "quantity": 3, "unit": "份", "location": "小道观·小柜"},
+    {"name": "归明观钥匙", "category": "tool", "subcategory": "key", "quantity": 1, "unit": "把", "location": "随身"},
+    {"name": "委托记录册", "category": "book", "subcategory": "commission_log", "quantity": 1, "unit": "本", "location": "归明观·柜台"},
+    {"name": "干净道袍", "category": "clothing", "subcategory": "robe", "quantity": 2, "unit": "套", "condition": "clean", "location": "归明观·衣柜"},
+    {"name": "茶叶", "category": "food", "subcategory": "tea", "quantity": 1, "unit": "罐", "location": "归明观·茶柜"},
+    {"name": "十二城小点心", "category": "food", "subcategory": "snack", "quantity": 3, "unit": "份", "location": "归明观·小柜"},
 ]
 
-TEMPLE_LIFE_RESOURCES = [
+GUIMINGGUAN_RESOURCES = [
     {"key": "money.lingzhu", "display_name": "灵铢", "resource_class": "fungible", "unit": "枚", "min_value": 0, "max_value": None, "initial": 120},
     {"key": "daily_cost.lingzhu", "display_name": "每日基础开销", "resource_class": "fungible", "unit": "枚/日", "min_value": 0, "max_value": None, "initial": 8},
     {"key": "commission_income.lingzhu", "display_name": "委托收入累计", "resource_class": "fungible", "unit": "枚", "min_value": 0, "max_value": None, "initial": 0},
@@ -155,32 +155,14 @@ TEMPLE_LIFE_RESOURCES = [
 ]
 
 
-def _uses_temple_life_preset(preset: str | None) -> bool:
-    return str(preset or "").lower() in {"temple_life", "temple_life"}
-
-
-def _genericize_living_text(value: Any) -> Any:
-    if isinstance(value, str):
-        return value.replace("小道观", "小道观").replace("重要的人", "重要的人")
-    if isinstance(value, list):
-        return [_genericize_living_text(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _genericize_living_text(v) for k, v in value.items()}
-    return value
-
-
-def inventory_preset_ops(preset: str = "default") -> list[dict[str, Any]]:
-    preset = str(preset or "default")
-    use_temple_life = _uses_temple_life_preset(preset)
-    if preset not in {"temple_life", "temple_life", "taoist_temple", "default", "temple_life"}:
-        preset = "default"
+def inventory_preset_ops(preset: str = "guimingguan") -> list[dict[str, Any]]:
+    if preset not in {"guimingguan", "mingdeng", "taoist_temple", "default"}:
+        preset = "guimingguan"
     ops: list[dict[str, Any]] = []
-    for res in TEMPLE_LIFE_RESOURCES:
-        payload = dict(res) if use_temple_life else _genericize_living_text(dict(res))
-        ops.append({"type": "RESOURCE_DEFINE", "payload": payload})
-    for item in TEMPLE_LIFE_INVENTORY:
-        payload = dict(item) if use_temple_life else _genericize_living_text(dict(item))
-        ops.append({"type": "CREATE_INVENTORY_ITEM", "payload": {**payload, "attributes": {"preset": preset}, "source": "living_inventory_preset"}})
+    for res in GUIMINGGUAN_RESOURCES:
+        ops.append({"type": "RESOURCE_DEFINE", "payload": dict(res)})
+    for item in GUIMINGGUAN_INVENTORY:
+        ops.append({"type": "CREATE_INVENTORY_ITEM", "payload": {**item, "attributes": {"preset": preset}, "source": "living_inventory_preset"}})
     return ops
 
 
@@ -188,20 +170,19 @@ def _time_for(date_key: str, hhmm: str, tz: str) -> str:
     return f"{date_key}T{hhmm}:00+09:00" if tz == "Asia/Tokyo" else f"{date_key}T{hhmm}:00"
 
 
-def rhythm_templates(date_key: str | None = None, tz: str = "Asia/Tokyo", preset: str = "default") -> list[dict[str, Any]]:
+def rhythm_templates(date_key: str | None = None, tz: str = "Asia/Tokyo", preset: str = "guimingguan") -> list[dict[str, Any]]:
     date_key = date_key or datetime.now(ZoneInfo(tz)).date().isoformat()
-    templates = [
-        {"title": "小道观晨巡与开观", "start": _time_for(date_key, "07:30", tz), "end": _time_for(date_key, "08:05", tz), "event_type": "routine", "event_category": "maintenance", "activity_domain": "temple_morning", "resource_costs": {"energy": -4, "mood": 2}, "tags": ["晨巡", "开观", "小道观"], "worth_diary": False},
+    return [
+        {"title": "归明观晨巡与开观", "start": _time_for(date_key, "07:30", tz), "end": _time_for(date_key, "08:05", tz), "event_type": "routine", "event_category": "maintenance", "activity_domain": "temple_morning", "resource_costs": {"energy": -4, "mood": 2}, "tags": ["晨巡", "开观", "归明观"], "worth_diary": False},
         {"title": "打扫香案并补符纸", "start": _time_for(date_key, "08:20", tz), "end": _time_for(date_key, "08:55", tz), "event_type": "temple_chores", "event_category": "maintenance", "activity_domain": "altar_upkeep", "resource_costs": {"energy": -5, "supplies.incense": -1}, "tags": ["香案", "符纸", "日常"], "worth_diary": False},
         {"title": "检查小型结界工具包", "start": _time_for(date_key, "09:40", tz), "end": _time_for(date_key, "10:15", tz), "event_type": "inspection", "event_category": "work", "activity_domain": "barrier_tools", "resource_costs": {"focus": -5, "tools.barrier_meter_condition": -1}, "tags": ["结界仪", "工具包"], "worth_diary": False},
         {"title": "接一个低风险净符委托", "start": _time_for(date_key, "13:30", tz), "end": _time_for(date_key, "15:00", tz), "event_type": "commission", "event_category": "work", "activity_domain": "low_risk_talisman_commission", "resource_costs": {"energy": -12, "focus": -10, "supplies.talisman_paper": -3}, "tags": ["小委托", "净符", "十二城"], "worth_diary": True, "worth_proactive": True},
         {"title": "傍晚记账与灵铢收支整理", "start": _time_for(date_key, "17:40", tz), "end": _time_for(date_key, "18:10", tz), "event_type": "bookkeeping", "event_category": "finance", "activity_domain": "temple_accounts", "resource_costs": {"focus": -4}, "tags": ["记账", "灵铢"], "worth_diary": True},
-        {"title": "写一张给 重要的人 的小纸条草稿", "start": _time_for(date_key, "21:30", tz), "end": _time_for(date_key, "21:45", tz), "event_type": "proactive_note", "event_category": "relationship", "activity_domain": "pending_share", "resource_costs": {"mood": 1, "focus": -2}, "tags": ["重要的人", "小纸条", "pending"], "worth_proactive": True},
+        {"title": "写一张给 Ringo 的小纸条草稿", "start": _time_for(date_key, "21:30", tz), "end": _time_for(date_key, "21:45", tz), "event_type": "proactive_note", "event_category": "relationship", "activity_domain": "pending_share", "resource_costs": {"mood": 1, "focus": -2}, "tags": ["Ringo", "小纸条", "pending"], "worth_proactive": True},
     ]
-    return templates if _uses_temple_life_preset(preset) else _genericize_living_text(templates)
 
 
-def abstract_goal_children(date_key: str | None = None, tz: str = "Asia/Tokyo", preset: str = "default") -> list[dict[str, Any]]:
+def abstract_goal_children(date_key: str | None = None, tz: str = "Asia/Tokyo", preset: str = "guimingguan") -> list[dict[str, Any]]:
     out = []
     for item in rhythm_templates(date_key, tz, preset)[:4]:
         out.append({
@@ -228,7 +209,7 @@ def is_abstract_goal_event(event: dict[str, Any], goal: dict[str, Any] | None = 
     gtype = str((goal or {}).get("goal_type") or "")
     gtitle = str((goal or {}).get("title") or "")
     hay = " ".join([title, etype, gtype, gtitle]).lower()
-    return ("推进目标" in title or "goal" in hay or etype in {"self_reflection", "lifestyle"}) and any(k in hay for k in ["daily", "life", "日常", "生活", "continuity", "小道观", "委托"])
+    return ("推进目标" in title or "goal" in hay or etype in {"self_reflection", "lifestyle"}) and any(k in hay for k in ["daily", "life", "日常", "生活", "continuity", "归明观", "委托"])
 
 
 def list_paper_notes(conn, agent_id: str, limit: int = 20) -> dict[str, Any]:

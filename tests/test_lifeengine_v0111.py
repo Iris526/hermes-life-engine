@@ -25,7 +25,7 @@ def test_v0111_version_schema_and_sleep_tables(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
-        assert PLUGIN_VERSION == "0.12.7"
+        assert PLUGIN_VERSION == "0.12.6"
         assert _SCHEMA_VERSION >= 29
         assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 29
         for table in ["sleep_plans", "sleep_sessions", "sleep_interruptions", "sleep_doctor_findings"]:

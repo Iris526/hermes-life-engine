@@ -25,7 +25,7 @@ def test_v0112_schema_reply_gate_tables(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
-        assert PLUGIN_VERSION == "0.12.7"
+        assert PLUGIN_VERSION == "0.12.6"
         assert _SCHEMA_VERSION >= 29
         tables = {r[0] for r in rt.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         assert {"reply_gate_decisions", "delayed_replies", "call_overrides", "reply_gate_recoveries"}.issubset(tables)
