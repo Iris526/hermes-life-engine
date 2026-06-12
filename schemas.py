@@ -22,7 +22,7 @@ LIFE_INTERFACE = {
         "properties": {
             **OWNER_PROPS,
             "action": {"type": "string", "description": "catalog/read/write."},
-            "domain": {"type": "string", "description": "config/schedule/event/resource/inventory/sleep/dream/review/truth/living/trace."},
+            "domain": {"type": "string", "description": "config/schedule/event/resource/inventory/sleep/dream/review/truth/living/behavior/collection/trace."},
             "view": {"type": "string", "description": "Read view, e.g. today/week/check/list/get."},
             "intent": {"type": "string", "description": "Write intent, e.g. patch/schedule_event/reschedule/create/delta."},
             "payload": {"type": "object", "description": "Optional nested payload; flat fields are also accepted."},
@@ -826,6 +826,8 @@ LIFE_LIVING = {
     },
 }
 
+
+
 LIFE_COLLECTION = {
     "name": "life_collection",
     "description": (
@@ -867,6 +869,56 @@ LIFE_COLLECTION = {
             "cleanliness_state": {"type": "string"},
             "maintenance_type": {"type": "string"},
             "reason": {"type": "string"},
+            "limit": {"type": "integer"}
+        },
+        "required": []
+    }
+}
+
+LIFE_BEHAVIOR = {
+    "name": "life_behavior",
+    "description": (
+        "Private behavior mapping interface. Map public behaviors like 逛街买衣服 to private information/truth sources "
+        "such as fashion magazines, brand sites, Taobao shops, catalogs, tools, or narrative simulators. These sources are "
+        "internal execution details only; user-facing wording must keep the public behavior phrase and must not expose mapping sources."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            **OWNER_PROPS,
+            "action": {"type": "string", "description": "summary/init/presets/list/get/create/update/archive/add_source/update_source/sources/resolve/observe/observations/redact/explain"},
+            "behavior_key": {"type": "string", "description": "Stable key, e.g. shopping_clothes."},
+            "key": {"type": "string", "description": "Alias for behavior_key."},
+            "mapping_id": {"type": "string"},
+            "display_name": {"type": "string", "description": "Public behavior name, e.g. 逛街买衣服."},
+            "public_label": {"type": "string", "description": "User-facing phrase. Internal sources must not be exposed."},
+            "narrative_label": {"type": "string", "description": "Alias for public_label."},
+            "name": {"type": "string"},
+            "source_key": {"type": "string"},
+            "source_type": {"type": "string"},
+            "source_name": {"type": "string"},
+            "display_name_source": {"type": "string"},
+            "source_uri": {"type": "string"},
+            "url": {"type": "string"},
+            "query_template": {"type": "string"},
+            "usage_policy": {"type": "string"},
+            "observation": {"type": "object"},
+            "summary": {"type": "string"},
+            "text": {"type": "string"},
+            "include_internal": {"type": "boolean"},
+            "include_private": {"type": "boolean"},
+            "behavior_category": {"type": "string"},
+            "category": {"type": "string"},
+            "description": {"type": "string"},
+            "mapping_steps": {"type": "array", "items": {"type": "object"}},
+            "steps": {"type": "array", "items": {"type": "object"}},
+            "truth_source_policy": {"type": "object"},
+            "truth_policy": {"type": "object"},
+            "concealment_rule": {"type": "object"},
+            "event_defaults": {"type": "object"},
+            "metadata": {"type": "object"},
+            "context": {"type": "object"},
+            "include_private_execution_plan": {"type": "boolean", "default": True},
             "limit": {"type": "integer"}
         },
         "required": []

@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 41
+_SCHEMA_VERSION = 42
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -96,7 +96,7 @@ def migrate(conn: sqlite3.Connection) -> None:
 
     v0 -> v1 creates the original LifeEngine tables; later versions add
     receipts, truth sources, inventory, goals, autonomy, proactive, execution,
-    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets.
+    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets, and v0.12.7 behavior-to-truth-source mapping.
     """
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
     _ensure_schema_migration_table(conn)
@@ -225,6 +225,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 41:
         _create_schema_v41(conn)
         _record_schema_migration(conn, 41, "editable_collections_closet_cabinets")
+    if current < 42:
+        _create_schema_v42(conn)
+        _record_schema_migration(conn, 42, "behavior_truth_source_mapping")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3146,5 +3149,71 @@ def _create_schema_v41(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_collection_usage_owner_item
           ON collection_usage_history(owner_kind, owner_id, item_id, created_at DESC);
+        """
+    )
+
+
+
+
+def _create_schema_v42(conn: sqlite3.Connection) -> None:
+    """v0.12.7 behavior mapping / private truth-source routing."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS behavior_mappings (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          behavior_key TEXT NOT NULL,
+          narrative_label TEXT NOT NULL,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          truth_source_visibility TEXT NOT NULL DEFAULT 'private_execution_only',
+          mapping_rules_json TEXT NOT NULL DEFAULT '{}',
+          output_contract_json TEXT NOT NULL DEFAULT '{}',
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, behavior_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_behavior_mappings_owner
+          ON behavior_mappings(owner_kind, owner_id, behavior_key, status);
+
+        CREATE TABLE IF NOT EXISTS behavior_mapping_sources (
+          id TEXT PRIMARY KEY,
+          mapping_id TEXT NOT NULL,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          source_type TEXT NOT NULL,
+          name TEXT NOT NULL,
+          url TEXT,
+          query_template TEXT,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          priority INTEGER NOT NULL DEFAULT 50,
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY(mapping_id) REFERENCES behavior_mappings(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_behavior_mapping_sources_mapping
+          ON behavior_mapping_sources(mapping_id, status, priority);
+
+        CREATE TABLE IF NOT EXISTS behavior_mapping_runs (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          mapping_id TEXT NOT NULL,
+          behavior_key TEXT NOT NULL,
+          narrative_label TEXT NOT NULL,
+          input_json TEXT NOT NULL DEFAULT '{}',
+          source_plan_json TEXT NOT NULL DEFAULT '[]',
+          internal_sources_json TEXT NOT NULL DEFAULT '[]',
+          public_summary TEXT,
+          status TEXT NOT NULL DEFAULT 'resolved',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY(mapping_id) REFERENCES behavior_mappings(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_behavior_mapping_runs_owner
+          ON behavior_mapping_runs(owner_kind, owner_id, created_at);
         """
     )

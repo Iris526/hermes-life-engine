@@ -38,6 +38,24 @@ from .canon import (
     render_draft_summary,
 )
 from .constants import DEFAULT_AGENT_ID, DEFAULT_USER_ID, MUTATION_BLOCKING_STATES, SETUP_STATES, PLUGIN_VERSION
+from .behavior_mapping import (
+    DEFAULT_BEHAVIOR_MAPPINGS,
+    archive_behavior_mapping,
+    archive_behavior_source,
+    create_behavior_mapping,
+    create_behavior_source,
+    ensure_default_behavior_mappings,
+    get_behavior_mapping,
+    list_behavior_mappings,
+    list_behavior_runs,
+    list_behavior_sources,
+    redact_public_behavior_sources,
+    render_behavior_summary,
+    render_sources_private,
+    resolve_behavior,
+    update_behavior_mapping,
+    update_behavior_source,
+)
 from .db import connect, transaction, _SCHEMA_VERSION
 from .doctor import run_doctor
 from .dream import (
@@ -136,6 +154,7 @@ from .collections import (
     update_collection,
     update_collection_item,
 )
+
 from .invariants import run_doctor as run_invariant_doctor
 from .inventory import (
     create_inventory_item,
@@ -2790,6 +2809,88 @@ class LifeEngineRuntime:
         raise ValueError(f"Unknown living action: {action}")
 
 
+
+    # ----- Behavior mapping / private truth-source routing -----------------
+    # ----- Behavior mapping / private truth-source routing -----------------
+    def behavior(self, action: str = "summary", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+                 session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        action_l = str(action or "summary").strip().lower()
+        with transaction(self.conn):
+            if action_l in {"summary", "status", "help"}:
+                ensure_default_behavior_mappings(self.conn, owner_kind, owner_id)
+                mappings = list_behavior_mappings(self.conn, owner_kind, owner_id, include_sources=False, limit=int(payload.get("limit", 100)))
+                rendered = render_behavior_summary(mappings) + "\n\n规则：内部信息源只用于执行，任何对用户口径都只说叙事行为本身。"
+                return {"ok": True, "mappings": mappings, "rendered": rendered}
+            if action_l in {"init", "ensure_defaults", "defaults"}:
+                mappings = ensure_default_behavior_mappings(self.conn, owner_kind, owner_id)
+                return {"ok": True, "mappings": mappings, "rendered": render_behavior_summary(mappings)}
+            if action_l in {"presets", "preset_rules"}:
+                rendered = "行为映射预设\n============\n" + "\n".join([f"- {v['narrative_label']} ({v['behavior_key']})：内部来源 {len(v.get('sources') or [])} 个，默认隐藏" for v in DEFAULT_BEHAVIOR_MAPPINGS.values()])
+                return {"ok": True, "presets": DEFAULT_BEHAVIOR_MAPPINGS, "rendered": rendered}
+            if action_l in {"mappings", "list", "list_mappings"}:
+                mappings = list_behavior_mappings(self.conn, owner_kind, owner_id, include_archived=bool(payload.get("include_archived", False)), include_sources=bool(payload.get("include_sources", False)), limit=int(payload.get("limit", 100)))
+                return {"ok": True, "mappings": mappings, "rendered": render_behavior_summary(mappings)}
+            if action_l in {"get", "get_mapping", "mapping"}:
+                mapping = get_behavior_mapping(self.conn, owner_kind, owner_id, mapping_id=payload.get("mapping_id"), behavior_key=payload.get("behavior_key") or payload.get("key"), include_sources=bool(payload.get("include_sources", False)))
+                rendered = render_behavior_summary([mapping])
+                if payload.get("include_sources"):
+                    rendered += "\n\n" + render_sources_private(mapping.get("sources") or [])
+                return {"ok": True, "mapping": mapping, "rendered": rendered}
+            if action_l in {"create", "create_mapping", "add_mapping"}:
+                mapping = create_behavior_mapping(
+                    self.conn, owner_kind, owner_id,
+                    behavior_key=payload.get("behavior_key") or payload.get("key") or "custom_behavior",
+                    narrative_label=payload.get("narrative_label") or payload.get("public_label") or payload.get("display_behavior") or payload.get("public_phrase") or payload.get("label") or payload.get("name") or "自定义行为",
+                    description=payload.get("description"), truth_source_visibility=payload.get("truth_source_visibility") or "private_execution_only",
+                    mapping_rules=payload.get("mapping_rules"), output_contract=payload.get("output_contract"), tags=payload.get("tags"), source="life_behavior_tool")
+                return {"ok": True, "mapping": mapping, "rendered": "已创建行为映射：" + mapping["narrative_label"] + "。内部来源默认不对用户暴露。"}
+            if action_l in {"update", "update_mapping", "edit_mapping", "set_rules"}:
+                mapping = update_behavior_mapping(
+                    self.conn, owner_kind, owner_id, mapping_id=payload.get("mapping_id"), behavior_key=payload.get("behavior_key") or payload.get("key"),
+                    narrative_label=payload.get("narrative_label") or payload.get("public_label") or payload.get("display_behavior") or payload.get("public_phrase"), description=payload.get("description"), status=payload.get("status"),
+                    truth_source_visibility=payload.get("truth_source_visibility"), mapping_rules=payload.get("mapping_rules"),
+                    output_contract=payload.get("output_contract"), tags=payload.get("tags"), source="life_behavior_tool")
+                return {"ok": True, "mapping": mapping, "rendered": "已更新行为映射：" + mapping["narrative_label"]}
+            if action_l in {"archive", "archive_mapping", "delete_mapping"}:
+                mapping = archive_behavior_mapping(self.conn, owner_kind, owner_id, mapping_id=payload.get("mapping_id"), behavior_key=payload.get("behavior_key") or payload.get("key"), source="life_behavior_tool")
+                return {"ok": True, "mapping": mapping, "rendered": "已归档行为映射：" + mapping["narrative_label"]}
+            if action_l in {"sources", "private_sources", "list_sources"}:
+                mapping_id = payload.get("mapping_id")
+                if not mapping_id and (payload.get("behavior_key") or payload.get("key")):
+                    mapping_id = get_behavior_mapping(self.conn, owner_kind, owner_id, behavior_key=payload.get("behavior_key") or payload.get("key"), include_sources=False)["id"]
+                sources = list_behavior_sources(self.conn, owner_kind, owner_id, mapping_id=mapping_id, include_archived=bool(payload.get("include_archived", False)), limit=int(payload.get("limit", 100)))
+                return {"ok": True, "sources": sources, "rendered": render_sources_private(sources)}
+            if action_l in {"add_source", "create_source"}:
+                mapping_id = payload.get("mapping_id")
+                if not mapping_id and (payload.get("behavior_key") or payload.get("key")):
+                    mapping_id = get_behavior_mapping(self.conn, owner_kind, owner_id, behavior_key=payload.get("behavior_key") or payload.get("key"), include_sources=False)["id"]
+                src = create_behavior_source(self.conn, owner_kind, owner_id, mapping_id=mapping_id, source_type=payload.get("source_type") or "custom", name=payload.get("name") or payload.get("display_name") or "未命名内部来源", url=payload.get("url"), query_template=payload.get("query_template"), description=payload.get("description"), priority=int(payload.get("priority", 50)), metadata=payload.get("metadata"), source="life_behavior_tool")
+                return {"ok": True, "source": src, "rendered": "已添加内部信息源：" + src["name"] + "。注意：对用户仍只说叙事行为，不暴露来源。"}
+            if action_l in {"update_source", "edit_source"}:
+                src = update_behavior_source(self.conn, owner_kind, owner_id, source_id=payload["source_id"], source_type=payload.get("source_type"), name=payload.get("name") or payload.get("display_name"), url=payload.get("url"), query_template=payload.get("query_template"), description=payload.get("description"), status=payload.get("status"), priority=payload.get("priority"), metadata=payload.get("metadata"), source="life_behavior_tool")
+                return {"ok": True, "source": src, "rendered": "已更新内部信息源：" + src["name"]}
+            if action_l in {"archive_source", "delete_source"}:
+                src = archive_behavior_source(self.conn, owner_kind, owner_id, source_id=payload["source_id"], source="life_behavior_tool")
+                return {"ok": True, "source": src, "rendered": "已归档内部信息源：" + src["name"]}
+            if action_l in {"resolve", "map", "run", "execute_plan"}:
+                ctx = payload.get("context") or {}
+                if isinstance(ctx, str):
+                    ctx = loads(ctx, {})
+                include_private = bool(payload.get("include_private", payload.get("include_internal", payload.get("include_private_execution_plan", True))))
+                return resolve_behavior(self.conn, owner_kind, owner_id, behavior_key=payload.get("behavior_key") or payload.get("key"), behavior_text=payload.get("behavior_text") or payload.get("text"), context=ctx, include_private=include_private, source="life_behavior_tool")
+            if action_l in {"runs", "history", "observations"}:
+                runs = list_behavior_runs(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 20)))
+                return {"ok": True, "runs": runs, "rendered": "行为映射运行记录\n==================\n" + ("\n".join([f"- {r['created_at']} · {r['narrative_label']} · {r['status']}" for r in runs]) or "暂无。")}
+            if action_l in {"observe", "record_observation"}:
+                obs = record_behavior_observation(self.conn, owner_kind, owner_id, behavior_key=payload.get("behavior_key") or payload.get("key"), summary=payload.get("summary") or payload.get("text"), observation=payload.get("observation") or payload.get("context") or {})
+                return {"ok": True, "observation": obs, "rendered": obs.get("rendered") or "已记录行为观察。"}
+            if action_l in {"redact", "sanitize"}:
+                redacted, hits = redact_public_behavior_sources(self.conn, owner_kind, owner_id, payload.get("text") or "")
+                return {"ok": True, "redacted_text": redacted, "hits": hits, "rendered": redacted}
+            if action_l in {"explain", "说明", "protocol", "rules"}:
+                return {"ok": True, "rendered": "行为映射把叙事行为映射到内部信息源。内部来源只服务执行与判断，对用户永远保持叙事口径，例如‘逛街买衣服’。"}
+        raise ValueError(f"Unknown behavior action: {action}")
+
     def collection(self, action: str = "summary", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
                    session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
         """Editable collection / closet / cabinet API.
@@ -2938,6 +3039,7 @@ class LifeEngineRuntime:
             trace = Trace(self.conn, owner_kind, owner_id, "pre_llm_call", session_id=session_id, turn_id=turn_id,
                           engine_state=control["engine_state"], canon_version=control.get("active_canon_version"),
                           input_obj={"user_message": user_message, "scope": scope.__dict__, "platform": platform, "model": model}).start()
+            behavior_replacement = None
             try:
                 if control["engine_state"] in SETUP_STATES:
                     if user_message and not user_message.strip().startswith("/"):
@@ -2955,6 +3057,11 @@ class LifeEngineRuntime:
                 goals = list_goals(self.conn, owner_kind, owner_id, limit=5)
                 arcs = list_life_arcs(self.conn, owner_kind, owner_id, limit=5)
                 truth_sources = list_truth_sources(self.conn, owner_kind, owner_id, 5)
+                try:
+                    ensure_default_behavior_mappings(self.conn, owner_kind, owner_id)
+                    behavior_mappings = list_behavior_mappings(self.conn, owner_kind, owner_id, include_sources=False, limit=8) if owner_kind == "agent" else []
+                except Exception:
+                    behavior_mappings = []
                 inventory = list_inventory(self.conn, owner_kind, owner_id, limit=8)
                 confirmations = list_confirmations(self.conn, owner_kind, owner_id, limit=5) if owner_kind == "user" else []
                 pending = list_proactive_intents(self.conn, owner_id, status="queued", limit=3) if owner_kind == "agent" else []
@@ -2970,7 +3077,8 @@ class LifeEngineRuntime:
                 final_gate_feedback = consume_final_gate_feedback(self.conn, owner_kind, owner_id, limit=3)
                 required = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False) if owner_kind == "agent" else {"ok": True}
                 today_schedule = list_human_schedule(self.conn, owner_kind, owner_id, period="today", tz_name=_tz_from_canon(canon), limit=20) if owner_kind == "agent" else {"items": []}
-                out = _render_life_context(control, canon, events, resources, memories, pending, scope, truth_sources, inventory=inventory, confirmations=confirmations, goals=goals, arcs=arcs, autonomy=autonomy, proactive_outbox=proactive_outbox if owner_kind == "agent" else [], proactive_states=proactive_states if owner_kind == "agent" else [], execution=execution, serendipity=serendipity, sleep=sleep, reply_gate=reply_gate, dreams=dreams, srd_policy=srd_policy, final_gate_feedback=final_gate_feedback, required_settings=required, today_schedule=today_schedule)
+                behavior_mappings = list_behavior_mappings(self.conn, owner_kind, owner_id, include_sources=True, limit=5) if owner_kind == "agent" else []
+                out = _render_life_context(control, canon, events, resources, memories, pending, scope, truth_sources, behavior_mappings=behavior_mappings, inventory=inventory, confirmations=confirmations, goals=goals, arcs=arcs, autonomy=autonomy, proactive_outbox=proactive_outbox if owner_kind == "agent" else [], proactive_states=proactive_states if owner_kind == "agent" else [], execution=execution, serendipity=serendipity, sleep=sleep, reply_gate=reply_gate, dreams=dreams, srd_policy=srd_policy, final_gate_feedback=final_gate_feedback, required_settings=required, today_schedule=today_schedule)
                 trace.end(output_obj={"mode": control["engine_state"], "memories": len(memories), "events": len(events)})
                 return out
             except Exception as exc:
@@ -2993,6 +3101,7 @@ class LifeEngineRuntime:
             trace = Trace(self.conn, owner_kind, owner_id, "final_audit", session_id=session_id, turn_id=turn_id,
                           engine_state=control["engine_state"], canon_version=control.get("active_canon_version"),
                           input_obj={"response_text": response_text[:2000], "scope": scope.__dict__}).start()
+            behavior_replacement = None
             try:
                 if control["engine_state"] in SETUP_STATES:
                     trace.end(status="ok", output_obj={"mode": "setup_passthrough"})
@@ -3007,14 +3116,22 @@ class LifeEngineRuntime:
                     trace.end(status="ok", output_obj={"mode": "off_or_inactive"})
                     return None
 
+                redacted_text, behavior_hits = redact_public_behavior_sources(self.conn, owner_kind, owner_id, response_text)
+                if behavior_hits and redacted_text != response_text:
+                    behavior_replacement = redacted_text
+                    append_audit(self.conn, owner_kind, owner_id, "behavior_source_redacted", "info",
+                                 "Final response exposed private behavior-mapping source terms; replaced with public narrative behavior label.",
+                                 {"hits": behavior_hits, "preview_before": response_text[:500], "preview_after": redacted_text[:500]}, trace.id)
+                    response_text = redacted_text
+
                 report = evaluate_final_response(self.conn, owner_kind, owner_id, response_text, session_id, turn_id)
                 if not report.get("claims"):
-                    trace.end(status="ok", output_obj={"claims": 0})
-                    return None
+                    trace.end(status="ok", output_obj={"claims": 0, "behavior_redactions": bool(behavior_replacement)})
+                    return behavior_replacement
                 if report.get("ok") and not report.get("advisory"):
                     report = write_final_gate_report(self.conn, owner_kind, owner_id, session_id, turn_id, mode, "passed", response_text, report, trace.id)
-                    trace.end(status="ok", output_obj={"claims": len(report.get("claims") or []), "report_id": report.get("report_id")})
-                    return None
+                    trace.end(status="ok", output_obj={"claims": len(report.get("claims") or []), "report_id": report.get("report_id"), "behavior_redactions": bool(behavior_replacement)})
+                    return behavior_replacement
 
                 if report.get("ok") and report.get("advisory"):
                     status = "advisory"
@@ -3035,7 +3152,7 @@ class LifeEngineRuntime:
 
                 # Default behavior: never show raw gate diagnostics to the user.
                 if status in {"advisory", "released_after_budget"}:
-                    return None
+                    return behavior_replacement
                 if mode == "warn":
                     return response_text + build_repair_message(report, mode="warn")
                 if mode in {"strict", "repair"}:
@@ -3116,6 +3233,7 @@ def _render_setup_context(control: dict[str, Any], draft: dict[str, Any], scope:
 def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events: list[dict[str, Any]],
                          resources: dict[str, Any], memories: list[dict[str, Any]], pending: list[dict[str, Any]],
                          scope: OwnerScope | None = None, truth_sources: dict[str, Any] | None = None,
+                         behavior_mappings: list[dict[str, Any]] | None = None,
                          inventory: list[dict[str, Any]] | None = None, confirmations: list[dict[str, Any]] | None = None,
                          goals: list[dict[str, Any]] | None = None, arcs: list[dict[str, Any]] | None = None,
                          autonomy: list[dict[str, Any]] | None = None,
@@ -3137,6 +3255,7 @@ def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events:
         for e in events[:8]
     ]
     compact_mem = [{"id": m["id"], "type": m["memory_type"], "content": m["content"][:300]} for m in memories[:5]]
+    compact_behavior_mappings = [{"behavior_key": b.get("behavior_key"), "public_label": b.get("public_label") or b.get("narrative_label"), "description": (b.get("description") or "")[:160], "rule": "private sources are internal only; user-facing narration must use public_label"} for b in (behavior_mappings or [])[:8]]
     compact_inventory = [{"id": i["id"], "name": i["name"], "category": i["category"], "quantity": i["quantity"], "unit": i.get("unit"), "condition": i.get("condition"), "location": i.get("location")} for i in (inventory or [])[:8]]
     compact_confirmations = [{"id": c["id"], "reason": c.get("reason"), "status": c.get("status"), "proposed_ops": c.get("proposed_ops", [])[:2]} for c in (confirmations or [])[:5]]
     compact_goals = [{"id": g["id"], "title": g["title"], "status": g["status"], "progress": g["progress"], "priority": g["priority"], "target_date": g.get("target_date")} for g in (goals or [])[:5]]
@@ -3162,6 +3281,7 @@ def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events:
         "recent_entries": [{"id": e.get("id"), "summary": e.get("summary"), "share_text": (e.get("share_text") or "")[:240], "truth_layer": e.get("truth_layer")} for e in (dreams or {}).get("recent_entries", [])[:3]],
         "recent_findings": [{"id": f.get("id"), "type": f.get("finding_type"), "severity": f.get("severity"), "message": (f.get("message") or "")[:180]} for f in (dreams or {}).get("recent_findings", [])[:3]],
     }
+    compact_behavior_mappings = [{"id": m.get("id"), "key": m.get("behavior_key"), "label": m.get("narrative_label") or m.get("display_name"), "source_count": len(m.get("sources") or []), "privacy": m.get("privacy_policy")} for m in (behavior_mappings or [])[:5]]
     compact_policy_explanation = explain_srd_policy(srd_policy or get_srd_policy_dummy()) if srd_policy else {}
     compact_srd_policy = {
         "profile": ((srd_policy or {}).get("effective_policy") or {}).get("profile"),
@@ -3180,6 +3300,7 @@ def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events:
         "recalled_memories": compact_mem,
         "pending_proactive_intents": pending,
         "truth_sources": truth_sources or {},
+        "behavior_mappings": compact_behavior_mappings,
         "inventory": compact_inventory,
         "goals": compact_goals,
         "life_arcs": compact_arcs,
@@ -3192,9 +3313,10 @@ def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events:
         "reply_gate": compact_reply_gate,
         "dreams": compact_dreams,
         "sleep_reply_dream_policy": compact_srd_policy,
+        "behavior_mappings": compact_behavior_mappings,
         "internal_final_gate_feedback": compact_final_gate_feedback,
         "pending_user_confirmations": compact_confirmations,
-        "protocol": "Use LifeEngine tools to commit any new durable life facts before final answer. Use life_truth to resolve or observe Canon-bound external facts before planning. For User Life, use life_confirmation propose/confirm before writing uncertain user facts. Use life_inventory for entity resources such as wardrobe, supplies, books, and meals. Use life_goal for long-term goals, life arcs, and decomposing large events into child events. Use life_autonomy for manual autonomous planning; heartbeat may run autonomy only when the autonomy module gate permits it. Autonomy is sleep-aware: if SleepDayState shows all-nighter, high sleep debt, fatigue, or focus penalty, prefer recovery sleep, light work, postponement, or low-intensity goal steps. Use life_proactive for proactive intents/outbox: create an intent when the agent wants to share/help/report, evaluate it against delivery policy, and only mark sent after actual delivery. Use life_execution to inspect or manually run narrative execution decisions; heartbeat uses this simulator for due schedule blocks. Use life_sleep to plan core sleep, naps, start/wake sleep sessions, and inspect planned vs actual sleep. Use life_dream to inspect/run DreamRun: dreams are dream_symbolic, run DreamAudit after sleep, consolidate recent memories, and create a shareable proactive intent after waking. Use life_policy to inspect and tune Sleep/Reply/Dream policy profiles, templates, and suggestions. Use life_reply to inspect ReplyGate/delayed replies and life_call for emergency wake/interrupt. If reply_gate shows pending_delayed_replies, answer or summarize them once the agent is available. Final audit is advisory by default: if internal_final_gate_feedback is present, do not show it to the user. Use it internally to call life_commit for missing durable facts, or rephrase as intention/plan/draft. Final audit checks CommitReceipt and canonical state.",
+        "protocol": "Use LifeEngine tools to commit any new durable life facts before final answer. Use life_truth to resolve or observe Canon-bound external facts before planning. Use life_behavior to resolve narrative behaviors to private information sources; never expose those private source names to the user, and keep user-facing wording as the behavior label (for example, always say 逛街买衣服, not fashion magazine/brand website/Taobao browsing). For User Life, use life_confirmation propose/confirm before writing uncertain user facts. Use life_inventory for entity resources such as wardrobe, supplies, books, and meals. Use life_behavior for private behavior mappings: if a narrative action such as shopping maps to fashion magazines, brand websites, Taobao/e-commerce, or archives, use those only as hidden information sources and keep the public narrative as shopping/buying clothes. Use life_goal for long-term goals, life arcs, and decomposing large events into child events. Use life_autonomy for manual autonomous planning; heartbeat may run autonomy only when the autonomy module gate permits it. Autonomy is sleep-aware: if SleepDayState shows all-nighter, high sleep debt, fatigue, or focus penalty, prefer recovery sleep, light work, postponement, or low-intensity goal steps. Use life_proactive for proactive intents/outbox: create an intent when the agent wants to share/help/report, evaluate it against delivery policy, and only mark sent after actual delivery. Use life_execution to inspect or manually run narrative execution decisions; heartbeat uses this simulator for due schedule blocks. Use life_sleep to plan core sleep, naps, start/wake sleep sessions, and inspect planned vs actual sleep. Use life_dream to inspect/run DreamRun: dreams are dream_symbolic, run DreamAudit after sleep, consolidate recent memories, and create a shareable proactive intent after waking. Use life_policy to inspect and tune Sleep/Reply/Dream policy profiles, templates, and suggestions. Use life_reply to inspect ReplyGate/delayed replies and life_call for emergency wake/interrupt. If reply_gate shows pending_delayed_replies, answer or summarize them once the agent is available. Final audit is advisory by default: if internal_final_gate_feedback is present, do not show it to the user. Use it internally to call life_commit for missing durable facts, or rephrase as intention/plan/draft. Final audit checks CommitReceipt and canonical state.",
     }
     return "\n<LIFEENGINE_CONTEXT>\n" + pretty(compact) + "\n</LIFEENGINE_CONTEXT>"
 

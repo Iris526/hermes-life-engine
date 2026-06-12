@@ -42,6 +42,18 @@ DOMAINS: dict[str, dict[str, Any]] = {
         "write": ["create", "update", "consume", "discard", "move", "meal"],
         "rule": "实体资源记录物品、衣柜、日用品、饭食。",
     },
+    "collection": {
+        "label": "衣橱/鞋柜/梳妆台/配饰柜/袜子抽屉 / Collections",
+        "read": ["summary", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "outfits"],
+        "write": ["init", "create_collection", "update_collection", "archive_collection", "add_item", "generate_assets", "set_asset", "checkout", "return", "maintain", "outfit"],
+        "rule": "集合分类是预设但可增删改；新增物品必须按集合规则生成资产图任务，再供穿搭/使用检索。",
+    },
+    "behavior": {
+        "label": "行为映射 / Behavior Mapping",
+        "read": ["summary", "list", "get", "resolve", "usages", "protocol"],
+        "write": ["init", "create", "update", "archive"],
+        "rule": "把公开生活行为映射到私有信息/真相源；对用户仍使用公开行为口径，不暴露来源。",
+    },
     "sleep": {
         "label": "睡眠 / Sleep",
         "read": ["status", "plans", "sessions", "day_state"],
@@ -72,12 +84,6 @@ DOMAINS: dict[str, dict[str, Any]] = {
         "write": ["init_inventory", "day_rhythm", "decompose_abstract", "create_note", "diary_draft"],
         "rule": "把抽象目标变成具体日常；写入走 LifeOps 或 Canon/trace，不直接 SQL。",
     },
-    "collection": {
-        "label": "衣橱/鞋柜/梳妆台/配饰柜/袜子抽屉 / Collections",
-        "read": ["summary", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "outfits"],
-        "write": ["init", "create_collection", "update_collection", "archive_collection", "add_item", "generate_assets", "set_asset", "checkout", "return", "maintain", "outfit"],
-        "rule": "集合分类是预设但可增删改；新增物品必须按集合规则生成资产图任务，再供穿搭/使用检索。",
-    },
     "trace": {
         "label": "Trace / 审计",
         "read": ["latest", "explain", "verify", "audit"],
@@ -85,7 +91,6 @@ DOMAINS: dict[str, dict[str, Any]] = {
         "rule": "只读解释层，用于追踪为什么发生。",
     },
 }
-
 
 def catalog() -> dict[str, Any]:
     lines = ["LifeEngine 接口目录", "==================="]
@@ -126,6 +131,10 @@ def read(rt: Any, owner_kind: str, owner_id: str, domain: str, view: str | None 
         return rt.resources(view if view != "summary" else "list", owner_kind, owner_id, **p)
     if domain == "inventory":
         return rt.inventory(view if view != "summary" else "list", owner_kind, owner_id, None, None, **p)
+    if domain in {"collection", "closet", "wardrobe"}:
+        return rt.collection(view if view != "summary" else "summary", owner_kind, owner_id, None, None, **p)
+    if domain in {"behavior", "behavior_mapping", "mapping"}:
+        return rt.behavior(view if view != "summary" else "summary", owner_kind, owner_id, None, None, **p)
     if domain == "sleep":
         return rt.sleep(view if view != "summary" else "status", owner_kind, owner_id, None, None, **p)
     if domain == "dream":
@@ -136,8 +145,6 @@ def read(rt: Any, owner_kind: str, owner_id: str, domain: str, view: str | None 
         return rt.truth(view if view != "summary" else "list", owner_kind, owner_id, None, None, **p)
     if domain == "living":
         return rt.living(view if view != "summary" else "summary", owner_kind, owner_id, None, None, **p)
-    if domain in {"collection", "closet", "wardrobe"}:
-        return rt.collection(view if view != "summary" else "summary", owner_kind, owner_id, None, None, **p)
     if domain == "trace":
         return rt.traces(view if view != "summary" else "latest", owner_kind, owner_id, **p)
     raise ValueError(f"unknown LifeEngine interface domain: {domain}")
@@ -149,7 +156,6 @@ def write(rt: Any, owner_kind: str, owner_id: str, domain: str, intent: str | No
     intent = (intent or payload.get("view") or payload.get("action") or "").strip().lower()
     p = _clean_payload(payload)
     if domain == "config":
-        # Settings always go to CanonDraft, never active Canon.
         if intent in {"patch", "set", "write", "补充", "update"}:
             return rt.required_settings("patch", owner_kind, owner_id, **p)
         if intent in {"apply_default_draft", "defaults", "suggest_defaults", "complete_defaults"}:
@@ -163,6 +169,10 @@ def write(rt: Any, owner_kind: str, owner_id: str, domain: str, intent: str | No
         return rt.resources(intent, owner_kind, owner_id, session_id, turn_id, **p)
     if domain == "inventory":
         return rt.inventory(intent, owner_kind, owner_id, session_id, turn_id, **p)
+    if domain in {"collection", "closet", "wardrobe"}:
+        return rt.collection(intent, owner_kind, owner_id, session_id, turn_id, **p)
+    if domain in {"behavior", "behavior_mapping", "mapping"}:
+        return rt.behavior(intent, owner_kind, owner_id, session_id, turn_id, **p)
     if domain == "sleep":
         return rt.sleep(intent, owner_kind, owner_id, session_id, turn_id, **p)
     if domain == "dream":
@@ -173,10 +183,7 @@ def write(rt: Any, owner_kind: str, owner_id: str, domain: str, intent: str | No
         return rt.truth(intent, owner_kind, owner_id, session_id, turn_id, **p)
     if domain == "living":
         return rt.living(intent, owner_kind, owner_id, session_id, turn_id, **p)
-    if domain in {"collection", "closet", "wardrobe"}:
-        return rt.collection(intent, owner_kind, owner_id, session_id, turn_id, **p)
     raise ValueError(f"unknown or read-only LifeEngine interface domain: {domain}")
-
 
 def run(rt: Any, action: str, owner_kind: str, owner_id: str, session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
     action = (action or "catalog").strip().lower()

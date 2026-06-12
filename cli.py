@@ -32,6 +32,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_living.add_argument("--limit", type=int, default=20)
 
 
+
     p_closet = sub.add_parser("closet", help="Human-friendly wardrobe/shoes/socks/accessories/vanity collections")
     p_closet.add_argument("action", nargs="?", default="summary", choices=["summary", "init", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "add", "add_item", "create_collection", "update_collection", "archive_collection", "generate_assets", "checkout", "return", "maintain", "outfit", "outfits", "presets"])
     p_closet.add_argument("text", nargs="*", help="Optional item name/description or collection name")
@@ -46,6 +47,22 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_closet.add_argument("--quantity", type=float, default=1)
     p_closet.add_argument("--occasion", default="daily")
     p_closet.add_argument("--limit", type=int, default=50)
+
+    p_behavior = sub.add_parser("behavior", help="Private behavior mappings from public life actions to hidden information sources")
+    p_behavior.add_argument("action", nargs="?", default="summary", choices=["summary", "init", "presets", "list", "get", "create", "update", "archive", "resolve", "sources", "add_source", "update_source", "runs", "observe", "redact", "explain"])
+    p_behavior.add_argument("text", nargs="*", help="Optional behavior description / source notes")
+    p_behavior.add_argument("--behavior-key")
+    p_behavior.add_argument("--mapping-id")
+    p_behavior.add_argument("--narrative-label")
+    p_behavior.add_argument("--public-label")
+    p_behavior.add_argument("--name")
+    p_behavior.add_argument("--description")
+    p_behavior.add_argument("--source-id")
+    p_behavior.add_argument("--source-type")
+    p_behavior.add_argument("--url")
+    p_behavior.add_argument("--query-template")
+    p_behavior.add_argument("--include-private", action="store_true")
+    p_behavior.add_argument("--limit", type=int, default=50)
 
     p_webui = sub.add_parser("webui", help="Run LifeEngine WebUI / Observatory")
     p_webui.add_argument("--life-dir", default=None, help="LifeEngine directory or lifeengine.db path")
@@ -423,6 +440,22 @@ def handle_cli(args) -> None:
             if args.description:
                 payload["description"] = args.description
             print(format_result(rt.collection(args.action, **{k:v for k,v in payload.items() if v not in (None, "")})))
+
+        elif action == "behavior":
+            payload = {"behavior_key": args.behavior_key, "mapping_id": args.mapping_id, "narrative_label": args.narrative_label or args.public_label or args.name, "name": args.name, "description": args.description, "source_id": args.source_id, "source_type": args.source_type, "url": args.url, "query_template": args.query_template, "include_private": args.include_private, "limit": args.limit}
+            if args.text:
+                txt = " ".join(args.text)
+                if args.action in {"create", "update"}:
+                    payload.setdefault("narrative_label", txt)
+                elif args.action in {"add_source", "update_source"}:
+                    payload.setdefault("name", txt)
+                elif args.action == "redact":
+                    payload["text"] = txt
+                else:
+                    payload["behavior_text"] = txt
+                    payload["summary"] = txt
+            print(format_result(rt.behavior(args.action, **{k:v for k,v in payload.items() if v not in (None, "", [])})))
+
         elif action == "doctor":
             print(format_result(rt.doctor(level=args.level, include_samples=args.include_samples)))
         elif action == "review":
@@ -835,6 +868,8 @@ def _simple_help() -> str:
         "  /life dream          查看/运行 Dream 自检与梦境分享意图\n"
         "  /life policy         查看睡眠/回复/梦分享策略\n"
         "  /life review         人类可读待办/建议列表\n"
+        "  /life behavior       查看/设置行为映射（内部真相源不对用户暴露）\n"
+        "  /life closet         查看衣橱/鞋柜/袜子/配饰/梳妆台\n"
         "  /life webui          启动 WebUI 观察台\n"
         "  /life doctor         健康检查\n"
         "  /life backup         导出备份\n"
@@ -851,7 +886,7 @@ def _advanced_help() -> str:
         "  resource list/add <key> | inventory list/add/meals | closet wardrobe/add/outfit | goal list/create/decompose/progress\n"
         "  autonomy list/plan/run/sleep_context | proactive list/create/evaluate/outbox/send/suppress\n"
         "  execution list/run/serendipity | sleep status/plan/start/wake/plans/sessions | dream status/run/entries/findings | reply status/list/release/doctor | call | confirmation list/confirm/reject <id>\n"
-        "  truth list/resolve/observe/bind | final_gate check/reports/get\n"
+        "  truth list/resolve/observe/bind | behavior summary/init/resolve/add_source | final_gate check/reports/get\n"
         "  upgrade [check|backup|export|import|restore|package_check|rebuild|verify|large_smoke|cron_test]\n"
         "  upgrade [integration_check|surface|api_freeze|release_readiness|acceptance|v1_rc_check]\n"
         "  branch <name> | trace [audit|verify|doctor|migrations|receipts|explain <id>] | webui"
@@ -880,24 +915,43 @@ def slash_life(raw_args: str) -> str:
             return format_result(rt.interface("catalog"))
         if cmd in {"advanced", "高级", "debug"}:
             return _advanced_help()
-        if cmd in {"closet", "衣橱", "wardrobe", "衣柜"}:
+        if cmd in {"behavior", "行为映射", "映射"}:
             action = rest[0] if rest else "summary"
             payload = {}
-            aliases = {"init":"init", "初始化":"init", "collections":"collections", "集合":"collections", "wardrobe":"wardrobe", "衣橱":"wardrobe", "衣柜":"wardrobe", "shoes":"shoes", "鞋柜":"shoes", "socks":"socks", "袜子":"socks", "accessories":"accessories", "配饰":"accessories", "vanity":"vanity", "梳妆台":"vanity", "outfit":"outfit", "穿搭":"outfit", "presets":"presets", "预设":"presets"}
+            aliases = {"说明": "explain", "协议": "explain", "初始化": "init", "预设": "presets", "列表": "list", "解析": "resolve", "使用": "resolve", "创建": "create", "新增": "create", "更新": "update", "归档": "archive", "历史": "runs", "来源": "sources", "添加来源": "add_source"}
             action = aliases.get(action, action)
-            if action in {"add", "add_item", "入库"}:
-                payload["collection_type"] = rest[1] if len(rest) > 1 else "wardrobe"
-                payload["name"] = rest[2] if len(rest) > 2 else "未命名物品"
-                payload["description"] = " ".join(rest[3:]) if len(rest) > 3 else None
-                action = "add_item"
-            if action in {"create_collection", "新集合"}:
-                payload["collection_type"] = rest[1] if len(rest) > 1 else "custom"
-                payload["name"] = rest[2] if len(rest) > 2 else payload["collection_type"]
-                payload["description"] = " ".join(rest[3:]) if len(rest) > 3 else None
-                action = "create_collection"
-            if action in {"generate_assets", "生图", "资产"}:
-                payload["item_id"] = rest[1] if len(rest) > 1 else None
-                action = "generate_assets"
+            if action in {"resolve", "get", "archive", "runs", "sources", "add_source"}:
+                if len(rest) > 1:
+                    payload["behavior_key"] = rest[1]
+            if action in {"create", "update"}:
+                if len(rest) > 1:
+                    payload["behavior_key"] = rest[1]
+                if len(rest) > 2:
+                    payload["narrative_label"] = rest[2]
+                if len(rest) > 3:
+                    payload["description"] = " ".join(rest[3:])
+            if action == "add_source" and len(rest) > 2:
+                payload["name"] = " ".join(rest[2:])
+            return format_result(rt.behavior(action, **payload))
+
+        if cmd in {"closet", "衣橱", "衣柜", "鞋柜", "袜子", "配饰", "梳妆台"}:
+            action = rest[0] if rest else "summary"
+            aliases = {"初始化": "init", "衣橱": "wardrobe", "衣柜": "wardrobe", "鞋柜": "shoes", "袜子": "socks", "配饰": "accessories", "梳妆台": "vanity", "穿搭": "outfit", "添加": "add", "新增": "add"}
+            action = aliases.get(action, action)
+            payload = {}
+            if action in {"add", "add_item"}:
+                if len(rest) > 1:
+                    payload["collection_type"] = rest[1]
+                if len(rest) > 2:
+                    payload["name"] = rest[2]
+                    payload["description"] = " ".join(rest[3:]) if len(rest) > 3 else rest[2]
+            elif action == "create_collection":
+                if len(rest) > 1:
+                    payload["collection_type"] = rest[1]
+                if len(rest) > 2:
+                    payload["name"] = rest[2]
+            elif len(rest) > 1:
+                payload["text"] = " ".join(rest[1:])
             return format_result(rt.collection(action, **payload))
 
         if cmd in {"webui", "ui", "观察台", "dashboard"}:

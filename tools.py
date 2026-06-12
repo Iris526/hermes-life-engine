@@ -50,6 +50,18 @@ def life_collection(args: dict, **kwargs) -> str:
     return _run(lambda rt: rt.collection(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
 
 
+def life_behavior(args: dict, **kwargs) -> str:
+    owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
+    action = args.get("action", "summary")
+    session_id = kwargs.get("session_id") or args.get("session_id")
+    turn_id = kwargs.get("turn_id") or args.get("turn_id")
+    payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action", "session_id", "turn_id"}}
+    nested = payload.pop("payload", None)
+    if isinstance(nested, dict):
+        payload.update(nested)
+    return _run(lambda rt: rt.behavior(action, owner_kind, owner_id, session_id, turn_id, **payload))
+
+
 def life_status(args: dict, **kwargs) -> str:
     owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
     return _run(lambda rt: rt.status(owner_kind, owner_id))

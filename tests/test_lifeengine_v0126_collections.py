@@ -14,7 +14,7 @@ def hermes_home(monkeypatch):
 
 
 def test_v0126_collection_requires_visual_reference_and_lazy_generates():
-    assert PLUGIN_VERSION == "0.12.6"
+    assert PLUGIN_VERSION == "0.12.7"
     rt = LifeEngineRuntime()
     try:
         item_out = rt.collection("add_item", collection_type="wardrobe", name="白色短上衣", description="轻薄棉混纺")

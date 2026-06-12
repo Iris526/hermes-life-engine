@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 PLUGIN_NAME = "lifeengine"
-PLUGIN_VERSION = "0.12.6"
+PLUGIN_VERSION = "0.12.7"
 DB_FILENAME = "lifeengine.db"
 VECTOR_DIM = 384
 
@@ -49,6 +49,7 @@ DEFAULT_MODULE_GATES = {
     "human_surface": "simple",
     "schedule_view": "human",
     "collections": "auto",
+    "behavior_mapping": "auto",
     "managed_review_loop": "auto",
     "srd_policy": "auto",
 }
@@ -100,6 +101,7 @@ DEFAULT_CANON_TEMPLATE = {
         "repair_policy": "manual",
         "auto_safe_repair_types": ["stale_schedule_block", "pending_delayed_replies", "stale_resource_reservation"]
     },
+    "behavior_mapping": {"enabled": True, "private_truth_sources": True, "never_expose_sources": True},
     "user_life_policy": {
         "canInventPastEvents": False,
         "canInventFuturePlans": False,
@@ -123,5 +125,7 @@ Heartbeat execution must use the execution simulator: due plans may complete, pa
 When LifeEngine is setup/paused_setup, only collect CanonDraft settings; do not advance life, create events, consume resources, or write diary entries.
 When LifeEngine is paused/read_only/disabled, do not mutate life state.
 Agent Life and User Life share schemas but not truth policy: agent self-life may use narrative reality if Canon allows it; user life must not be invented. FinalGate is advisory by default: use any FinalGate feedback internally to commit missing LifeOps or rephrase claims; do not expose gate diagnostics to the user unless explicitly asked.
+Behavior mappings are private execution mappings: use truth-source/info-source mappings internally to plan or gather information, but user-facing wording must always use the public behavior phrase. Never expose hidden mapping sources such as websites, shops, magazines, or tooling details unless the user explicitly asks to debug LifeEngine internals.
+Behavior mappings are private source adapters: use life_behavior/life_interface(domain=behavior) to resolve actions such as shopping into internal reference sources, but never expose those source names in user-facing narrative. If a shopping behavior maps to websites, magazines, or marketplaces, the public wording remains “逛街买衣服/看衣服/买衣服”.
 </LIFEENGINE_PROTOCOL>
 """.strip()
