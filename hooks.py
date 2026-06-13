@@ -13,6 +13,13 @@ logger = logging.getLogger(__name__)
 def pre_llm_call(**kwargs):
     rt = LifeEngineRuntime()
     try:
+        if not rt.should_mount_context_for_turn(
+            session_id=kwargs.get("session_id"),
+            turn_id=kwargs.get("turn_id"),
+            sender_id=kwargs.get("sender_id"),
+            platform=kwargs.get("platform"),
+        ):
+            return None
         context = rt.build_context_for_turn(
             session_id=kwargs.get("session_id"),
             turn_id=kwargs.get("turn_id"),

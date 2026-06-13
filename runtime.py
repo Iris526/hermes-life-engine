@@ -3090,6 +3090,68 @@ class LifeEngineRuntime:
                 pass
             return {"ok": True, "control": ensure_control(self.conn, owner_kind, owner_id), "required_settings": required}
 
+    def _ensure_context_mounts_table(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prompt_context_session_mounts (
+              owner_kind TEXT NOT NULL,
+              owner_id TEXT NOT NULL,
+              session_id TEXT NOT NULL,
+              platform TEXT,
+              mounted INTEGER NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+              PRIMARY KEY(owner_kind, owner_id, session_id)
+            )
+            """
+        )
+
+    def set_context_mount(self, owner_kind: str, owner_id: str, session_id: str | None,
+                          *, platform: str | None = None, mounted: bool = True) -> dict[str, Any]:
+        if not session_id:
+            raise ValueError("session_id is required for LifeEngine context mount switches")
+        self._ensure_context_mounts_table()
+        self.conn.execute(
+            """
+            INSERT INTO prompt_context_session_mounts(owner_kind, owner_id, session_id, platform, mounted)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(owner_kind, owner_id, session_id) DO UPDATE SET
+              platform=excluded.platform,
+              mounted=excluded.mounted,
+              updated_at=datetime('now')
+            """,
+            (owner_kind, owner_id, session_id, platform, 1 if mounted else 0),
+        )
+        return {"ok": True, "owner_kind": owner_kind, "owner_id": owner_id, "session_id": session_id, "platform": platform, "mounted": bool(mounted)}
+
+    def context_mount_status(self, owner_kind: str, owner_id: str, session_id: str | None,
+                             *, platform: str | None = None) -> dict[str, Any]:
+        default_mounted = str(platform or "").strip().lower() in {"qq", "qqbot"}
+        row = None
+        if session_id:
+            self._ensure_context_mounts_table()
+            row = self.conn.execute(
+                "SELECT mounted, platform, updated_at FROM prompt_context_session_mounts WHERE owner_kind=? AND owner_id=? AND session_id=?",
+                (owner_kind, owner_id, session_id),
+            ).fetchone()
+        if row is not None:
+            mounted = bool(row["mounted"] if hasattr(row, "keys") else row[0])
+            source = "session_switch"
+            row_platform = row["platform"] if hasattr(row, "keys") else row[1]
+            updated_at = row["updated_at"] if hasattr(row, "keys") else row[2]
+        else:
+            mounted = default_mounted
+            source = "platform_default" if default_mounted else "default_off"
+            row_platform = platform
+            updated_at = None
+        return {"ok": True, "owner_kind": owner_kind, "owner_id": owner_id, "session_id": session_id, "platform": platform or row_platform, "mounted": mounted, "source": source, "updated_at": updated_at}
+
+    def should_mount_context_for_turn(self, session_id: str | None, turn_id: str | None = None,
+                                      sender_id: str | None = None, platform: str | None = None) -> bool:
+        scope = resolve_owner_scope({}, {"session_id": session_id, "turn_id": turn_id, "sender_id": sender_id, "platform": platform})
+        with transaction(self.conn):
+            return bool(self.context_mount_status(scope.owner_kind, scope.owner_id, session_id, platform=platform).get("mounted"))
+
     def build_context_for_turn(self, session_id: str | None, turn_id: str | None, user_message: str,
                                sender_id: str | None = None, platform: str | None = None,
                                model: str | None = None) -> str:
@@ -3202,6 +3264,18 @@ class LifeEngineRuntime:
                 update_control(self.conn, owner_kind, owner_id, module_gates_json=dumps(gates))
                 c = ensure_control(self.conn, owner_kind, owner_id)
                 return {"ok": True, "control": c, "rendered": render_context_policy_explanation(c)}
+            if action_l in {"mount", "on", "enable"}:
+                out = self.set_context_mount(owner_kind, owner_id, session_id, platform=payload.get("platform"), mounted=True)
+                out["rendered"] = f"LifeEngine context mounted for session {session_id}."
+                return out
+            if action_l in {"unmount", "off", "disable"}:
+                out = self.set_context_mount(owner_kind, owner_id, session_id, platform=payload.get("platform"), mounted=False)
+                out["rendered"] = f"LifeEngine context unmounted for session {session_id}."
+                return out
+            if action_l in {"mount_status", "status"}:
+                out = self.context_mount_status(owner_kind, owner_id, session_id, platform=payload.get("platform"))
+                out["rendered"] = f"LifeEngine context mount: {'on' if out.get('mounted') else 'off'} ({out.get('source')})."
+                return out
             raise ValueError(f"Unknown context action: {action}")
 
     def audit_final_output(self, response_text: str, session_id: str | None = None, turn_id: str | None = None,

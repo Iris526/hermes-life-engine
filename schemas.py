@@ -953,9 +953,10 @@ LIFE_CONTEXT = {
         "type": "object",
         "properties": {
             **OWNER_PROPS,
-            "action": {"type": "string", "description": "policy/summary/explain/runs/set."},
+            "action": {"type": "string", "description": "policy/summary/explain/runs/set/mount/unmount/mount_status."},
             "mode": {"type": "string", "description": "micro/slim/balanced/debug for action=set."},
             "budget_chars": {"type": "integer", "description": "Optional character budget for injected context."},
+            "platform": {"type": "string", "description": "Current platform for session mount defaults/status."},
             "limit": {"type": "integer"},
         },
         "required": [],

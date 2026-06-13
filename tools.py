@@ -37,6 +37,8 @@ def life_context(args: dict, **kwargs) -> str:
     owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
     action = args.get("action", "policy")
     payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action"}}
+    if kwargs.get("platform") and "platform" not in payload:
+        payload["platform"] = kwargs.get("platform")
     return _run(lambda rt: rt.context(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
 
 def life_living(args: dict, **kwargs) -> str:

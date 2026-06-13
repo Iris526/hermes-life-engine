@@ -51,3 +51,64 @@ def test_context_mode_micro(tmp_path, monkeypatch):
         assert "life_collection" in ctx or "collection" in ctx
     finally:
         rt.close()
+
+
+def test_pre_llm_hook_does_not_mount_lifeengine_on_cli_without_session_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from lifeengine.hooks import pre_llm_call
+
+    out = pre_llm_call(session_id="cli_s1", turn_id="cli_t1", user_message="普通工作问题", platform="cli")
+
+    assert out is None
+
+
+def test_pre_llm_hook_mounts_lifeengine_on_qq_by_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from lifeengine.hooks import pre_llm_call
+
+    out = pre_llm_call(session_id="qq_s1", turn_id="qq_t1", user_message="今天在干嘛", platform="qqbot")
+
+    assert out is not None
+    assert "LIFEENGINE" in out["context"]
+
+
+def test_pre_llm_hook_mount_requires_explicit_session_switch_on_cli(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from lifeengine.hooks import pre_llm_call
+
+    rt = LifeEngineRuntime()
+    try:
+        mounted = rt.context("mount", session_id="cli_s2", platform="cli")
+        assert mounted["mounted"] is True
+        out = pre_llm_call(session_id="cli_s2", turn_id="cli_t2", user_message="普通工作问题", platform="cli")
+        assert out is not None
+        assert "LIFEENGINE" in out["context"]
+
+        unmounted = rt.context("unmount", session_id="cli_s2", platform="cli")
+        assert unmounted["mounted"] is False
+        out2 = pre_llm_call(session_id="cli_s2", turn_id="cli_t3", user_message="普通工作问题", platform="cli")
+        assert out2 is None
+    finally:
+        rt.close()
+
+
+def test_pre_llm_hook_does_not_mount_from_life_like_message_on_cli(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from lifeengine.hooks import pre_llm_call
+
+    out = pre_llm_call(session_id="cli_s3", turn_id="cli_t3", user_message="/life status", platform="cli")
+
+    assert out is None
+
+
+def test_slash_life_context_mount_uses_gateway_session_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from lifeengine.cli import slash_life
+    from lifeengine.hooks import pre_llm_call
+
+    rendered = slash_life("context mount", session_id="slash_s1", turn_id="slash_t1", platform="cli")
+    assert "mounted" in rendered
+
+    out = pre_llm_call(session_id="slash_s1", turn_id="slash_t2", user_message="普通工作问题", platform="cli")
+    assert out is not None
+    assert "LIFEENGINE" in out["context"]

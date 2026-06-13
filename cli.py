@@ -23,7 +23,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_interface.add_argument("--payload", default="{}", help="JSON payload for interface action")
 
     p_context = sub.add_parser("context", help="Prompt/context slimming policy and injection history")
-    p_context.add_argument("action", nargs="?", default="policy", choices=["policy", "summary", "explain", "runs", "history", "set", "mode"])
+    p_context.add_argument("action", nargs="?", default="policy", choices=["policy", "summary", "explain", "runs", "history", "set", "mode", "mount", "unmount", "on", "off", "enable", "disable", "mount_status", "status"])
     p_context.add_argument("mode", nargs="?", default=None)
     p_context.add_argument("budget_chars", nargs="?", type=int, default=None)
     p_context.add_argument("--limit", type=int, default=20)
@@ -912,7 +912,7 @@ def _advanced_help() -> str:
         "  branch <name> | trace [audit|verify|doctor|migrations|receipts|explain <id>] | webui"
     )
 
-def slash_life(raw_args: str) -> str:
+def slash_life(raw_args: str, **kwargs) -> str:
     argv = shlex.split(raw_args or "")
     rt = LifeEngineRuntime()
     try:
@@ -957,6 +957,8 @@ def slash_life(raw_args: str) -> str:
         if cmd in {"context", "上下文", "prompt", "提示词"}:
             action = rest[0] if rest else "policy"
             payload = {}
+            if kwargs.get("platform"):
+                payload["platform"] = kwargs.get("platform")
             if action in {"set", "mode"}:
                 if len(rest) > 1:
                     payload["mode"] = rest[1]
@@ -964,7 +966,7 @@ def slash_life(raw_args: str) -> str:
                     payload["budget_chars"] = int(rest[2])
             if action in {"runs", "history"} and len(rest) > 1 and rest[1].isdigit():
                 payload["limit"] = int(rest[1])
-            return format_result(rt.context(action, **payload))
+            return format_result(rt.context(action, session_id=kwargs.get("session_id"), turn_id=kwargs.get("turn_id"), **payload))
 
         if cmd in {"closet", "衣橱", "衣柜", "鞋柜", "袜子", "配饰", "梳妆台"}:
             action = rest[0] if rest else "summary"
