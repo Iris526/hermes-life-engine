@@ -60,7 +60,7 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 
 .sidebar { grid-area: sidebar; overflow-y: auto; overflow-x: hidden; padding: 8px; display: flex; flex-direction: column; gap: 8px; background: var(--bg-1); }
 .char-portrait { text-align: center; padding: 12px 8px 8px; }
-.portrait-frame { width: 100%; max-width: 150px; aspect-ratio: 3/4; margin: 0 auto 8px; border: 1px solid var(--gold-dim); border-radius: 2px; overflow: hidden; position: relative; box-shadow: inset 0 0 16px var(--bg-0),0 0 8px var(--gold-glow); }
+.portrait-frame { width: 100%; max-width: 180px; aspect-ratio: 9/16; margin: 0 auto 8px; border: 1px solid var(--gold-dim); border-radius: 2px; overflow: hidden; position: relative; box-shadow: inset 0 0 16px var(--bg-0),0 0 8px var(--gold-glow); }
 .portrait-frame::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg,transparent 60%,var(--bg-0)); }
 .portrait-frame img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
 .char-name { font-size: 16px; color: var(--gold); font-weight: 600; letter-spacing: 1px; }
