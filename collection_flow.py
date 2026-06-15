@@ -20,6 +20,7 @@ from .collections import (
     get_collection_item,
     get_display_image,
     get_reference_image,
+    get_loadout as get_loadout_items,
     list_collection_items,
     list_item_assets,
     create_collection_item,
@@ -599,4 +600,26 @@ def render_asset_check(status: str, missing: list[dict[str, Any]], complete: lis
             lines.append(f"- {m.get('item_name')}：缺 {', '.join(m.get('missing_assets') or [])}")
     if complete:
         lines.append("已完整：" + "、".join([str(c.get('item_name')) for c in complete]))
+    return "\n".join(lines)
+
+
+def render_loadout(loadout: dict[str, Any]) -> str:
+    """Render current on-body + backpack loadout."""
+    worn = loadout.get("worn") or []
+    backpack = loadout.get("backpack") or []
+    total = loadout.get("total_items", 0)
+    if total == 0:
+        return "随身装备\n========\n身上没穿东西，背包也是空的。"
+    lines = ["随身装备", "========"]
+    if worn:
+        lines.append("【穿着中】")
+        for e in worn:
+            qty_str = f" ×{int(e['quantity'])}" if e.get("quantity", 1) != 1 else ""
+            lines.append(f"  {e.get('name')}{qty_str} · {e.get('collection_type', '')}")
+    if backpack:
+        lines.append("【背包】")
+        for e in backpack:
+            qty_str = f" ×{int(e['quantity'])}" if e.get("quantity", 1) != 1 else ""
+            lines.append(f"  {e.get('name')}{qty_str} · {e.get('collection_type', '')}")
+    lines.append(f"\n共 {total} 项")
     return "\n".join(lines)

@@ -145,11 +145,14 @@ from .collections import (
     generate_assets,
     get_collection,
     get_collection_item,
+    get_loadout,
     get_outfit_plan,
     list_collection_items,
     list_collections,
     list_outfit_plans,
     maintain_item,
+    pack_item,
+    unpack_item,
     render_collections_summary,
     render_items,
     render_item_assets,
@@ -174,6 +177,7 @@ from .collection_flow import (
     list_outfit_snapshots,
     list_purchase_chains,
     purchase_to_collection,
+    render_loadout,
     resolve_outfit,
     return_current_outfit,
     render_current_outfit,
@@ -3087,6 +3091,21 @@ class LifeEngineRuntime:
                 return consume_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], quantity=float(payload.get("quantity", 1)), reason=payload.get("reason") or action_l, event_id=payload.get("event_id"))
             if action_l in {"restock", "replenish", "add_stock", "buy"}:
                 return restock_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], quantity=float(payload.get("quantity", 1)), reason=payload.get("reason") or action_l, event_id=payload.get("event_id"))
+            if action_l in {"pack", "pack_item", "equip"}:
+                slot = payload.get("slot", "backpack")
+                if action_l == "equip":
+                    slot = "worn"
+                return pack_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"],
+                                 quantity=float(payload.get("quantity", 1)), slot=slot,
+                                 reason=payload.get("reason") or "pack", event_id=payload.get("event_id"))
+            if action_l in {"unpack", "unpack_item", "unequip"}:
+                return unpack_item(self.conn, owner_kind, owner_id,
+                                   loadout_id=payload.get("loadout_id"), item_id=payload.get("item_id"),
+                                   quantity=float(payload["quantity"]) if payload.get("quantity") else None,
+                                   reason=payload.get("reason") or "unpack")
+            if action_l in {"loadout", "backpack", "current_loadout"}:
+                loadout = get_loadout(self.conn, owner_kind, owner_id)
+                return {"ok": True, "loadout": loadout, "rendered": render_loadout(loadout)}
             if action_l in {"outfit", "build_outfit", "style", "wear_today"}:
                 ensure_default_collections(self.conn, owner_kind, owner_id)
                 # v0.12.8: default outfit action is resolver-first, so missing cabinets/assets are explicit.

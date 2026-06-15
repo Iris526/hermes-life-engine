@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 48
+_SCHEMA_VERSION = 49
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -246,6 +246,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 48:
         _create_schema_v48(conn)
         _record_schema_migration(conn, 48, "prompt_context_session_mounts")
+    if current < 49:
+        _create_schema_v49(conn)
+        _record_schema_migration(conn, 49, "agent_loadout_backpack")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3532,5 +3535,39 @@ def _create_schema_v48(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_prompt_context_mounts_owner_session
           ON prompt_context_session_mounts(owner_kind, owner_id, session_id);
+        """
+    )
+
+
+def _create_schema_v49(conn: sqlite3.Connection) -> None:
+    """agent_loadout: tracks items currently on-body (worn) or in backpack (carried).
+
+    Each row is one item slot checked out from a collection. When worn or packed,
+    the collection item's available quantity decreases. When returned/unpacked,
+    quantity goes back. This is the RPG "equipment + inventory" layer on top of
+    collections (which act as storage/bank).
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS agent_loadout (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          item_id TEXT NOT NULL,
+          collection_id TEXT,
+          collection_type TEXT,
+          name TEXT,
+          slot TEXT NOT NULL DEFAULT 'backpack',
+          quantity REAL NOT NULL DEFAULT 1,
+          reason TEXT,
+          event_id TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_loadout_owner
+          ON agent_loadout(owner_kind, owner_id, status);
+        CREATE INDEX IF NOT EXISTS idx_agent_loadout_item
+          ON agent_loadout(item_id, owner_kind, owner_id, status);
         """
     )

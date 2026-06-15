@@ -548,6 +548,153 @@ def restock_item(conn, owner_kind: str, owner_id: str, *, item_id: str, quantity
     return {"ok": True, "item": updated, "restocked": quantity, "total": new_qty, "usage_id": usage_id}
 
 
+# ---------------------------------------------------------------------------
+# Loadout / Backpack: pack items from collection onto body/backpack and back.
+# ---------------------------------------------------------------------------
+
+def pack_item(conn, owner_kind: str, owner_id: str, *, item_id: str, quantity: float = 1,
+              slot: str = "backpack", reason: str = "pack", event_id: str | None = None,
+              source: str = "life_collection") -> dict[str, Any]:
+    """Pack item(s) from collection storage onto body or backpack.
+
+    - For quantity-managed items (quantity > 1): splits — collection qty decreases, loadout qty increases.
+    - For unique items (quantity == 1): marks item as in_use, creates loadout entry.
+    - slot: 'backpack' (carried) or 'worn' (equipped on body as clothing).
+    """
+    quantity = float(quantity)
+    if quantity <= 0:
+        raise CollectionError("pack quantity must be positive")
+    item = get_collection_item(conn, owner_kind, owner_id, item_id)
+    collection_id = item.get("collection_id")
+    # Look up collection_type
+    col_row = conn.execute("SELECT collection_type FROM item_collections WHERE id=?", (collection_id,)).fetchone()
+    collection_type = col_row["collection_type"] if col_row else "custom"
+    current_qty = float(item.get("quantity") or 0)
+
+    if current_qty < quantity:
+        raise CollectionError(f"insufficient quantity to pack: has {current_qty}, tried to pack {quantity}")
+
+    is_unique = current_qty <= 1
+    if is_unique:
+        # Unique item: mark as in_use
+        update_collection_item(conn, owner_kind, owner_id, item_id=item_id,
+                               availability_state="in_use",
+                               usage_state={"packed_at": now_iso(), "reason": reason, "event_id": event_id},
+                               source=source)
+    else:
+        # Quantity-managed: reduce collection quantity
+        new_qty = current_qty - quantity
+        conn.execute(
+            "UPDATE collection_items SET quantity=?, updated_at=datetime('now') WHERE id=? AND owner_kind=? AND owner_id=?",
+            (new_qty, item_id, owner_kind, owner_id),
+        )
+
+    loadout_id = new_id("loadout")
+    conn.execute(
+        """INSERT INTO agent_loadout(id, owner_kind, owner_id, item_id, collection_id, collection_type, name, slot, quantity, reason, event_id, status)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (loadout_id, owner_kind, owner_id, item_id, collection_id, collection_type,
+         item.get("name"), slot, quantity, reason, event_id, "active"),
+    )
+    usage_id = new_id("coluse")
+    conn.execute(
+        "INSERT INTO collection_usage_history(id, owner_kind, owner_id, item_id, operation, event_id, reason, status) VALUES(?,?,?,?,?,?,?,?)",
+        (usage_id, owner_kind, owner_id, item_id, "pack", event_id, f"{reason} (qty {quantity}, slot={slot})", "done"),
+    )
+    append_journal(conn, owner_kind, owner_id, "item_packed", {
+        "item_id": item_id, "loadout_id": loadout_id, "quantity": quantity, "slot": slot, "reason": reason,
+        "collection_remaining": (current_qty - quantity) if not is_unique else 0,
+    }, source)
+    return {"ok": True, "loadout_id": loadout_id, "item_id": item_id, "packed": quantity, "slot": slot,
+            "collection_remaining": (current_qty - quantity) if not is_unique else 0}
+
+
+def unpack_item(conn, owner_kind: str, owner_id: str, *, loadout_id: str | None = None,
+                item_id: str | None = None, quantity: float | None = None,
+                reason: str = "unpack", source: str = "life_collection") -> dict[str, Any]:
+    """Return item(s) from backpack/on-body back to collection storage.
+
+    - If loadout_id given, returns that specific entry (full or partial quantity).
+    - If item_id given without loadout_id, finds active loadout entry for that item.
+    - quantity=None means return all.
+    """
+    # Find the loadout entry
+    if loadout_id:
+        row = conn.execute(
+            "SELECT * FROM agent_loadout WHERE id=? AND owner_kind=? AND owner_id=? AND status='active'",
+            (loadout_id, owner_kind, owner_id),
+        ).fetchone()
+    elif item_id:
+        row = conn.execute(
+            "SELECT * FROM agent_loadout WHERE item_id=? AND owner_kind=? AND owner_id=? AND status='active' ORDER BY created_at DESC LIMIT 1",
+            (item_id, owner_kind, owner_id),
+        ).fetchone()
+    else:
+        raise CollectionError("loadout_id or item_id is required")
+    if not row:
+        raise CollectionError(f"no active loadout entry found")
+
+    packed_qty = float(row["quantity"])
+    return_qty = float(quantity) if quantity is not None else packed_qty
+    if return_qty <= 0 or return_qty > packed_qty:
+        raise CollectionError(f"invalid return quantity: {return_qty}, packed: {packed_qty}")
+
+    item = get_collection_item(conn, owner_kind, owner_id, row["item_id"])
+    current_qty = float(item.get("quantity") or 0)
+
+    # Was this a unique item (originally qty 1, marked in_use)?
+    was_unique = item.get("availability_state") == "in_use" and return_qty >= packed_qty
+
+    if was_unique:
+        # Return unique item to available
+        update_collection_item(conn, owner_kind, owner_id, item_id=row["item_id"],
+                               availability_state="available",
+                               usage_state={"unpacked_at": now_iso(), "reason": reason},
+                               source=source)
+    else:
+        # Return quantity to collection
+        new_qty = current_qty + return_qty
+        conn.execute(
+            "UPDATE collection_items SET quantity=?, updated_at=datetime('now') WHERE id=? AND owner_kind=? AND owner_id=?",
+            (new_qty, row["item_id"], owner_kind, owner_id),
+        )
+
+    # Update or close loadout entry
+    remaining = packed_qty - return_qty
+    if remaining <= 0:
+        conn.execute("UPDATE agent_loadout SET status='returned', updated_at=datetime('now') WHERE id=?", (row["id"],))
+    else:
+        conn.execute("UPDATE agent_loadout SET quantity=?, updated_at=datetime('now') WHERE id=?", (remaining, row["id"]))
+
+    usage_id = new_id("coluse")
+    conn.execute(
+        "INSERT INTO collection_usage_history(id, owner_kind, owner_id, item_id, operation, event_id, reason, status) VALUES(?,?,?,?,?,?,?,?)",
+        (usage_id, owner_kind, owner_id, row["item_id"], "unpack", row["event_id"], f"{reason} (qty {return_qty})", "done"),
+    )
+    append_journal(conn, owner_kind, owner_id, "item_unpacked", {
+        "loadout_id": row["id"], "item_id": row["item_id"], "returned": return_qty, "remaining_in_loadout": remaining,
+    }, source)
+    return {"ok": True, "loadout_id": row["id"], "item_id": row["item_id"], "returned": return_qty,
+            "remaining_in_loadout": remaining, "collection_total": current_qty + return_qty}
+
+
+def get_loadout(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
+    """Get current on-body + backpack loadout."""
+    rows = conn.execute(
+        "SELECT * FROM agent_loadout WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY slot, created_at",
+        (owner_kind, owner_id),
+    ).fetchall()
+    worn = []
+    backpack = []
+    for r in rows:
+        entry = dict(r)
+        if entry.get("slot") == "worn":
+            worn.append(entry)
+        else:
+            backpack.append(entry)
+    return {"worn": worn, "backpack": backpack, "total_items": len(worn) + len(backpack)}
+
+
 def maintain_item(conn, owner_kind: str, owner_id: str, *, item_id: str, maintenance_type: str = "clean", reason: str = "maintenance", source: str = "life_collection") -> dict[str, Any]:
     fields: dict[str, Any] = {}
     if maintenance_type in {"clean", "wash", "laundry"}:

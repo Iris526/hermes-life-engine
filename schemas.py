@@ -826,7 +826,7 @@ LIFE_COLLECTION = {
         "type": "object",
         "properties": {
             **OWNER_PROPS,
-            "action": {"type": "string", "description": "summary/init/presets/collections/get_collection/create_collection/update_collection/archive_collection/items/get_item/add_item/add_alias/aliases/update_item/generate_assets/set_asset/set_display_image/set_reference_image/resolve_outfit/resolver_explain/outfit_presets/create_outfit_preset/update_outfit_preset/archive_outfit_preset/current_outfit/wear_outfit/return_outfit/asset_check/purchase_chain/purchase_chains/checkout/return/dirty/maintain/consume/restock/outfit/outfits."},
+            "action": {"type": "string", "description": "summary/init/presets/collections/get_collection/create_collection/update_collection/archive_collection/items/get_item/add_item/add_alias/aliases/update_item/generate_assets/set_asset/set_display_image/set_reference_image/resolve_outfit/resolver_explain/outfit_presets/create_outfit_preset/update_outfit_preset/archive_outfit_preset/current_outfit/wear_outfit/return_outfit/asset_check/purchase_chain/purchase_chains/checkout/return/dirty/maintain/consume/restock/pack/unpack/loadout/outfit/outfits."},
             "collection_id": {"type": "string"},
             "collection_type": {"type": "string", "description": "wardrobe/shoe_cabinet/sock_drawer/accessory_cabinet/vanity/supply_cabinet/custom."},
             "type": {"type": "string", "description": "Alias for collection_type."},

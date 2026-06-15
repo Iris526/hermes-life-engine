@@ -38,8 +38,8 @@ DOMAINS: dict[str, dict[str, Any]] = {
     },
     "collection": {
         "label": "衣橱/鞋柜/梳妆台/配饰柜/袜子抽屉 / Collections",
-        "read": ["summary", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "supplies", "items", "outfits", "outfit_presets", "aliases", "resolve_outfit", "current_outfit", "asset_check", "purchase_chains"],
-        "write": ["init", "create_collection", "update_collection", "archive_collection", "add_item", "add_alias", "create_outfit_preset", "update_outfit_preset", "archive_outfit_preset", "generate_assets", "set_asset", "resolve_outfit", "wear_outfit", "return_outfit", "asset_check", "purchase_chain", "checkout", "return", "maintain", "consume", "restock", "outfit"],
+        "read": ["summary", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "supplies", "items", "outfits", "outfit_presets", "aliases", "resolve_outfit", "current_outfit", "asset_check", "purchase_chains", "loadout", "backpack"],
+        "write": ["init", "create_collection", "update_collection", "archive_collection", "add_item", "add_alias", "create_outfit_preset", "update_outfit_preset", "archive_outfit_preset", "generate_assets", "set_asset", "set_display_image", "set_reference_image", "resolve_outfit", "wear_outfit", "return_outfit", "asset_check", "purchase_chain", "checkout", "return", "maintain", "consume", "restock", "pack", "unpack", "loadout", "outfit"],
         "rule": "集合分类是预设但可增删改；Collection 是道具集合（衣橱/鞋柜/随身物品柜等），Item 是具体道具，数量记在 Item 上；消耗品用 consume 扣减、restock 补货。",
     },
     "behavior": {
