@@ -163,7 +163,10 @@ def commit_draft(conn, owner_kind: str, owner_id: str, draft_id: str | None = No
             draft_canon_id=None,
             paused_json=None if next_state == "active" else dumps({"reason": "canon committed; review migration before resume"}),
         )
-    _ensure_resources_from_canon(conn, owner_kind, owner_id, data, version)
+    # Resources are no longer auto-created at canon commit time. They are
+    # initialized explicitly via `life init_resources` / RESOURCE_DEFINE ops,
+    # which flow through LifeOps and produce transactions/receipts/traces.
+    # See _ensure_resources_from_canon (kept for reference only).
     append_journal(conn, owner_kind, owner_id, "canon_committed", {"version": version, "canon_id": canon_id, "migration": migration}, "canon")
     return {"canon_id": canon_id, "version": version, "status": status, "data": data, "migration": migration}
 
@@ -339,6 +342,13 @@ def _unresolved_questions(extracted: dict[str, Any], owner_kind: str) -> list[st
 
 
 def _ensure_resources_from_canon(conn, owner_kind: str, owner_id: str, canon: dict[str, Any], version: int) -> None:
+    """Deprecated: no longer called by commit_draft.
+
+    Resources must now be created through LifeOps (RESOURCE_DEFINE ops via
+    `life init_resources` / `life_resource`) so that every definition carries
+    a transaction, receipt, and trace. Kept for reference and external callers
+    that may still import it; new code should not call this.
+    """
     defs = canon.get("resources", {}).get("definitions", {}) or {}
     for key, spec in defs.items():
         display = spec.get("display_name") or key

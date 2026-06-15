@@ -257,25 +257,33 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
             except Exception as exc:
                 raise ValidationError("invalid alarm_time") from exc
     elif op_type == "START_SLEEP_SESSION":
-        if not payload.get("sleep_session_id") and not payload.get("sleep_plan_id"):
-            raise ValidationError("START_SLEEP_SESSION requires sleep_session_id or sleep_plan_id")
-        if payload.get("actual_start"):
+        # Allow sleep_session_id (existing) or sleep_plan_id (runtime resolves plan).
+        # schedule_block_id alone is also accepted; runtime picks the next planned sleep.
+        if not payload.get("sleep_session_id") and not payload.get("sleep_plan_id") and not payload.get("schedule_block_id"):
+            payload["auto_select_plan"] = True
+        if payload.get("now"):
             try:
-                payload["actual_start_ts"] = to_epoch(payload.get("actual_start"))
+                payload["now_ts"] = to_epoch(payload.get("now"))
             except Exception as exc:
-                raise ValidationError("invalid actual_start") from exc
+                raise ValidationError("invalid sleep start now") from exc
     elif op_type == "END_SLEEP_SESSION":
         _require(payload, "sleep_session_id")
-        if payload.get("actual_end"):
-            try:
-                payload["actual_end_ts"] = to_epoch(payload.get("actual_end"))
-            except Exception as exc:
-                raise ValidationError("invalid actual_end") from exc
         if payload.get("quality_score") is not None:
             _validate_0_100("sleep quality_score", payload.get("quality_score"))
+        if payload.get("wake_cause") and payload.get("wake_cause") not in {"natural", "alarm", "alarm_or_natural", "user_interrupt", "call_override", "schedule", "unknown"}:
+            raise ValidationError(f"invalid wake_cause: {payload.get('wake_cause')}")
     elif op_type == "CREATE_SLEEP_PLAN":
-        # plan_day may provide date/bedtime/wake_time instead of explicit range.
-        if payload.get("planned_start") or payload.get("planned_end"):
+        # Two accepted shapes: explicit range (planned_sleep_at/planned_wake_at) or
+        # date + bedtime/wake aliases (planned_start/planned_end). create_sleep_plan
+        # accepts both, so validate whichever the caller provided.
+        if payload.get("planned_sleep_at") or payload.get("planned_wake_at"):
+            _validate_time_range(payload, "planned_sleep_at", "planned_wake_at")
+            if payload.get("alarm_at"):
+                try:
+                    payload["alarm_at_ts"] = to_epoch(payload.get("alarm_at"))
+                except Exception as exc:
+                    raise ValidationError("invalid sleep alarm_at") from exc
+        elif payload.get("planned_start") or payload.get("planned_end"):
             _validate_time_range(payload, "planned_start", "planned_end")
             p = _normalize_event_payload({"planned_start": payload.get("planned_start"), "planned_end": payload.get("planned_end"), "timezone": payload.get("timezone_name") or payload.get("timezone") or "UTC"})
             payload["planned_start"] = p.get("planned_start")
@@ -291,35 +299,10 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
             raise ValidationError(f"invalid sleep_type: {payload.get('sleep_type')}")
         if payload.get("wake_policy") and payload.get("wake_policy") not in {"natural", "natural_or_alarm", "alarm", "user_interrupt", "call_override", "schedule", "short_recovery"}:
             raise ValidationError(f"invalid wake_policy: {payload.get('wake_policy')}")
-    elif op_type == "START_SLEEP_SESSION":
-        if not (payload.get("sleep_plan_id") or payload.get("schedule_block_id")):
-            # Allow runtime to choose the next planned sleep, but report it.
-            payload["auto_select_plan"] = True
-    elif op_type == "END_SLEEP_SESSION":
-        if payload.get("quality_score") is not None:
-            _validate_0_100("sleep quality_score", payload.get("quality_score"))
-        if payload.get("wake_cause") and payload.get("wake_cause") not in {"natural", "alarm", "alarm_or_natural", "user_interrupt", "call_override", "schedule", "unknown"}:
-            raise ValidationError(f"invalid wake_cause: {payload.get('wake_cause')}")
     elif op_type == "SKIP_SLEEP_PLAN":
         _require(payload, "sleep_plan_id")
     elif op_type == "COMPLETE_EVENT":
         _require(payload, "event_id")
-    elif op_type == "CREATE_SLEEP_PLAN":
-        _require(payload, "planned_sleep_at", "planned_wake_at")
-        # Sleep plans are scheduled blocks under the hood, but they have their own start/wake jobs.
-        _validate_time_range(payload, "planned_sleep_at", "planned_wake_at")
-        if payload.get("alarm_at"):
-            try:
-                payload["alarm_at_ts"] = to_epoch(payload.get("alarm_at"))
-            except Exception as exc:
-                raise ValidationError("invalid sleep alarm_at") from exc
-    elif op_type == "START_SLEEP_SESSION":
-        _require(payload, "sleep_plan_id")
-        if payload.get("now"):
-            try:
-                payload["now_ts"] = to_epoch(payload.get("now"))
-            except Exception as exc:
-                raise ValidationError("invalid sleep start now") from exc
     elif op_type == "WAKE_SLEEP_SESSION":
         if not payload.get("sleep_session_id") and not payload.get("sleep_plan_id"):
             raise ValidationError("WAKE_SLEEP_SESSION requires sleep_session_id or sleep_plan_id")
@@ -365,6 +348,13 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
             raise ValidationError("Dream entries must use truth_layer=dream_symbolic")
     elif op_type == "RESOURCE_DEFINE":
         _require(payload, "key")
+        # Normalize canon-style min/max aliases to the min_value/max_value
+        # shape that define_resource() expects. Keeps both presets (min_value)
+        # and canon imports (min) working through the same LifeOps path.
+        if "min" in payload and "min_value" not in payload:
+            payload["min_value"] = payload.pop("min")
+        if "max" in payload and "max_value" not in payload:
+            payload["max_value"] = payload.pop("max")
         if payload.get("min_value") is not None and payload.get("max_value") is not None:
             if float(payload["max_value"]) < float(payload["min_value"]):
                 raise ValidationError("resource max_value must be >= min_value")
@@ -476,19 +466,8 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
                 _validate_time_range(sched, "start", "end")
     elif op_type == "CREATE_REFLECTION":
         _require(payload, "content")
-    elif op_type == "CREATE_GOAL_MILESTONE":
-        _require(payload, "goal_id", "title")
-        if payload.get("target_progress") is not None:
-            _validate_0_100("milestone target_progress", payload.get("target_progress"))
     elif op_type == "RECOMPUTE_EVENT_PROGRESS":
         _require(payload, "event_id")
-    elif op_type == "AUTONOMY_CREATE_GOAL_STEP":
-        _require(payload, "goal_id")
-        if payload.get("start") or payload.get("end"):
-            _validate_time_range(payload, "start", "end")
-    elif op_type == "AUTONOMY_SCHEDULE_EVENT":
-        _require(payload, "event_id", "start", "end")
-        _validate_time_range(payload, "start", "end")
     return payload
 
 

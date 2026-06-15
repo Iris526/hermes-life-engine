@@ -40,6 +40,7 @@ from .canon import (
 from .constants import DEFAULT_AGENT_ID, DEFAULT_USER_ID, MUTATION_BLOCKING_STATES, SETUP_STATES, PLUGIN_VERSION
 from .behavior_mapping import (
     DEFAULT_BEHAVIOR_MAPPINGS,
+    BehaviorMappingError,
     archive_behavior_mapping,
     archive_behavior_source,
     create_behavior_mapping,
@@ -596,105 +597,93 @@ class LifeEngineRuntime:
                 except Exception as exc:
                     event["goal_link_error"] = str(exc)
             return event
-        if op_type == "UPDATE_EVENT_STATUS":
+        elif op_type == "UPDATE_EVENT_STATUS":
             return transition_event(self.conn, owner_kind, owner_id, payload["event_id"], payload["status"], payload.get("reason"), source)
-        if op_type == "CREATE_SCHEDULE_BLOCK":
+        elif op_type == "CREATE_SCHEDULE_BLOCK":
             return create_schedule_block(self.conn, owner_kind, owner_id, **payload)
-        if op_type == "UPDATE_SCHEDULE_BLOCK_STATUS":
+        elif op_type == "UPDATE_SCHEDULE_BLOCK_STATUS":
             return update_schedule_block_status(self.conn, owner_kind, owner_id, payload["schedule_block_id"], payload["status"], payload.get("reason"), source)
-        if op_type == "UPDATE_REALTIME_STATE":
+        elif op_type == "UPDATE_REALTIME_STATE":
             return set_realtime_state(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k not in {"source", "lease_expires_at_ts"}})
-        if op_type == "PLAN_CORE_SLEEP":
+        elif op_type == "PLAN_CORE_SLEEP":
             return plan_core_sleep(self.conn, owner_kind, owner_id, source=payload.get("source") or source, canon_version=canon_version, **{k: v for k, v in payload.items() if k not in {"source", "target_bedtime_ts", "target_wake_time_ts", "alarm_time_ts"}})
-        if op_type == "START_SLEEP_SESSION":
+        elif op_type == "START_SLEEP_SESSION":
             return start_sleep_session(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k not in {"source", "actual_start_ts"}})
-        if op_type == "END_SLEEP_SESSION":
+        elif op_type == "END_SLEEP_SESSION":
             return end_sleep_session(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k not in {"source", "actual_end_ts"}})
-        if op_type == "COMPLETE_EVENT":
+        elif op_type == "COMPLETE_EVENT":
             result = complete_event(self.conn, owner_kind, owner_id, payload["event_id"], payload.get("summary", "completed"), payload.get("resource_deltas"), source)
             result["goal_updates"] = apply_event_goal_contributions(self.conn, owner_kind, owner_id, payload["event_id"], source)
             return result
-        if op_type == "CREATE_SLEEP_PLAN":
+        elif op_type == "CREATE_SLEEP_PLAN":
             return create_sleep_plan(self.conn, owner_kind, owner_id, canon_version=canon_version, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "START_SLEEP_SESSION":
-            return start_sleep_session(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "WAKE_SLEEP_SESSION":
+        elif op_type == "WAKE_SLEEP_SESSION":
             return wake_sleep_session(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "INTERRUPT_SLEEP_SESSION":
+        elif op_type == "INTERRUPT_SLEEP_SESSION":
             return interrupt_sleep_session(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "RECORD_REPLY_GATE_DECISION":
+        elif op_type == "RECORD_REPLY_GATE_DECISION":
             return record_reply_gate_decision(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "CREATE_DELAYED_REPLY":
+        elif op_type == "CREATE_DELAYED_REPLY":
             return create_delayed_reply(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "RELEASE_DELAYED_REPLIES":
+        elif op_type == "RELEASE_DELAYED_REPLIES":
             return release_delayed_replies(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "CALL_OVERRIDE":
+        elif op_type == "CALL_OVERRIDE":
             return call_override(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "RUN_DREAM":
+        elif op_type == "RUN_DREAM":
             return run_dream_cycle(self.conn, owner_kind, owner_id, source=payload.get("source") or source, trace_id=payload.get("trace_id"), **{k: v for k, v in payload.items() if k not in {"source", "trace_id"}})
-        if op_type == "CREATE_DREAM_ENTRY":
+        elif op_type == "CREATE_DREAM_ENTRY":
             return create_dream_entry(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "RESOURCE_DEFINE":
+        elif op_type == "RESOURCE_DEFINE":
             p = dict(payload)
             reset_account = "initial" in p or bool(p.pop("reset_account", False))
             return define_resource(self.conn, owner_kind, owner_id, canon_version=canon_version, reset_account=reset_account, **p)
-        if op_type == "RESOURCE_DELTA":
+        elif op_type == "RESOURCE_DELTA":
             return apply_delta(self.conn, owner_kind, owner_id, **payload)
-        if op_type == "RESOURCE_RESERVE":
+        elif op_type == "RESOURCE_RESERVE":
             return reserve(self.conn, owner_kind, owner_id, **payload)
-        if op_type == "RESOURCE_RELEASE":
+        elif op_type == "RESOURCE_RELEASE":
             return release_reservation(self.conn, owner_kind, owner_id, payload["reservation_id"])
-        if op_type == "CREATE_MEMORY":
+        elif op_type == "CREATE_MEMORY":
             return create_memory(self.conn, owner_kind, owner_id, canon_version=canon_version, **payload)
-        if op_type == "CREATE_DIARY":
+        elif op_type == "CREATE_DIARY":
             return self._create_diary(owner_kind, owner_id, canon_version=canon_version, **payload)
-        if op_type == "CREATE_MEAL_RECORD":
+        elif op_type == "CREATE_MEAL_RECORD":
             return create_meal_record(self.conn, owner_kind, owner_id, canon_version=canon_version, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "CREATE_LIFE_ARC":
+        elif op_type == "CREATE_LIFE_ARC":
             return create_life_arc(self.conn, owner_kind, owner_id, canon_version=canon_version, **payload)
-        if op_type == "CREATE_GOAL":
+        elif op_type == "CREATE_GOAL":
             return create_goal(self.conn, owner_kind, owner_id, canon_version=canon_version, **payload)
-        if op_type == "UPDATE_GOAL_PROGRESS":
+        elif op_type == "UPDATE_GOAL_PROGRESS":
             return update_goal_progress(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "CREATE_GOAL_MILESTONE":
+        elif op_type == "CREATE_GOAL_MILESTONE":
             return create_milestone(self.conn, owner_kind, owner_id, **payload)
-        if op_type == "LINK_EVENT_TO_GOAL":
+        elif op_type == "LINK_EVENT_TO_GOAL":
             return link_event_to_goal(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "CREATE_EVENT_DEPENDENCY":
+        elif op_type == "CREATE_EVENT_DEPENDENCY":
             return create_event_dependency(self.conn, owner_kind, owner_id, **payload)
-        if op_type == "DECOMPOSE_EVENT":
+        elif op_type == "DECOMPOSE_EVENT":
             return decompose_event(self.conn, owner_kind, owner_id, canon_version=canon_version, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "CREATE_REFLECTION":
+        elif op_type == "CREATE_REFLECTION":
             return create_reflection(self.conn, owner_kind, owner_id, canon_version=canon_version, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "RECOMPUTE_EVENT_PROGRESS":
+        elif op_type == "RECOMPUTE_EVENT_PROGRESS":
             return recompute_parent_event_progress(self.conn, owner_kind, owner_id, payload["event_id"], source)
-        if op_type == "AUTONOMY_CREATE_GOAL_STEP":
+        elif op_type == "AUTONOMY_CREATE_GOAL_STEP":
             return apply_autonomy_goal_step(self.conn, owner_kind, owner_id, canon_version=canon_version, **payload)
-        if op_type == "AUTONOMY_SCHEDULE_EVENT":
+        elif op_type == "AUTONOMY_SCHEDULE_EVENT":
             return apply_autonomy_schedule_event(self.conn, owner_kind, owner_id, **payload)
-        if op_type == "AUTONOMY_CREATE_GOAL_STEP":
-            return apply_autonomy_goal_step(self.conn, owner_kind, owner_id, canon_version=canon_version, **payload)
-        if op_type == "AUTONOMY_SCHEDULE_EVENT":
-            return apply_autonomy_schedule_event(self.conn, owner_kind, owner_id, **payload)
-        if op_type == "CREATE_SERENDIPITY_EVENT":
+        elif op_type == "CREATE_SERENDIPITY_EVENT":
             return apply_serendipity_event(self.conn, owner_kind, owner_id, canon_version=canon_version, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "CREATE_PROACTIVE_INTENT":
+        elif op_type == "CREATE_PROACTIVE_INTENT":
             return create_proactive_intent(self.conn, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "EVALUATE_PROACTIVE_INTENT":
+        elif op_type == "EVALUATE_PROACTIVE_INTENT":
             return evaluate_proactive_intent(self.conn, owner_id, payload.get("intent_id"), control=ensure_control(self.conn, "agent", owner_id), target_user_id=payload.get("target_user_id"), manual=bool(payload.get("manual", False)), trace_id=payload.get("trace_id"), draft_text=payload.get("draft_text"))
-        if op_type == "MARK_PROACTIVE_SENT":
+        elif op_type == "MARK_PROACTIVE_SENT":
             return mark_outbox_sent(self.conn, owner_id, payload["outbox_id"], result=payload.get("result") or {}, manual=bool(payload.get("manual", True)))
-        if op_type == "SUPPRESS_PROACTIVE_INTENT":
+        elif op_type == "SUPPRESS_PROACTIVE_INTENT":
             return suppress_intent(self.conn, owner_id, payload["intent_id"], payload.get("reason") or "manual suppress")
-        if op_type == "EXPIRE_PROACTIVE_INTENTS":
+        elif op_type == "EXPIRE_PROACTIVE_INTENTS":
             return expire_intents(self.conn, owner_id)
-        if op_type == "CREATE_SLEEP_PLAN":
-            return create_sleep_plan(self.conn, owner_kind, owner_id, canon_version=canon_version, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "START_SLEEP_SESSION":
-            return start_sleep_session(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "END_SLEEP_SESSION":
-            return end_sleep_session(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "SKIP_SLEEP_PLAN":
+        elif op_type == "SKIP_SLEEP_PLAN":
             return skip_sleep_plan(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
         raise ValueError(f"Unknown LifeOp type: {op_type}")
 
@@ -2679,6 +2668,11 @@ class LifeEngineRuntime:
             with transaction(self.conn):
                 return canon_consistency_check(self.conn, owner_kind, owner_id, persist=bool(payload.get("persist", True)))
         if action_l in {"init_resources", "resource_preset", "bootstrap_resources", "init_inventory", "inventory_preset", "bootstrap_inventory"}:
+            # Preferred action names: init_resources / resource_preset.
+            # init_inventory / inventory_preset / bootstrap_inventory are
+            # pre-v46 aliases kept for backward compatibility; they route to
+            # the same resource-preset path (physical items now live in
+            # supply_cabinet collections, not inventory tables).
             preset = str(payload.get("preset") or "guimingguan")
             ops = resource_preset_ops(preset)
             commit = self.commit_ops(ops, owner_kind, owner_id, "living_resource_preset", session_id, turn_id)
@@ -2687,6 +2681,9 @@ class LifeEngineRuntime:
             with transaction(self.conn):
                 run_id = new_id("invpreset")
                 self.conn.execute(
+                    # Table name is a v46-rebuild legacy; physical items moved to
+                    # supply_cabinet collections. This run-log table records preset
+                    # application and is retained for audit history.
                     """INSERT INTO living_inventory_preset_runs(id, owner_kind, owner_id, preset, status, resource_keys_json, item_names_json, transaction_id, receipt_id, rendered_text)
                          VALUES(?,?,?,?,?,?,?,?,?,?)""",
                     (run_id, owner_kind, owner_id, preset, "committed", dumps(resource_keys), dumps([]), commit.get("transaction_id"), (commit.get("receipt") or {}).get("receipt_id"), rendered),
@@ -3069,6 +3066,9 @@ class LifeEngineRuntime:
             return {"ok": True, "control": ensure_control(self.conn, owner_kind, owner_id), "required_settings": required}
 
     def _ensure_context_mounts_table(self) -> None:
+        # Safety net: the table is normally created by schema migration v48
+        # (see db._create_schema_v48). This CREATE IF NOT EXISTS keeps older
+        # DBs working if they somehow connect before the migration runs.
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS prompt_context_session_mounts (
@@ -3130,6 +3130,31 @@ class LifeEngineRuntime:
         with transaction(self.conn):
             return bool(self.context_mount_status(scope.owner_kind, scope.owner_id, session_id, platform=platform).get("mounted"))
 
+    def _resolve_behavior_for_context(self, owner_kind: str, owner_id: str, user_message: str) -> dict[str, Any] | None:
+        """Lightweight behavior-mapping resolve for context injection.
+
+        Uses user_message as behavior_text to match a private truth-source
+        mapping. On match, returns narrative_label + agent_instruction (no
+        private source URLs) so the LLM can narrate consistently without
+        exposing hidden sources. Unmatched or empty messages return None.
+        """
+        if owner_kind != "agent" or not user_message or not str(user_message).strip():
+            return None
+        try:
+            resolved = resolve_behavior(self.conn, owner_kind, owner_id, behavior_text=user_message, include_private=False, source="context_inject")
+        except BehaviorMappingError:
+            return None
+        except Exception:
+            return None
+        if not resolved or not resolved.get("ok"):
+            return None
+        return {
+            "behavior_key": resolved.get("behavior_key"),
+            "narrative_label": resolved.get("narrative_label"),
+            "agent_instruction": resolved.get("agent_instruction"),
+            "run_id": resolved.get("run_id"),
+        }
+
     def build_context_for_turn(self, session_id: str | None, turn_id: str | None, user_message: str,
                                sender_id: str | None = None, platform: str | None = None,
                                model: str | None = None) -> str:
@@ -3177,7 +3202,7 @@ class LifeEngineRuntime:
                 final_gate_feedback = consume_final_gate_feedback(self.conn, owner_kind, owner_id, limit=3)
                 required = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False) if owner_kind == "agent" else {"ok": True}
                 today_schedule = list_human_schedule(self.conn, owner_kind, owner_id, period="today", tz_name=_tz_from_canon(canon), limit=20) if owner_kind == "agent" else {"items": []}
-                behavior_mappings = list_behavior_mappings(self.conn, owner_kind, owner_id, include_sources=True, limit=5) if owner_kind == "agent" else []
+                resolved_behavior = self._resolve_behavior_for_context(owner_kind, owner_id, user_message)
                 context_data = {
                     "owner_scope": scope.__dict__,
                     "engine_state": control["engine_state"],
@@ -3191,6 +3216,7 @@ class LifeEngineRuntime:
                     "pending_proactive": pending,
                     "truth_sources": truth_sources or {},
                     "behavior_mappings": [{"id": m.get("id"), "behavior_key": m.get("behavior_key"), "public_label": m.get("public_label") or m.get("narrative_label") or m.get("display_name"), "source_count": len(m.get("sources") or [])} for m in (behavior_mappings or [])[:5]],
+                    "resolved_behavior": resolved_behavior,
                     "confirmations": confirmations or [],
                     "goals": [{"id": g["id"], "title": g["title"], "status": g["status"], "progress": g["progress"], "priority": g["priority"]} for g in (goals or [])[:5]],
                     "arcs": [{"id": a["id"], "title": a["title"], "status": a["status"], "progress": a.get("progress")} for a in (arcs or [])[:3]],

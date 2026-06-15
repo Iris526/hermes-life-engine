@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 47
+_SCHEMA_VERSION = 48
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -243,6 +243,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 47:
         _create_schema_v47(conn)
         _record_schema_migration(conn, 47, "migrate_consumable_resources_to_collection")
+    if current < 48:
+        _create_schema_v48(conn)
+        _record_schema_migration(conn, 48, "prompt_context_session_mounts")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3505,3 +3508,29 @@ def _create_schema_v47(conn: sqlite3.Connection) -> None:
                 continue
             conn.execute("DELETE FROM resource_accounts WHERE owner_kind=? AND owner_id=? AND resource_key=?", (owner_kind, owner_id, res_key))
             conn.execute("DELETE FROM resource_definitions WHERE owner_kind=? AND owner_id=? AND key=?", (owner_kind, owner_id, res_key))
+
+
+def _create_schema_v48(conn: sqlite3.Connection) -> None:
+    """prompt_context_session_mounts: per-session context-mount switches.
+
+    Previously created lazily at runtime (CREATE TABLE IF NOT EXISTS) by
+    LifeEngineRuntime._ensure_context_mounts_table. v48 brings it into the
+    migration system so fresh DBs get it at connect() time and it is
+    recorded in schema_migrations. The runtime safety-net is kept.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS prompt_context_session_mounts (
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          platform TEXT,
+          mounted INTEGER NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY(owner_kind, owner_id, session_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_prompt_context_mounts_owner_session
+          ON prompt_context_session_mounts(owner_kind, owner_id, session_id);
+        """
+    )

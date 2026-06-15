@@ -67,10 +67,10 @@ DEFAULT_CANON_TEMPLATE = {
     },
     "resources": {
         "definitions": {
-            "energy": {"display_name": "Energy", "resource_class": "vital", "unit": "points", "min": 0, "max": 100, "initial": 60},
-            "focus": {"display_name": "Focus", "resource_class": "vital", "unit": "points", "min": 0, "max": 100, "initial": 60},
-            "mood": {"display_name": "Mood", "resource_class": "vital", "unit": "points", "min": -100, "max": 100, "initial": 0},
-            "fatigue": {"display_name": "Fatigue", "resource_class": "vital", "unit": "points", "min": 0, "max": 100, "initial": 20},
+            "energy": {"display_name": "Energy", "resource_class": "vital", "unit": "points", "min": 0, "max": 100, "initial": 60, "rules": {"heartbeat_recovery": 3}},
+            "focus": {"display_name": "Focus", "resource_class": "vital", "unit": "points", "min": 0, "max": 100, "initial": 60, "rules": {"heartbeat_recovery": 2}},
+            "mood": {"display_name": "Mood", "resource_class": "vital", "unit": "points", "min": -100, "max": 100, "initial": 0, "rules": {"heartbeat_recovery": 1}},
+            "fatigue": {"display_name": "Fatigue", "resource_class": "vital", "unit": "points", "min": 0, "max": 100, "initial": 20, "rules": {"heartbeat_recovery": -2}},
             "sleep_debt_minutes": {"display_name": "Sleep debt", "resource_class": "vital", "unit": "minutes", "min": 0, "initial": 0},
         }
     },
@@ -79,7 +79,6 @@ DEFAULT_CANON_TEMPLATE = {
     "autonomy": {"enabled": True, "default_mode": "full", "agent_decides_self_life": True},
     "proactive": {"mode": "pending_only"},
     "execution": {"defaultOutcomePolicy": "narrative_simulator", "allowPostpone": True, "allowPartial": True},
-    "sleep": {"coreSleepRequired": True, "defaultSleepHours": 7.5, "defaultBedtime": "23:30", "defaultWakeTime": "07:00", "allowAllNighter": True, "allowNap": True},
     "serendipity": {"dailyMinorEventProbability": 0.25, "dramaLevel": "low", "maxSignificantSurprisesPerWeek": 1},
     "diary": {},
     "sleep": {

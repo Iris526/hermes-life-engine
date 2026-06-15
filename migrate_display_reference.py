@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""迁移脚本：把旧 asset_bundle 结构转换到新的 display_image + reference_image 模型。
+"""一次性手工迁移脚本（未挂载到 CLI/upgrade 入口）。
+
+运行方式（需 lifeengine 在 sys.path 上）：
+    PYTHONPATH=/path/to/parent python -m lifeengine.migrate_display_reference
+
+把旧 asset_bundle 结构转换到新的 display_image + reference_image 模型。
 
 旧结构：
   {

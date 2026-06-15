@@ -135,10 +135,10 @@ GUIMINGGUAN_RESOURCES = [
     {"key": "money.lingzhu", "display_name": "灵铢", "resource_class": "currency", "unit": "枚", "min_value": 0, "max_value": None, "initial": 120},
     {"key": "daily_cost.lingzhu", "display_name": "每日基础开销", "resource_class": "currency", "unit": "枚/日", "min_value": 0, "max_value": None, "initial": 8},
     {"key": "commission_income.lingzhu", "display_name": "委托收入累计", "resource_class": "currency", "unit": "枚", "min_value": 0, "max_value": None, "initial": 0},
-    {"key": "energy", "display_name": "精力", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 60},
-    {"key": "focus", "display_name": "专注", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 60},
-    {"key": "mood", "display_name": "心情", "resource_class": "vital", "unit": "points", "min_value": -100, "max_value": 100, "initial": 0},
-    {"key": "fatigue", "display_name": "疲劳", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 20},
+    {"key": "energy", "display_name": "精力", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 60, "rules": {"heartbeat_recovery": 3}},
+    {"key": "focus", "display_name": "专注", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 60, "rules": {"heartbeat_recovery": 2}},
+    {"key": "mood", "display_name": "心情", "resource_class": "vital", "unit": "points", "min_value": -100, "max_value": 100, "initial": 0, "rules": {"heartbeat_recovery": 1}},
+    {"key": "fatigue", "display_name": "疲劳", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 20, "rules": {"heartbeat_recovery": -2}},
 ]
 
 
