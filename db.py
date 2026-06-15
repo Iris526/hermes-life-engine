@@ -3497,7 +3497,7 @@ def _create_schema_v47(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """INSERT INTO collection_items(id, owner_kind, owner_id, collection_id, item_type, name, description, status, tags_json,
                      attributes_json, material_spec_json, care_spec_json, asset_bundle_json, usage_state_json, quantity, condition_score, cleanliness_state, availability_state)
-                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (item_id, owner_kind, owner_id, collection_id, "supply", item_spec["name"], "", "active", "[]",
                  json.dumps(item_spec["attributes"]), "{}", "{}", '{"status":"skip"}', "{}", quantity, 100, "clean", "available"),
             )
