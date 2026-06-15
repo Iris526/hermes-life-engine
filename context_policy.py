@@ -194,6 +194,8 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
             "Never expose private behavior sources or internal gate diagnostics to the user.",
         ],
         "realtime": data.get("realtime") or {},
+        "sleep": data.get("sleep") or {},
+        "reply_gate": data.get("reply_gate") or {},
         "required_settings": data.get("required_settings") or {},
         "next_schedule": _compact_schedule(data.get("today_schedule"), limit=3),
         "resources": data.get("resources", [])[:6],
@@ -218,7 +220,9 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
     text = "\n<LIFEENGINE_CONTEXT mode=\"progressive_slim\">\n" + json.dumps(capsule, ensure_ascii=False, indent=2, sort_keys=True) + "\n</LIFEENGINE_CONTEXT>"
     if len(text) > policy.budget_chars:
         # Hard cap by removing progressively less critical sections.
-        for key in ["memory_sample", "goals", "behavior", "collection", "dreams", "sleep", "reply_gate", "resources", "active_or_recent_events"]:
+        # sleep/reply_gate are excluded — they are always-on state signals
+        # the model needs to decide whether to reply at all.
+        for key in ["memory_sample", "goals", "behavior", "collection", "dreams", "resources", "active_or_recent_events"]:
             if key in capsule and len(text) > policy.budget_chars:
                 capsule.pop(key, None)
                 text = "\n<LIFEENGINE_CONTEXT mode=\"progressive_slim\">\n" + json.dumps(capsule, ensure_ascii=False, indent=2, sort_keys=True) + "\n</LIFEENGINE_CONTEXT>"
@@ -230,6 +234,8 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
                 "owner_scope": capsule.get("owner_scope") or {},
                 "engine": capsule.get("engine") or {},
                 "rules": capsule.get("rules") or [],
+                "sleep": capsule.get("sleep") or {},
+                "reply_gate": capsule.get("reply_gate") or {},
                 "tool_map": {"interface": "Use life_interface catalog/read/write to fetch details."},
                 "domains_injected": domains,
                 "truncated": True,

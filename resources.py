@@ -126,17 +126,23 @@ def apply_delta(conn, owner_kind: str, owner_id: str, resource_key: str, delta: 
     new_value = current + float(delta)
     minv = definition["min_value"]
     maxv = definition["max_value"]
+    # Clamp to both bounds symmetrically. Previously min raised while max
+    # silently clamped, causing (a) fatigue heartbeat_recovery to crash when
+    # fatigue was already near 0, and (b) ledger/account drift on max clamp.
+    # Now both clamp, and the ledger records the *effective* delta so the
+    # account and ledger always reconcile.
     if minv is not None and new_value < float(minv):
-        raise ResourceError(f"resource {resource_key} would go below min {minv}: {new_value}")
+        new_value = float(minv)
     if maxv is not None and new_value > float(maxv):
         new_value = float(maxv)
+    effective_delta = new_value - current
     unit = definition["unit"]
     ledger_id = new_id("reslog")
     conn.execute(
         """INSERT INTO resource_ledger(id, owner_kind, owner_id, resource_key, delta, unit, operation,
                event_id, action_id, result_id, schedule_block_id, inventory_item_id, meal_id, reason, source)
                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (ledger_id, owner_kind, owner_id, resource_key, float(delta), unit, operation,
+        (ledger_id, owner_kind, owner_id, resource_key, effective_delta, unit, operation,
          event_id, action_id, result_id, schedule_block_id, None, meal_id, reason, source),
     )
     conn.execute(
@@ -144,10 +150,10 @@ def apply_delta(conn, owner_kind: str, owner_id: str, resource_key: str, delta: 
         (new_value, unit, maxv, owner_kind, owner_id, resource_key),
     )
     append_journal(conn, owner_kind, owner_id, "resource_delta", {
-        "resource_key": resource_key, "delta": delta, "operation": operation,
+        "resource_key": resource_key, "delta": effective_delta, "operation": operation,
         "new_value": new_value, "ledger_id": ledger_id,
     }, source)
-    return {"ledger_id": ledger_id, "resource_key": resource_key, "delta": delta, "new_value": new_value}
+    return {"ledger_id": ledger_id, "resource_key": resource_key, "delta": effective_delta, "new_value": new_value}
 
 
 def reserve(conn, owner_kind: str, owner_id: str, resource_key: str, amount: float,

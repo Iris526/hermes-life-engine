@@ -368,6 +368,25 @@ def claim_wake_job(conn, owner_kind: str, owner_id: str, wake_job_id: str, claim
     return dict(row)
 
 
+def reap_stuck_wake_jobs(conn, owner_kind: str, owner_id: str, stuck_seconds: int = 600) -> int:
+    """Reset wake_jobs stuck in 'running' status back to 'pending'.
+
+    A job enters 'running' when claimed by a tick; if that tick crashes before
+    finish_wake_job, the job is orphaned forever (due_wake_jobs only selects
+    'pending'). This reaper runs at the top of each tick and recovers jobs
+    whose running_at is older than stuck_seconds (default 10 min, well beyond
+    any single tick's duration). Returns the count of reset jobs.
+    """
+    cur = conn.execute(
+        """UPDATE wake_jobs SET status='pending', running_at=NULL, claimed_by=NULL
+              WHERE owner_kind=? AND owner_id=? AND status='running'
+                AND running_at IS NOT NULL
+                AND unixepoch(running_at) < unixepoch('now') - ?""",
+        (owner_kind, owner_id, stuck_seconds),
+    )
+    return cur.rowcount or 0
+
+
 def finish_wake_job(conn, owner_kind: str, owner_id: str, wake_job_id: str, status: str = "done", error: str | None = None) -> None:
     conn.execute(
         """UPDATE wake_jobs SET status=?, completed_at=datetime('now'), error=?

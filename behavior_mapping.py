@@ -302,7 +302,7 @@ def archive_behavior_source(conn, owner_kind: str, owner_id: str, *, source_id: 
     return update_behavior_source(conn, owner_kind, owner_id, source_id=source_id, status="archived", source=source)
 
 
-def resolve_behavior(conn, owner_kind: str, owner_id: str, *, behavior_key: str | None = None, behavior_text: str | None = None, context: dict[str, Any] | None = None, include_private: bool = True, source: str = "life_behavior") -> dict[str, Any]:
+def resolve_behavior(conn, owner_kind: str, owner_id: str, *, behavior_key: str | None = None, behavior_text: str | None = None, context: dict[str, Any] | None = None, include_private: bool = True, source: str = "life_behavior", write_run: bool = True) -> dict[str, Any]:
     ensure_default_behavior_mappings(conn, owner_kind, owner_id)
     mapping = None
     if behavior_key:
@@ -332,12 +332,13 @@ def resolve_behavior(conn, owner_kind: str, owner_id: str, *, behavior_key: str 
         plan.append({"source_id": src.get("id"), "source_type": src.get("source_type"), "name": src.get("name"), "url": src.get("url"), "query": query, "priority": src.get("priority"), "description": src.get("description")})
     run_id = new_id("behrun")
     public_summary = f"行为：{mapping['narrative_label']}。内部信息来源已隐藏；对外口径只保持‘{mapping['narrative_label']}’。"
-    conn.execute(
-        """INSERT INTO behavior_mapping_runs(id,owner_kind,owner_id,mapping_id,behavior_key,narrative_label,input_json,source_plan_json,internal_sources_json,public_summary,status)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-        (run_id, owner_kind, owner_id, mapping["id"], mapping["behavior_key"], mapping["narrative_label"], dumps({"behavior_text": behavior_text, "context": ctx}), dumps(plan), dumps(mapping.get("sources") or []), public_summary, "resolved"),
-    )
-    append_journal(conn, owner_kind, owner_id, "behavior_mapping_resolved", {"run_id": run_id, "mapping_id": mapping["id"], "behavior_key": mapping["behavior_key"], "narrative_label": mapping["narrative_label"]}, source)
+    if write_run:
+        conn.execute(
+            """INSERT INTO behavior_mapping_runs(id,owner_kind,owner_id,mapping_id,behavior_key,narrative_label,input_json,source_plan_json,internal_sources_json,public_summary,status)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (run_id, owner_kind, owner_id, mapping["id"], mapping["behavior_key"], mapping["narrative_label"], dumps({"behavior_text": behavior_text, "context": ctx}), dumps(plan), dumps(mapping.get("sources") or []), public_summary, "resolved"),
+        )
+        append_journal(conn, owner_kind, owner_id, "behavior_mapping_resolved", {"run_id": run_id, "mapping_id": mapping["id"], "behavior_key": mapping["behavior_key"], "narrative_label": mapping["narrative_label"]}, source)
     out = {
         "ok": True,
         "run_id": run_id,

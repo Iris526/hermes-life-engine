@@ -42,22 +42,11 @@ EVENT_STATUSES = {
     "discarded", "skipped", "paused", "missed",
 }
 
-EVENT_ALLOWED_TRANSITIONS = {
-    "draft": {"planned", "discarded", "cancelled"},
-    "planned": {"scheduled", "cancelled", "abandoned", "in_progress"},
-    "scheduled": {"ready", "rescheduled", "cancelled", "in_progress", "completed", "missed"},
-    "ready": {"in_progress", "skipped", "postponed", "cancelled"},
-    "in_progress": {"partial", "completed", "failed", "paused"},
-    "partial": {"scheduled", "completed", "abandoned"},
-    "postponed": {"rescheduled", "cancelled", "abandoned", "scheduled"},
-    "rescheduled": {"scheduled", "cancelled"},
-    "failed": {"rescheduled", "abandoned", "archived"},
-    "completed": {"archived"},
-    "cancelled": {"archived"},
-    "missed": {"rescheduled", "cancelled", "archived"},
-}
-
-TERMINAL_EVENT_STATUSES = {"completed", "cancelled", "failed", "abandoned", "archived", "discarded"}
+# NOTE: Event status transitions and terminal statuses are defined in
+# lifecycle.py (ALLOWED_EVENT_TRANSITIONS / TERMINAL_EVENT_STATUSES) and
+# imported via `event_transition_allowed`. Earlier copies lived here but were
+# never referenced and had drifted out of sync. Do not re-add local copies;
+# update lifecycle.py instead.
 
 ALLOWED_OPS = {
     "CREATE_EVENT",

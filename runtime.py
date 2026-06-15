@@ -83,6 +83,7 @@ from .events import (
     due_schedule_blocks,
     due_wake_jobs,
     finish_wake_job,
+    reap_stuck_wake_jobs,
     get_event,
     get_realtime_state,
     list_events,
@@ -983,7 +984,13 @@ class LifeEngineRuntime:
                     delayed = create_delayed_reply(self.conn, owner_kind, owner_id, message_text=text or "", user_id=sender_id, session_id=session_id, turn_id=turn_id, gate_decision_id=(out.get("decision") or {}).get("id"), reason=(out.get("decision") or {}).get("reason") or "ReplyGate deferred incoming message", source="incoming_message")
                     out["delayed_reply"] = delayed
                 elif decision == "call_override":
-                    out["call_override"] = call_override(self.conn, owner_kind, owner_id, reason="incoming call override", user_id=sender_id, session_id=session_id, turn_id=turn_id, message_text=text, trace_id=trace.id, source="incoming_message")
+                    # Only auto/strict modes execute the destructive call_override
+                    # (interrupts sleep, partials events, releases delayed replies).
+                    # advisory/off modes just record the decision without state
+                    # changes — unless force_call was explicitly requested.
+                    gate_mode = str(gates.get("reply_gate", "advisory")).lower()
+                    if force_call or gate_mode in {"auto", "strict"}:
+                        out["call_override"] = call_override(self.conn, owner_kind, owner_id, reason="incoming call override", user_id=sender_id, session_id=session_id, turn_id=turn_id, message_text=text, trace_id=trace.id, source="incoming_message")
                 trace.end(output_obj={"decision": decision, "deferred": bool(out.get("delayed_reply")), "called": bool(out.get("call_override"))})
                 return out
             except Exception as exc:
@@ -1035,17 +1042,25 @@ class LifeEngineRuntime:
     def tick(self, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
              now: str | None = None, manual: bool = True) -> dict[str, Any]:
         now = now or now_iso()
-        with transaction(self.conn):
-            control = ensure_control(self.conn, owner_kind, owner_id)
-            tick_id = new_id("tick")
-            trace = Trace(self.conn, owner_kind, owner_id, "heartbeat", tick_id=tick_id,
-                          engine_state=control["engine_state"], canon_version=control.get("active_canon_version"),
-                          input_obj={"now": now, "manual": manual}).start()
-            self.conn.execute(
-                "INSERT INTO heartbeat_runs(id, owner_kind, owner_id, tick_id, mode, status) VALUES(?,?,?,?,?,?)",
-                (new_id("hbrun"), owner_kind, owner_id, tick_id, "manual" if manual else control.get("heartbeat_mode", "manual"), "running"),
-            )
-            try:
+        tick_id = new_id("tick")
+        hbrun_id = new_id("hbrun")
+        control = ensure_control(self.conn, owner_kind, owner_id)
+        mode = "manual" if manual else control.get("heartbeat_mode", "manual")
+        # Create trace + heartbeat_run OUTSIDE the main transaction so
+        # diagnostics survive even when the business-logic transaction
+        # rolls back. Previously both lived inside `with transaction(...)`,
+        # so a tick failure rolled back the error trace itself — leaving
+        # no evidence for post-mortem.
+        trace = Trace(self.conn, owner_kind, owner_id, "heartbeat", tick_id=tick_id,
+                      engine_state=control["engine_state"], canon_version=control.get("active_canon_version"),
+                      input_obj={"now": now, "manual": manual}).start()
+        self.conn.execute(
+            "INSERT INTO heartbeat_runs(id, owner_kind, owner_id, tick_id, mode, status) VALUES(?,?,?,?,?,?)",
+            (hbrun_id, owner_kind, owner_id, tick_id, mode, "running"),
+        )
+        try:
+            with transaction(self.conn):
+                control = ensure_control(self.conn, owner_kind, owner_id)
                 if control["engine_state"] != "active":
                     out = {"reason": f"state={control['engine_state']}"}
                     append_journal(self.conn, owner_kind, owner_id, "heartbeat_noop", {"now": now, **out}, "heartbeat", canon_version=control.get("active_canon_version"))
@@ -1055,10 +1070,12 @@ class LifeEngineRuntime:
                 gates = control.get("module_gates") or {}
                 if gates.get("heartbeat") == "off" and not manual:
                     out = {"reason": "heartbeat off"}
+                    append_journal(self.conn, owner_kind, owner_id, "heartbeat_noop", {"now": now, **out}, "heartbeat", canon_version=control.get("active_canon_version"))
                     trace.end(status="noop", output_obj=out)
                     self.conn.execute("UPDATE heartbeat_runs SET status='noop', ended_at=datetime('now'), output_json=? WHERE tick_id=?", (dumps(out), tick_id))
                     return {"ok": True, "status": "noop", "reason": "heartbeat off"}
                 truth_refresh = self._refresh_truth_sources_for_heartbeat(owner_kind, owner_id, trace.id)
+                reaped = reap_stuck_wake_jobs(self.conn, owner_kind, owner_id)
                 completed: list[dict[str, Any]] = []
                 jobs = due_wake_jobs(self.conn, owner_kind, owner_id, now)
                 processed: list[dict[str, Any]] = []
@@ -1120,9 +1137,42 @@ class LifeEngineRuntime:
                             finish_wake_job(self.conn, owner_kind, owner_id, job["id"], "done")
                             processed.append({"wake_job_id": job["id"], "status": "done"})
                         except Exception as job_exc:
-                            finish_wake_job(self.conn, owner_kind, owner_id, job["id"], "failed", f"{type(job_exc).__name__}: {job_exc}")
+                            try:
+                                finish_wake_job(self.conn, owner_kind, owner_id, job["id"], "failed", f"{type(job_exc).__name__}: {job_exc}")
+                            except Exception:
+                                pass
                             processed.append({"wake_job_id": job["id"], "status": "failed", "error": str(job_exc)})
                             append_audit(self.conn, owner_kind, owner_id, "heartbeat_wake_job_failed", "warning", str(job_exc), {"wake_job_id": job["id"]}, trace.id)
+                # Fallback sweep: process schedule blocks whose end_ts has
+                # passed but have no corresponding wake_job (e.g. created via
+                # non-standard paths, orphaned by migration, or missing end in
+                # wake_job). This prevents zombie blocks from clogging overlap
+                # detection forever.
+                processed_block_ids = {c.get("block_id") for c in completed if c.get("block_id")}
+                for block in due_schedule_blocks(self.conn, owner_kind, owner_id, now):
+                    if block["id"] in processed_block_ids:
+                        continue
+                    if block.get("block_type") == "sleep":
+                        continue
+                    try:
+                        with trace.span("execution_simulate_sweep", {"block_id": block["id"], "event_id": block.get("event_id"), "fallback": True}):
+                            decision = simulate_schedule_block_execution(
+                                self.conn, owner_kind, owner_id, control, tick_id=tick_id, trace_id=trace.id,
+                                wake_job_id=None, block=block, now=now, manual=manual,
+                            )
+                        ops = decision.get("proposed_ops") or []
+                        commit = None
+                        if ops:
+                            with trace.span("execution_commit_sweep", {"decision_id": decision["id"], "op_count": len(ops)}):
+                                commit = self._commit_ops_locked(ops, owner_kind, owner_id, "execution_simulator", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                            decision = update_execution_decision_result(
+                                self.conn, decision["id"], status="committed",
+                                result_transaction_id=commit.get("transaction_id"),
+                                result_receipt_id=(commit.get("receipt") or {}).get("receipt_id"),
+                            )
+                        completed.append({"block_id": block["id"], "execution_decision": decision, "commit": commit, "fallback_sweep": True})
+                    except Exception as sweep_exc:
+                        append_audit(self.conn, owner_kind, owner_id, "heartbeat_schedule_sweep_failed", "warning", str(sweep_exc), {"block_id": block["id"]}, trace.id)
                 recovered = self._apply_resource_recovery(owner_kind, owner_id)
                 autonomy_result = self._run_autonomy_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
                 proactive_result = self._run_proactive_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
@@ -1139,10 +1189,21 @@ class LifeEngineRuntime:
                 trace.end(output_obj=out)
                 self.conn.execute("UPDATE heartbeat_runs SET status='done', ended_at=datetime('now'), output_json=? WHERE tick_id=?", (dumps(out), tick_id))
                 return {"ok": True, "status": "done", **out}
-            except Exception as exc:
+        except Exception as exc:
+            # Diagnostics written here are OUTSIDE the business-logic
+            # transaction, so they persist even when the inner `with
+            # transaction` rolled back. This guarantees an error trace and a
+            # failed heartbeat_run row survive for post-mortem analysis.
+            try:
                 trace.end(status="error", error=f"{type(exc).__name__}: {exc}")
+            except Exception:
+                pass
+            try:
                 self.conn.execute("UPDATE heartbeat_runs SET status='failed', ended_at=datetime('now'), error=? WHERE tick_id=?", (f"{type(exc).__name__}: {exc}", tick_id))
-                raise
+            except Exception:
+                pass
+            raise
+
 
     def _refresh_truth_sources_for_heartbeat(self, owner_kind: str, owner_id: str, trace_id: str | None = None) -> list[dict[str, Any]]:
         canon = get_active_canon(self.conn, owner_kind, owner_id)
@@ -3141,7 +3202,7 @@ class LifeEngineRuntime:
         if owner_kind != "agent" or not user_message or not str(user_message).strip():
             return None
         try:
-            resolved = resolve_behavior(self.conn, owner_kind, owner_id, behavior_text=user_message, include_private=False, source="context_inject")
+            resolved = resolve_behavior(self.conn, owner_kind, owner_id, behavior_text=user_message, include_private=False, source="context_inject", write_run=False)
         except BehaviorMappingError:
             return None
         except Exception:
@@ -3177,31 +3238,48 @@ class LifeEngineRuntime:
                     trace.end(output_obj={"mode": "setup", "draft_id": draft["id"]})
                     return out
                 canon = get_active_canon(self.conn, owner_kind, owner_id)
-                memories = search_memories(self.conn, owner_kind, owner_id, user_message or "", 5)
-                events = list_events(self.conn, owner_kind, owner_id, limit=8)
-                resources = list_resources(self.conn, owner_kind, owner_id)
-                goals = list_goals(self.conn, owner_kind, owner_id, limit=5)
-                arcs = list_life_arcs(self.conn, owner_kind, owner_id, limit=5)
-                truth_sources = list_truth_sources(self.conn, owner_kind, owner_id, 5)
+                # Each query is isolated so a single failure degrades gracefully
+                # instead of taking down the whole context injection (issue #7).
+                def _safe(fn, default):
+                    try:
+                        return fn()
+                    except Exception:
+                        return default
+                memories = _safe(lambda: search_memories(self.conn, owner_kind, owner_id, user_message or "", 5), [])
+                events = _safe(lambda: list_events(self.conn, owner_kind, owner_id, limit=8), [])
+                resources = _safe(lambda: list_resources(self.conn, owner_kind, owner_id), {"accounts": []})
+                goals = _safe(lambda: list_goals(self.conn, owner_kind, owner_id, limit=5), [])
+                arcs = _safe(lambda: list_life_arcs(self.conn, owner_kind, owner_id, limit=5), [])
+                truth_sources = _safe(lambda: list_truth_sources(self.conn, owner_kind, owner_id, 5), [])
                 try:
                     ensure_default_behavior_mappings(self.conn, owner_kind, owner_id)
                     behavior_mappings = list_behavior_mappings(self.conn, owner_kind, owner_id, include_sources=False, limit=8) if owner_kind == "agent" else []
                 except Exception:
                     behavior_mappings = []
-                confirmations = list_confirmations(self.conn, owner_kind, owner_id, limit=5) if owner_kind == "user" else []
-                pending = list_proactive_intents(self.conn, owner_id, status="queued", limit=3) if owner_kind == "agent" else []
-                proactive_outbox = list_outbox(self.conn, owner_id, status="queued", limit=3) if owner_kind == "agent" else []
-                proactive_states = list_proactive_states(self.conn, owner_id, limit=3) if owner_kind == "agent" else []
-                autonomy = list_autonomy_decisions(self.conn, owner_kind, owner_id, limit=3) if owner_kind == "agent" else []
-                execution = list_execution_decisions(self.conn, owner_kind, owner_id, limit=3)
-                serendipity = list_serendipity_events(self.conn, owner_kind, owner_id, limit=3)
-                sleep = sleep_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}
-                reply_gate = reply_gate_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}
-                dreams = dream_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}
-                srd_policy = get_srd_policy(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}
-                final_gate_feedback = consume_final_gate_feedback(self.conn, owner_kind, owner_id, limit=3)
-                required = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False) if owner_kind == "agent" else {"ok": True}
-                today_schedule = list_human_schedule(self.conn, owner_kind, owner_id, period="today", tz_name=_tz_from_canon(canon), limit=20) if owner_kind == "agent" else {"items": []}
+                confirmations = _safe(lambda: list_confirmations(self.conn, owner_kind, owner_id, limit=5) if owner_kind == "user" else [], [])
+                pending = _safe(lambda: list_proactive_intents(self.conn, owner_id, status="queued", limit=3) if owner_kind == "agent" else [], [])
+                proactive_outbox = _safe(lambda: list_outbox(self.conn, owner_id, status="queued", limit=3) if owner_kind == "agent" else [], [])
+                proactive_states = _safe(lambda: list_proactive_states(self.conn, owner_id, limit=3) if owner_kind == "agent" else [], [])
+                autonomy = _safe(lambda: list_autonomy_decisions(self.conn, owner_kind, owner_id, limit=3) if owner_kind == "agent" else [], [])
+                execution = _safe(lambda: list_execution_decisions(self.conn, owner_kind, owner_id, limit=3), [])
+                serendipity = _safe(lambda: list_serendipity_events(self.conn, owner_kind, owner_id, limit=3), [])
+                sleep = _safe(lambda: sleep_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}, {})
+                reply_gate = _safe(lambda: reply_gate_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}, {})
+                if owner_kind == "agent" and reply_gate:
+                    try:
+                        latest_decision = self.conn.execute(
+                            "SELECT decision, mode, reason, created_at FROM reply_gate_decisions WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT 1",
+                            (owner_kind, owner_id),
+                        ).fetchone()
+                        if latest_decision:
+                            reply_gate["latest_decision"] = {"decision": latest_decision["decision"], "mode": latest_decision["mode"], "reason": latest_decision["reason"]}
+                    except Exception:
+                        pass
+                dreams = _safe(lambda: dream_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}, {})
+                srd_policy = _safe(lambda: get_srd_policy(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}, {})
+                final_gate_feedback = _safe(lambda: consume_final_gate_feedback(self.conn, owner_kind, owner_id, limit=3), [])
+                required = _safe(lambda: check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False) if owner_kind == "agent" else {"ok": True}, {"ok": True})
+                today_schedule = _safe(lambda: list_human_schedule(self.conn, owner_kind, owner_id, period="today", tz_name=_tz_from_canon(canon), limit=20) if owner_kind == "agent" else {"items": []}, {"items": []})
                 resolved_behavior = self._resolve_behavior_for_context(owner_kind, owner_id, user_message)
                 context_data = {
                     "owner_scope": scope.__dict__,
