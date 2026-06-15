@@ -22,7 +22,7 @@ LIFE_INTERFACE = {
         "properties": {
             **OWNER_PROPS,
             "action": {"type": "string", "description": "catalog/read/write."},
-            "domain": {"type": "string", "description": "config/schedule/event/resource/inventory/sleep/dream/review/truth/living/behavior/collection/trace."},
+            "domain": {"type": "string", "description": "config/schedule/event/resource/sleep/dream/review/truth/living/behavior/collection/trace."},
             "view": {"type": "string", "description": "Read view, e.g. today/week/check/list/get."},
             "intent": {"type": "string", "description": "Write intent, e.g. patch/schedule_event/reschedule/create/delta."},
             "payload": {"type": "object", "description": "Optional nested payload; flat fields are also accepted."},
@@ -336,38 +336,25 @@ LIFE_CONFIRMATION = {
     },
 }
 
-LIFE_INVENTORY = {
-    "name": "life_inventory",
-    "description": "Entity-resource inventory and meals: wardrobe, supplies, books, durable items, consumables, and meal records. Mutations commit LifeOps and produce receipts.",
+LIFE_MEALS = {
+    "name": "life_meals",
+    "description": "Meal records: what the agent ate, when, where, and cost. Mutations commit LifeOps and produce receipts.",
     "parameters": {
         "type": "object",
         "properties": {
             **OWNER_PROPS,
-            "action": {"type": "string", "enum": ["list", "add", "create", "update", "delta", "consume", "discard", "move", "movements", "meal", "meals"], "description": "Inventory action."},
-            "item_id": {"type": "string"},
-            "name": {"type": "string"},
-            "category": {"type": "string", "description": "clothing/food/daily_supply/book/tool/furniture/digital/medicine/other."},
-            "subcategory": {"type": "string"},
-            "quantity": {"type": "number"},
-            "quantity_delta": {"type": "number"},
-            "unit": {"type": "string"},
-            "attributes": {"type": "object"},
-            "condition": {"type": "string"},
-            "location": {"type": "string"},
-            "from_location": {"type": "string"},
-            "to_location": {"type": "string"},
-            "emotional_value": {"type": "integer"},
-            "notes": {"type": "string"},
-            "status": {"type": "string"},
-            "reason": {"type": "string"},
-            "source": {"type": "string"},
-            "event_id": {"type": "string"},
-            "result_id": {"type": "string"},
+            "action": {"type": "string", "enum": ["meal", "meals"], "description": "meal=record a meal; meals=list meal history."},
             "meal_type": {"type": "string", "description": "breakfast/lunch/dinner/snack/etc."},
             "eaten_at": {"type": "string"},
             "food_items": {"type": "array", "items": {"type": "string"}},
+            "location": {"type": "string"},
             "cost": {"type": "object"},
+            "cost_resource_key": {"type": "string"},
+            "cost_amount": {"type": "number"},
             "satisfaction": {"type": "integer"},
+            "notes": {"type": "string"},
+            "event_id": {"type": "string"},
+            "source": {"type": "string"},
             "limit": {"type": "integer"},
             "include_sleep_context": {"type": "boolean", "description": "Ask the simulator to return sleep-aware context; action=sleep_context is more direct."},
         },
@@ -800,14 +787,14 @@ LIFE_LIVING = {
     "name": "life_living",
     "description": (
         "Concrete self-life layer for agents: Canon consistency doctor, concrete daily rhythm generation, "
-        "abstract goal event decomposition, living inventory presets, proactive paper notes, and low-frequency diary drafts. "
+        "abstract goal event decomposition, resource presets, proactive paper notes, and low-frequency diary drafts. "
         "Use this when the agent needs to turn broad goals into real day-to-day life."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             **OWNER_PROPS,
-            "action": {"type": "string", "description": "summary/consistency/init_inventory/day_rhythm/decompose_abstract/paper_notes/create_note/diary_draft."},
+            "action": {"type": "string", "description": "summary/consistency/init_resources/day_rhythm/decompose_abstract/paper_notes/create_note/diary_draft."},
             "preset": {"type": "string", "description": "Living preset, e.g. guimingguan."},
             "date": {"type": "string", "description": "YYYY-MM-DD date for rhythm/decomposition."},
             "timezone": {"type": "string", "description": "IANA timezone, default Asia/Tokyo."},
@@ -839,9 +826,9 @@ LIFE_COLLECTION = {
         "type": "object",
         "properties": {
             **OWNER_PROPS,
-            "action": {"type": "string", "description": "summary/init/presets/collections/get_collection/create_collection/update_collection/archive_collection/items/get_item/add_item/add_alias/aliases/update_item/generate_assets/set_asset/resolve_outfit/resolver_explain/outfit_presets/create_outfit_preset/update_outfit_preset/archive_outfit_preset/current_outfit/wear_outfit/return_outfit/asset_check/purchase_chain/purchase_chains/checkout/return/dirty/maintain/outfit/outfits."},
+            "action": {"type": "string", "description": "summary/init/presets/collections/get_collection/create_collection/update_collection/archive_collection/items/get_item/add_item/add_alias/aliases/update_item/generate_assets/set_asset/set_display_image/set_reference_image/resolve_outfit/resolver_explain/outfit_presets/create_outfit_preset/update_outfit_preset/archive_outfit_preset/current_outfit/wear_outfit/return_outfit/asset_check/purchase_chain/purchase_chains/checkout/return/dirty/maintain/consume/restock/outfit/outfits."},
             "collection_id": {"type": "string"},
-            "collection_type": {"type": "string", "description": "wardrobe/shoe_cabinet/sock_drawer/accessory_cabinet/vanity/custom."},
+            "collection_type": {"type": "string", "description": "wardrobe/shoe_cabinet/sock_drawer/accessory_cabinet/vanity/supply_cabinet/custom."},
             "type": {"type": "string", "description": "Alias for collection_type."},
             "name": {"type": "string"},
             "description": {"type": "string"},

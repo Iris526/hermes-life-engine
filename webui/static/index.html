@@ -1,147 +1,140 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LifeEngine RPG Observatory</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>归明观 · Observatory</title>
+<link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <div id="boot-screen" class="boot-screen">
-    <div class="boot-card">
-      <div class="boot-rune">◆</div>
-      <h1>LifeEngine Observatory</h1>
-      <p>读取 Agent 的生活运行时，像 RPG 一样观察一天的状态。</p>
-      <div class="boot-line"><span></span></div>
-    </div>
+<div id="app">
+  <!-- Loading -->
+  <div id="loading-screen" class="loading-screen">
+    <div class="loading-circle"></div>
+    <p>归明观载入中…</p>
   </div>
 
-  <main id="app" class="game-shell">
-    <section class="top-hud">
-      <div class="brand-block">
-        <div class="sigil">LE</div>
-        <div>
-          <div class="eyebrow">Hermes Life Engine</div>
-          <h1>LifeEngine 观测台</h1>
-        </div>
+  <!-- Main Layout (hidden until loaded) -->
+  <div id="main-layout" class="main-layout hidden">
+    <!-- Top Bar -->
+    <header class="top-bar">
+      <div class="bar-left">
+        <span class="logo">归明观</span>
+        <span class="logo-sub">Observatory</span>
       </div>
-      <div class="path-picker">
-        <input id="life-path" placeholder="选择 LifeEngine 目录或 lifeengine.db" />
-        <button id="select-path" class="btn primary">载入</button>
+      <div class="bar-center">
+        <span id="avatar-label" class="status-tag">—</span>
+        <span id="avatar-bubble" class="speech-bubble hidden"></span>
       </div>
-      <div class="live-pill" id="live-pill">connecting…</div>
-    </section>
+      <div class="bar-right">
+        <button id="btn-refresh" class="icon-btn" title="刷新">↻</button>
+        <button id="btn-tick" class="icon-btn" title="推进">▶</button>
+      </div>
+    </header>
 
-    <section class="rpg-layout">
-      <aside class="left-panel frame-panel">
-        <div class="panel-title">角色状态</div>
-        <div class="portrait-card">
-          <img src="/static/assets/agent-cover.jpg" class="portrait" alt="Agent reference" />
-          <div class="portrait-mask"></div>
-          <div class="portrait-name" id="agent-name">Agent</div>
-        </div>
-        <div class="stat-stack" id="stat-stack"></div>
-        <div class="quick-actions">
-          <button class="btn ghost" data-action="tick">心跳</button>
-          <button class="btn ghost danger" data-action="call">Call</button>
-          <button class="btn ghost" data-action="sleep_recovery_plan">补觉</button>
-        </div>
-        <div class="mini-log" id="mini-log"></div>
-      </aside>
-
-      <section class="main-stage frame-panel">
-        <div class="scene-header">
-          <div>
-            <div class="eyebrow">当前场景</div>
-            <h2 id="scene-title">读取中…</h2>
+    <div class="body-area">
+      <!-- Left Sidebar -->
+      <aside class="sidebar">
+        <div class="char-panel">
+          <div class="sprite-frame" id="sprite-frame">
+            <img id="sprite-img" src="/static/assets/sprite-idle.png" alt="sprite">
           </div>
-          <div class="scene-tags" id="scene-tags"></div>
+          <div class="char-info">
+            <h2 id="char-name">Iris · 明灯</h2>
+            <p id="char-title" class="char-title">赛博驱鬼小道士</p>
+          </div>
         </div>
-        <div class="stage-viewport" id="stage-viewport">
-          <div class="parallax moon"></div>
-          <div class="parallax shrine"></div>
-          <div class="floor-grid"></div>
-          <div class="avatar-aura"></div>
-          <img id="agent-sprite" class="agent-sprite idle" src="/static/assets/sprite-idle.png" alt="Agent sprite" />
-          <div id="speech-bubble" class="speech-bubble">……</div>
-        </div>
-        <div class="stage-status-row" id="stage-status-row"></div>
-      </section>
 
-      <aside class="right-panel frame-panel">
-        <div class="panel-title">今日任务 / 日程</div>
-        <div class="period-tabs">
-          <button class="period active" data-period="today">今天</button>
-          <button class="period" data-period="tomorrow">明天</button>
-          <button class="period" data-period="week">本周</button>
-          <input id="date-input" type="date" />
+        <div class="resource-bars" id="resource-bars">
+          <!-- JS injects bars here -->
         </div>
-        <div class="quest-list" id="schedule-list"></div>
+
+        <div class="quick-stats" id="quick-stats">
+          <!-- JS injects stats here -->
+        </div>
       </aside>
-    </section>
 
-    <section class="bottom-bar frame-panel">
-      <button class="hotkey active" data-tab="bag">背包/合集</button>
-      <button class="hotkey" data-tab="closet">衣橱</button>
-      <button class="hotkey" data-tab="review">Review</button>
-      <button class="hotkey" data-tab="dream">梦</button>
-      <button class="hotkey" data-tab="workspace">Hermes 工作区</button>
-      <button class="hotkey" data-tab="settings">设定</button>
-      <button class="hotkey" data-tab="trace">Trace</button>
-    </section>
+      <!-- Content Area -->
+      <main class="content-area">
+        <nav class="tab-bar">
+          <button class="tab active" data-tab="overview">总览</button>
+          <button class="tab" data-tab="wardrobe">装扮</button>
+          <button class="tab" data-tab="schedule">日程</button>
+          <button class="tab" data-tab="dreams">梦境</button>
+          <button class="tab" data-tab="log">日志</button>
+        </nav>
 
-    <section class="game-windows">
-      <article id="window-bag" class="game-window active">
-        <div class="window-title">物品合集</div>
-        <div id="collection-board" class="collection-grid"></div>
-      </article>
+        <div class="tab-content">
+          <!-- Overview -->
+          <section id="tab-overview" class="tab-panel active">
+            <div class="overview-grid">
+              <div class="card" id="card-state">
+                <h3>当前状态</h3>
+                <div id="state-detail" class="state-detail"></div>
+              </div>
+              <div class="card" id="card-goal">
+                <h3>当前目标</h3>
+                <div id="goal-detail"></div>
+              </div>
+              <div class="card" id="card-schedule-today">
+                <h3>今日日程</h3>
+                <div id="schedule-today-list"></div>
+              </div>
+              <div class="card" id="card-recent-events">
+                <h3>近期事件</h3>
+                <div id="recent-events-list" class="event-list"></div>
+              </div>
+              <div class="card" id="card-review">
+                <h3>待处理事项</h3>
+                <div id="review-list"></div>
+              </div>
+              <div class="card" id="card-doctor">
+                <h3>健康检查</h3>
+                <div id="doctor-detail"></div>
+              </div>
+            </div>
+          </section>
 
-      <article id="window-closet" class="game-window">
-        <div class="window-title">衣橱 / 鞋柜 / 梳妆台</div>
-        <div id="closet-board" class="inventory-list"></div>
-      </article>
+          <!-- Wardrobe / Collections -->
+          <section id="tab-wardrobe" class="tab-panel hidden">
+            <div class="wardrobe-tabs" id="wardrobe-tabs">
+              <!-- JS injects collection tabs -->
+            </div>
+            <div class="wardrobe-grid" id="wardrobe-grid">
+              <!-- JS injects item cards -->
+            </div>
+          </section>
 
-      <article id="window-review" class="game-window">
-        <div class="window-title">Review Inbox</div>
-        <div id="review-list" class="review-list"></div>
-      </article>
+          <!-- Item Detail Modal -->
+          <div id="item-modal" class="modal hidden" onclick="if(event.target===this)closeModal()">
+            <div class="modal-content item-modal-content">
+              <button class="modal-close" onclick="closeModal()">✕</button>
+              <div id="item-modal-body"></div>
+            </div>
+          </div>
 
-      <article id="window-dream" class="game-window">
-        <div class="window-title">梦境记录</div>
-        <div id="dream-list" class="dream-list"></div>
-      </article>
+          <!-- Schedule -->
+          <section id="tab-schedule" class="tab-panel hidden">
+            <div class="schedule-header">
+              <h3 id="schedule-label">日程时间线</h3>
+            </div>
+            <div class="timeline" id="schedule-timeline"></div>
+          </section>
 
-      <article id="window-workspace" class="game-window">
-        <div class="window-title">Hermes 工作区 / Agent 文档</div>
-        <div class="workspace-layout">
-          <div id="workspace-list" class="workspace-list"></div>
-          <pre id="workspace-view" class="workspace-view">选择一个 .md 文件查看。</pre>
+          <!-- Dreams -->
+          <section id="tab-dreams" class="tab-panel hidden">
+            <div id="dreams-list" class="dreams-list"></div>
+          </section>
+
+          <!-- Log / Trace -->
+          <section id="tab-log" class="tab-panel hidden">
+            <div id="trace-list" class="trace-list"></div>
+          </section>
         </div>
-      </article>
-
-      <article id="window-settings" class="game-window">
-        <div class="window-title">LifeEngine 设定面板</div>
-        <div id="settings-panel" class="settings-panel"></div>
-      </article>
-
-      <article id="window-trace" class="game-window">
-        <div class="window-title">Trace / Journal</div>
-        <div id="trace-list" class="trace-list"></div>
-      </article>
-    </section>
-
-    <aside id="drawer" class="drawer">
-      <div class="drawer-head">
-        <div>
-          <div class="eyebrow" id="drawer-kind">DETAIL</div>
-          <h2 id="drawer-title">详情</h2>
-        </div>
-        <button id="drawer-close" class="btn ghost">关闭</button>
-      </div>
-      <div id="drawer-body" class="drawer-body"></div>
-    </aside>
-  </main>
-
-  <script src="/static/app.js"></script>
+      </main>
+    </div>
+  </div>
+</div>
+<script src="/static/app.js"></script>
 </body>
 </html>

@@ -1,20 +1,18 @@
 import os
 
 
-def test_living_consistency_and_inventory(monkeypatch, tmp_path):
+def test_living_consistency_and_resource_preset(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from lifeengine.runtime import LifeEngineRuntime
     rt = LifeEngineRuntime()
     try:
         assert rt.living("consistency")["ok"] is True
-        out = rt.living("init_inventory")
+        out = rt.living("init_resources")
         assert out["ok"] is True
-        assert "符纸" in out["rendered"]
+        assert "money.lingzhu" in out["rendered"]
         resources = rt.resources("list")
         keys = {r["key"] for r in resources["resources"]["definitions"]}
         assert "money.lingzhu" in keys
-        items = rt.inventory("list")["items"]
-        assert any(i["name"] == "符纸" for i in items)
     finally:
         rt.close()
 

@@ -152,7 +152,7 @@ def _section_for_domain(domain: str, data: dict[str, Any]) -> dict[str, Any]:
     if domain == "schedule":
         return {"schedule": _compact_schedule(data.get("today_schedule"), limit=8)}
     if domain == "collection":
-        return {"collection": {"inventory_sample": data.get("inventory", [])[:8], "hint": "Use life_collection for wardrobe/shoes/socks/accessories/vanity; use resolver before dressing."}}
+        return {"collection": {"hint": "Use life_collection for wardrobe/shoes/socks/accessories/vanity; use resolver before dressing."}}
     if domain == "behavior":
         return {"behavior": {"mappings": data.get("behavior_mappings", [])[:5], "privacy": "private sources are execution-only; user-facing phrase remains public behavior label."}}
     if domain == "sleep":

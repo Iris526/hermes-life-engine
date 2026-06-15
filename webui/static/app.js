@@ -1,192 +1,522 @@
-const $ = (q, root=document) => root.querySelector(q);
-const $$ = (q, root=document) => Array.from(root.querySelectorAll(q));
+/* ═══════════════════════════════════════════════
+   归明观 Observatory — 前端逻辑
+   ═══════════════════════════════════════════════ */
+"use strict";
 
-let SNAP = null;
-let PERIOD = 'today';
-let SELECTED_DATE = null;
-let EVENT_SRC = null;
+const API = "";
+let snapshotData = null;
+let sseSource = null;
+let currentWardrobeTab = null;
+let collectionsData = null;
 
-const api = async (url, options={}) => {
-  const res = await fetch(url, options);
-  if (!res.ok) throw new Error(await res.text());
-  return await res.json();
-};
+// ── Init ──────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  loadSnapshot();
+  document.querySelectorAll(".tab").forEach(tab => {
+    tab.addEventListener("click", () => switchTab(tab.dataset.tab));
+  });
+  document.getElementById("btn-refresh").addEventListener("click", loadSnapshot);
+  document.getElementById("btn-tick").addEventListener("click", () => doAction("tick"));
+});
 
-const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-const short = (v, n=80) => { const s = String(v ?? ''); return s.length > n ? s.slice(0,n-1)+'…' : s; };
-const fmtTime = (v) => {
-  if (!v) return '??:??';
-  const s = String(v);
-  const m = s.match(/T(\d\d:\d\d)/) || s.match(/\s(\d\d:\d\d)/);
-  return m ? m[1] : s.slice(0,16);
-};
-const statusCN = (s) => ({planned:'已排期',scheduled:'已排期',in_progress:'进行中',completed:'完成',partial:'部分完成',postponed:'推迟',rescheduled:'改期',cancelled:'取消',missed:'错过',ready:'就绪'}[s] || s || '未知');
-const categoryCN = (s) => ({work:'工作',study:'学习',sleep:'睡眠',meal:'吃饭',leisure:'休闲',health:'健康',travel:'外出',purchase:'购物',social:'社交',dream:'梦',serendipity:'小发现',maintenance:'维护',creative:'创作'}[s] || s || '事件');
-
-function statValue(resources, key, fallback=0){
-  const r = (resources||[]).find(x => x.resource_key === key || x.resource_key === key.replace('_','.'));
-  return Number(r?.current_value ?? fallback);
-}
-function pct(v, min=0, max=100){ return Math.max(0, Math.min(100, Math.round((Number(v)-min)/(max-min)*100))); }
-function bar(label, value, max=100, danger=false){
-  const p = pct(value,0,max);
-  return `<div class="stat"><span>${esc(label)}</span><div class="bar"><span style="width:${p}%;${danger?'background:linear-gradient(90deg,#ff5d73,#ffb86b)':''}"></span></div><b>${esc(Math.round(value))}</b></div>`;
-}
-
-function spriteFor(data){
-  const a = data?.avatar || {}; return a.sprite || 'idle';
-}
-function spritePath(sprite){ return `/static/assets/sprite-${sprite}.png`; }
-
-async function refresh(period=PERIOD, date=SELECTED_DATE){
-  PERIOD = period || PERIOD; SELECTED_DATE = date ?? SELECTED_DATE;
-  const params = new URLSearchParams({period: PERIOD});
-  if (SELECTED_DATE) params.set('date', SELECTED_DATE);
-  SNAP = await api(`/api/snapshot?${params}`);
-  renderAll();
-}
-
-function renderAll(){
-  if (!SNAP) return;
-  $('#boot-screen')?.classList.add('hide');
-  renderTop(); renderStage(); renderStats(); renderSchedule(); renderWindows();
-}
-function renderTop(){
-  const owner = SNAP.owner || {};
-  $('#agent-name').textContent = owner.owner_id || 'Agent';
-  $('#life-path').value = SNAP.meta?.db_path || '';
-}
-function renderStage(){
-  const st = SNAP.state || {}; const ev = SNAP.current_event || {}; const av = SNAP.avatar || {};
-  const sprite = spriteFor(SNAP);
-  const img = $('#agent-sprite');
-  img.src = spritePath(sprite); img.className = `agent-sprite ${sprite}`;
-  $('#scene-title').textContent = ev.title || av.label || modeLabel(st.mode) || '待机中';
-  $('#speech-bubble').textContent = av.bubble || ev.title || '今天要做什么，由 LifeEngine 自己安排。';
-  $('#scene-tags').innerHTML = [st.mode, ev.event_category, ev.event_type, ev.status].filter(Boolean).map(x=>`<span class="tag">${esc(x)}</span>`).join('');
-  $('#stage-status-row').innerHTML = [
-    ['当前模式', modeLabel(st.mode)],
-    ['活动事件', ev.title || '无 active event'],
-    ['回复模式', st.reply_mode || 'immediate'],
-  ].map(([k,v])=>`<div class="status-card"><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('');
-}
-function modeLabel(m){ return ({idle:'待机',awake:'清醒',busy:'忙碌',in_conversation:'回消息',asleep:'睡觉',napping:'小憩',dreaming:'做梦',uninterruptible_event:'不可打断',waiting_to_reply:'待回复',recovering:'恢复中'}[m] || m || '未知'); }
-function renderStats(){
-  const res = SNAP.resources || []; const sd = SNAP.sleep_day_state || {}; const body = SNAP.state?.body_state || {};
-  const energy = statValue(res,'energy', body.energy ?? 50);
-  const focus = statValue(res,'focus', body.focus ?? 50);
-  const mood = statValue(res,'mood', body.mood ?? 50);
-  const fatigue = statValue(res,'fatigue', body.fatigue ?? sd.fatigue_delta ?? 0);
-  const debt = statValue(res,'sleep_debt_minutes', sd.cumulative_sleep_debt_minutes ?? 0);
-  $('#stat-stack').innerHTML = [bar('精力',energy),bar('专注',focus),bar('心情',mood),bar('疲劳',fatigue,100,true),bar('睡眠债',Math.min(debt,300),300,true)].join('');
-  const logs = [];
-  if (SNAP.review_items?.length) logs.push(`Review: ${SNAP.review_items.length} 项`);
-  if (SNAP.delayed_replies?.length) logs.push(`延迟回复: ${SNAP.delayed_replies.length} 条`);
-  if (sd?.all_nighter) logs.push('昨晚通宵 / 睡眠不足');
-  if (!logs.length) logs.push('状态稳定，等待下一次心跳。');
-  $('#mini-log').innerHTML = logs.map(x=>`<div>◆ ${esc(x)}</div>`).join('');
-}
-function renderSchedule(){
-  const items = SNAP.schedule?.items || [];
-  $('#schedule-list').innerHTML = items.length ? items.map(item => `
-    <div class="quest" data-event="${esc(item.event_id||'')}" data-block="${esc(item.id||'')}">
-      <div class="quest-time">${fmtTime(item.start)} - ${fmtTime(item.end)}</div>
-      <div class="quest-title">${esc(item.event_title || item.title || item.block_type || '未命名时间块')}</div>
-      <div class="quest-meta">${esc(categoryCN(item.event_category || item.block_type))} · 排期：${esc(statusCN(item.status))} · 事件：${esc(statusCN(item.event_status))}</div>
-    </div>`).join('') : `<div class="muted">这个时间范围没有日程。可以用 /life schedule unscheduled 查看待排期事件。</div>`;
-  $$('#schedule-list .quest').forEach(el => el.addEventListener('click', () => openEvent(el.dataset.event || el.dataset.block)));
-}
-
-function renderWindows(){
-  renderCollections(); renderCloset(); renderReview(); renderDreams(); renderTrace(); renderSettings(); renderWorkspace();
-}
-function renderCollections(){
-  const board = SNAP.collections?.board || [];
-  $('#collection-board').innerHTML = board.length ? board.map(b => {
-    const c=b.collection||{}; const items=b.items||[];
-    return `<div class="collection-card"><h3>${esc(c.name || c.collection_type)}</h3>
-      <div class="muted">${esc(c.collection_type)} · ${b.item_count||0} 件 · 可用 ${b.available_count||0} · 待补资产 ${b.needs_asset_count||0}</div>
-      <div class="item-list">${items.slice(0,8).map(i=>`<div class="item-row" data-item="${esc(i.id)}"><span>${esc(i.name)}</span><span>${esc(i.availability_state||i.status||'')}</span></div>`).join('')}</div>
-    </div>`;
-  }).join('') : `<div class="muted">还没有集合。可以用 /life closet init 初始化衣橱、鞋柜、袜子抽屉、配饰柜、梳妆台。</div>`;
-}
-function renderCloset(){
-  const items = SNAP.collections?.items || [];
-  $('#closet-board').innerHTML = items.length ? items.map(i => `
-    <div class="item-card" data-item="${esc(i.id)}"><h3>${esc(i.name)}</h3>
-      <div class="muted">${esc(i.collection_name || i.collection_type)} · ${esc(i.item_type || '')} · ${esc(i.availability_state || '')} · ${esc(i.cleanliness_state || '')}</div>
-      <div>${(i.aliases||[]).map(a=>`<span class="pill">${esc(a)}</span>`).join('')}</div>
-      <div class="muted">资产：${i.asset_counts?.available || 0}/${i.asset_counts?.total || 0} 可用</div>
-    </div>`).join('') : `<div class="muted">衣橱/柜子为空。</div>`;
-}
-function renderReview(){
-  const items = SNAP.review_items || [];
-  $('#review-list').innerHTML = items.length ? items.map(i=>`<div class="review-card"><span class="pill">${esc(i.severity||'info')}</span><span class="pill">${esc(i.item_type||'review')}</span><h3>${esc(i.title||'待处理')}</h3><p>${esc(i.message||'')}</p></div>`).join('') : `<div class="muted">没有需要人类处理的项目。Agent 会按策略自行处理低风险维护项。</div>`;
-}
-function renderDreams(){
-  const items = SNAP.dreams || [];
-  $('#dream-list').innerHTML = items.length ? items.map(d=>`<div class="dream-card" data-dream="${esc(d.id)}"><span class="pill">dream_symbolic</span><h3>${esc(d.title||'梦境')}</h3><p>${esc(short(d.summary||d.content,180))}</p></div>`).join('') : `<div class="muted">还没有梦境记录。</div>`;
-  $$('#dream-list .dream-card').forEach(el=>el.addEventListener('click',()=>openDream(el.dataset.dream)));
-}
-function renderTrace(){
-  const items = SNAP.trace || [];
-  $('#trace-list').innerHTML = items.length ? items.map(t=>`<div class="trace-card" data-trace="${esc(t.id)}"><span class="pill">${esc(t.entry_type||t.run_type||'trace')}</span><b>${esc(t.id)}</b><div class="muted">${esc(t.created_at||'')}</div></div>`).join('') : `<div class="muted">暂无 trace。</div>`;
-  $$('#trace-list .trace-card').forEach(el=>el.addEventListener('click',()=>openTrace(el.dataset.trace)));
-}
-function renderSettings(){
-  const c = SNAP.control || {}; const meta = SNAP.meta || {}; const req = SNAP.required_settings || SNAP.control?.required_settings || {};
-  $('#settings-panel').innerHTML = [
-    ['Engine', c.engine_state], ['Schema', meta.schema_version], ['DB', meta.db_path], ['Heartbeat', c.heartbeat_mode], ['Context', (c.module_gates||{}).context_mode || 'slim'], ['Required settings', req.ok ? 'OK' : 'Needs setup']
-  ].map(([k,v])=>`<div class="status-card"><b>${esc(k)}</b><span>${esc(v ?? '—')}</span></div>`).join('') + `<p class="muted">设定修改请走 /life setup、/life config 或 life_config。WebUI 只显示可读状态，不直接绕过 CanonDraft。</p>`;
-}
-async function renderWorkspace(){
-  const box = $('#workspace-list');
-  try{
-    const data = await api('/api/workspace/docs?limit=80');
-    box.innerHTML = data.docs?.length ? data.docs.map(d=>`<div class="doc-card" data-path="${esc(d.path)}"><b>${esc(d.name)}</b><div class="muted">${esc(d.root_label)} / ${esc(d.relative_path)} · ${Math.round((d.size_bytes||0)/1024)}KB</div></div>`).join('') : `<div class="muted">未找到 SOUL.md / AGENT.md / README.md 等 markdown 文档。</div>`;
-    $$('#workspace-list .doc-card').forEach(el=>el.addEventListener('click',()=>openWorkspaceFile(el.dataset.path)));
-  }catch(e){ box.innerHTML = `<div class="danger-text">${esc(e.message)}</div>`; }
-}
-
-async function openWorkspaceFile(path){
-  try{ const d=await api(`/api/workspace/file?path=${encodeURIComponent(path)}`); $('#workspace-view').textContent = d.content || ''; }
-  catch(e){ $('#workspace-view').textContent = e.message; }
-}
-async function openEvent(id){ if(!id) return; const d=await api(`/api/event/${encodeURIComponent(id)}`); openDrawer('EVENT', d.event?.title || id, renderDetail(d)); }
-async function openDream(id){ if(!id) return; const d=await api(`/api/dream/${encodeURIComponent(id)}`); openDrawer('DREAM', d.dream?.title || id, renderDetail(d)); }
-async function openTrace(id){ if(!id) return; const d=await api(`/api/trace/explain/${encodeURIComponent(id)}`); openDrawer('TRACE', id, renderDetail(d)); }
-function renderDetail(d){
-  const rows=[];
-  const target = d.event || d.dream || d.transaction || d.journal_entry || d;
-  for(const [k,v] of Object.entries(target||{}).slice(0,24)){
-    if(String(k).endsWith('_json') || typeof v === 'object') continue;
-    rows.push(`<div class="kv"><b>${esc(k)}</b><span>${esc(v)}</span></div>`);
+// ── Snapshot Loading ──────────────────────────
+async function loadSnapshot() {
+  try {
+    const res = await fetch(`${API}/api/snapshot?period=today`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    snapshotData = await res.json();
+    collectionsData = snapshotData.collections;
+    render();
+    document.getElementById("loading-screen").classList.add("hidden");
+    document.getElementById("main-layout").classList.remove("hidden");
+    connectSSE();
+  } catch (err) {
+    console.error("Load failed:", err);
+    document.getElementById("loading-screen").innerHTML =
+      `<p style="color:#f87171">载入失败: ${err.message}</p><p style="color:#8a8674;font-size:12px">确认 LifeEngine WebUI 正在运行</p>`;
   }
-  return rows.join('') + `<details open><summary>结构化上下文</summary><pre class="raw">${esc(JSON.stringify(d,null,2))}</pre></details>`;
-}
-function openDrawer(kind,title,html){ $('#drawer-kind').textContent=kind; $('#drawer-title').textContent=title; $('#drawer-body').innerHTML=html; $('#drawer').classList.add('open'); }
-
-async function doAction(action,payload={}){
-  const out = await api('/api/action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,payload})});
-  if(!out.ok) alert(out.message || out.error || '操作失败');
-  await refresh();
 }
 
-function wire(){
-  $('#select-path').addEventListener('click', async()=>{ const path=$('#life-path').value.trim(); if(!path)return; await api('/api/select',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path})}); await refresh(); connectStream(); });
-  $$('.period').forEach(b=>b.addEventListener('click',()=>{ $$('.period').forEach(x=>x.classList.remove('active')); b.classList.add('active'); SELECTED_DATE=null; refresh(b.dataset.period); connectStream(); }));
-  $('#date-input').addEventListener('change', e=>{ $$('.period').forEach(x=>x.classList.remove('active')); SELECTED_DATE=e.target.value; refresh('day', SELECTED_DATE); connectStream(); });
-  $$('.hotkey').forEach(b=>b.addEventListener('click',()=>{ $$('.hotkey').forEach(x=>x.classList.remove('active')); $$('.game-window').forEach(w=>w.classList.remove('active')); b.classList.add('active'); $('#window-'+b.dataset.tab).classList.add('active'); }));
-  $$('.quick-actions [data-action]').forEach(b=>b.addEventListener('click',()=>doAction(b.dataset.action)));
-  $('#drawer-close').addEventListener('click',()=>$('#drawer').classList.remove('open'));
-}
-function connectStream(){
-  if(EVENT_SRC) EVENT_SRC.close();
-  const params = new URLSearchParams({period:PERIOD}); if(SELECTED_DATE) params.set('date',SELECTED_DATE);
-  EVENT_SRC = new EventSource(`/api/stream?${params}`);
-  EVENT_SRC.addEventListener('snapshot', ev=>{ SNAP=JSON.parse(ev.data); $('#live-pill').textContent='live'; renderAll(); });
-  EVENT_SRC.addEventListener('heartbeat', ev=>{ $('#live-pill').textContent='live · no changes'; });
-  EVENT_SRC.addEventListener('error', ev=>{ $('#live-pill').textContent='reconnecting'; });
+// ── SSE Live Update ───────────────────────────
+function connectSSE() {
+  if (sseSource) sseSource.close();
+  sseSource = new EventSource(`${API}/api/stream?period=today`);
+  sseSource.addEventListener("snapshot", (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.snapshot_hash !== snapshotData?.snapshot_hash) {
+        snapshotData = data;
+        collectionsData = data.collections;
+        render();
+      }
+    } catch (err) { /* ignore parse errors */ }
+  });
+  sseSource.addEventListener("error", () => { /* auto-reconnect by browser */ });
 }
 
-wire(); refresh().then(connectStream).catch(e=>{ $('#boot-screen')?.classList.add('hide'); alert(e.message); });
+// ── Render Orchestrator ───────────────────────
+function render() {
+  renderTopBar();
+  renderSidebar();
+  renderOverview();
+  renderWardrobeTabs();
+  renderSchedule();
+  renderDreams();
+  renderTrace();
+}
+
+// ── Top Bar ───────────────────────────────────
+function renderTopBar() {
+  const avatar = snapshotData.avatar || {};
+  const label = document.getElementById("avatar-label");
+  const bubble = document.getElementById("avatar-bubble");
+  label.textContent = avatar.label || snapshotData.state?.mode || "—";
+  if (avatar.bubble) {
+    bubble.textContent = avatar.bubble;
+    bubble.classList.remove("hidden");
+  } else {
+    bubble.classList.add("hidden");
+  }
+}
+
+// ── Sidebar: Sprite + Resources ───────────────
+function renderSidebar() {
+  // Sprite
+  const avatar = snapshotData.avatar || {};
+  const spriteMap = {
+    idle: "sprite-idle", work: "sprite-work", sleep: "sprite-sleep",
+    dream: "sprite-dream", reply: "sprite-reply", eat: "sprite-eat",
+    walk: "sprite-walk", tired: "sprite-tired", battle: "sprite-battle", recover: "sprite-recover",
+  };
+  const spriteFile = spriteMap[avatar.sprite_state] || "sprite-idle";
+  const spriteImg = document.getElementById("sprite-img");
+  spriteImg.src = `/static/assets/${spriteFile}.png`;
+
+  // Resources
+  const resBar = document.getElementById("resource-bars");
+  resBar.innerHTML = "";
+  const resources = snapshotData.resources || [];
+  // Group: vitals vs currency vs supplies
+  const vitalKeys = ["energy", "fatigue", "focus", "mood"];
+  const vitalRes = resources.filter(r => vitalKeys.includes(r.resource_key));
+  const currencyRes = resources.filter(r => r.resource_key?.startsWith("money."));
+  const supplyRes = resources.filter(r => r.resource_key?.startsWith("supplies.") || r.resource_key?.startsWith("tools."));
+
+  vitalRes.forEach(r => resBar.appendChild(buildResBar(r)));
+  currencyRes.forEach(r => resBar.appendChild(buildCurrencyStat(r)));
+  supplyRes.forEach(r => resBar.appendChild(buildResBar(r, true)));
+
+  // Quick stats
+  const qs = document.getElementById("quick-stats");
+  qs.innerHTML = "";
+  const sleepDebt = resources.find(r => r.resource_key === "sleep_debt_minutes");
+  if (sleepDebt) {
+    qs.innerHTML += `<div class="quick-stat"><span class="qs-label">睡眠负债</span><span class="qs-value">${Math.round(sleepDebt.current_value)} min</span></div>`;
+  }
+  const collections = snapshotData.collections || {};
+  const totalItems = (collections.items || []).filter(i => i.status === "active").length;
+  qs.innerHTML += `<div class="quick-stat"><span class="qs-label">装扮物品</span><span class="qs-value">${totalItems} 件</span></div>`;
+  const goals = snapshotData.recent_events || [];
+  qs.innerHTML += `<div class="quick-stat"><span class="qs-label">近期事件</span><span class="qs-value">${goals.length}</span></div>`;
+  const control = snapshotData.control || {};
+  qs.innerHTML += `<div class="quick-stat"><span class="qs-label">引擎状态</span><span class="qs-value" style="color:var(--jade)">${control.engine_state || "—"}</span></div>`;
+}
+
+function buildResBar(r, isSupply = false) {
+  const div = document.createElement("div");
+  div.className = "res-bar";
+  const key = r.resource_key || "";
+  const label = r.display_name || key;
+  const val = r.current_value ?? 0;
+  const min = r.min_value ?? 0;
+  const max = r.max_value ?? r.capacity ?? 100;
+  const pct = max > min ? Math.min(100, Math.max(0, ((val - min) / (max - min)) * 100)) : 0;
+  const cls = key.includes("fatigue") ? "fatigue" : key.includes("focus") ? "focus" : key.includes("mood") ? "mood" : key.includes("energy") ? "energy" : isSupply ? "consumable" : "capacity";
+  const icon = key.includes("fatigue") ? "🔥" : key.includes("focus") ? "🎯" : key.includes("mood") ? "✨" : key.includes("energy") ? "⚡" : isSupply ? "📦" : "📊";
+  div.innerHTML = `
+    <div class="res-bar-header">
+      <span class="res-bar-label">${icon} ${label}</span>
+      <span class="res-bar-value">${formatNum(val)}${r.unit && !r.unit.includes("point") ? " " + r.unit : ""}</span>
+    </div>
+    <div class="res-bar-track">
+      <div class="res-bar-fill ${cls}" style="width:${pct}%"></div>
+    </div>`;
+  return div;
+}
+
+function buildCurrencyStat(r) {
+  const div = document.createElement("div");
+  div.className = "quick-stat";
+  div.style.cssText = "background:linear-gradient(135deg,rgba(251,191,36,.1),rgba(251,191,36,.03));border:1px solid rgba(251,191,36,.15)";
+  div.innerHTML = `<span class="qs-label">💰 ${r.display_name || r.resource_key}</span><span class="qs-value">${formatNum(r.current_value)} ${r.unit || ""}</span>`;
+  return div;
+}
+
+// ── Overview Tab ──────────────────────────────
+function renderOverview() {
+  // State
+  const stateEl = document.getElementById("state-detail");
+  const state = snapshotData.state || {};
+  const avatar = snapshotData.avatar || {};
+  const currentEvent = snapshotData.current_event;
+  stateEl.innerHTML = `
+    <div class="state-row"><span class="sr-label">模式</span><span class="sr-value">${state.mode || "—"}</span></div>
+    <div class="state-row"><span class="sr-label">场景</span><span class="sr-value">${avatar.scene || "—"}</span></div>
+    <div class="state-row"><span class="sr-label">当前事件</span><span class="sr-value">${currentEvent?.title || "无"}</span></div>
+    <div class="state-row"><span class="sr-label">可打断性</span><span class="sr-value">${state.interruptibility_level || "—"}</span></div>
+    <div class="state-row"><span class="sr-label">回复模式</span><span class="sr-value">${state.reply_mode || "—"}</span></div>`;
+
+  // Goals
+  const goalEl = document.getElementById("goal-detail");
+  const goals = snapshotData.recent_goals || [];
+  if (goals.length === 0) {
+    goalEl.innerHTML = `<p style="color:var(--text-dim);font-size:12px">暂无活跃目标</p>`;
+  } else {
+    goalEl.innerHTML = goals.slice(0, 3).map(g => `
+      <div style="margin-bottom:8px">
+        <div style="color:var(--gold);font-size:13px">${g.title}</div>
+        <div style="font-size:11px;color:var(--text-dim)">进度: ${g.progress || 0}% · 优先级: ${g.priority || "—"}</div>
+      </div>`).join("");
+  }
+
+  // Today schedule
+  const schedEl = document.getElementById("schedule-today-list");
+  const schedule = snapshotData.schedule || {};
+  const items = schedule.items || [];
+  if (items.length === 0) {
+    schedEl.innerHTML = `<p style="color:var(--text-dim);font-size:12px">今日无安排</p>`;
+  } else {
+    schedEl.innerHTML = items.slice(0, 6).map(s => {
+      const time = formatTime(s.start) + "—" + formatTime(s.end);
+      const badge = s.status === "completed" ? `<span class="timeline-badge completed">完成</span>`
+        : s.status === "active" ? `<span class="timeline-badge active">进行中</span>`
+        : `<span class="timeline-badge planned">计划</span>`;
+      return `<div class="timeline-item">
+        <div class="timeline-time">${time}</div>
+        <div class="timeline-body">
+          <div class="timeline-title">${s.event_title || s.title || "—"} ${badge}</div>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  // Recent events
+  const eventsEl = document.getElementById("recent-events-list");
+  const events = snapshotData.recent_events || [];
+  if (events.length === 0) {
+    eventsEl.innerHTML = `<p style="color:var(--text-dim);font-size:12px">暂无事件</p>`;
+  } else {
+    eventsEl.innerHTML = events.slice(0, 8).map(e => {
+      const statusCls = e.status === "completed" ? "completed" : e.status === "planned" ? "planned" : "";
+      return `<div class="event-item ${statusCls}" onclick="showEventDetail('${e.id}')">
+        <div class="ei-title">${e.title}</div>
+        <div class="ei-meta">${e.event_category || e.event_type || ""} · ${e.status}</div>
+      </div>`;
+    }).join("");
+  }
+
+  // Review items
+  const reviewEl = document.getElementById("review-list");
+  const reviews = snapshotData.review_items || [];
+  if (reviews.length === 0) {
+    reviewEl.innerHTML = `<p style="color:var(--text-dim);font-size:12px">✓ 无待处理事项</p>`;
+  } else {
+    reviewEl.innerHTML = reviews.slice(0, 5).map(r => `
+      <div style="padding:6px;border-radius:4px;background:var(--bg-2);font-size:12px;margin-bottom:4px;border-left:3px solid var(--coral)">
+        <div style="color:var(--text)">${r.title}</div>
+        <div style="color:var(--text-dim);font-size:10px">${r.severity || ""} · ${r.item_type || ""}</div>
+      </div>`).join("");
+  }
+
+  // Doctor
+  const docEl = document.getElementById("doctor-detail");
+  const doctor = snapshotData.doctor;
+  if (!doctor) {
+    docEl.innerHTML = `<p style="color:var(--text-dim);font-size:12px">无记录</p>`;
+  } else {
+    const summary = doctor.summary || {};
+    const ok = summary.status === "ok";
+    docEl.innerHTML = `
+      <div class="state-row"><span class="sr-label">状态</span><span class="sr-value" style="color:${ok ? "var(--jade)" : "var(--coral)"}">${ok ? "✓ 正常" : "⚠ 有问题"}</span></div>
+      <div class="state-row"><span class="sr-label">Schema</span><span class="sr-value">v${snapshotData.meta?.schema_version || "?"}</span></div>
+      <div class="state-row"><span class="sr-label">Hash 链</span><span class="sr-value">${summary.journal_hash_chain?.ok !== false ? "✓ 完整" : "✗ 异常"}</span></div>`;
+  }
+}
+
+// ── Wardrobe / Collections ────────────────────
+function renderWardrobeTabs() {
+  const board = collectionsData?.board || [];
+  if (board.length === 0) return;
+  const tabBar = document.getElementById("wardrobe-tabs");
+  if (!currentWardrobeTab) {
+    currentWardrobeTab = board[0]?.collection?.id;
+  }
+  tabBar.innerHTML = board.map(b => {
+    const c = b.collection;
+    const isActive = c.id === currentWardrobeTab;
+    return `<button class="wardrobe-tab ${isActive ? "active" : ""}" onclick="switchWardrobeTab('${c.id}')">${c.name}<span class="wt-count">${b.item_count}</span></button>`;
+  }).join("");
+  renderWardrobeGrid();
+}
+
+function switchWardrobeTab(id) {
+  currentWardrobeTab = id;
+  renderWardrobeTabs();
+}
+
+function renderWardrobeGrid() {
+  const board = collectionsData?.board || [];
+  const entry = board.find(b => b.collection?.id === currentWardrobeTab);
+  if (!entry) return;
+  const grid = document.getElementById("wardrobe-grid");
+  const items = entry.items || [];
+  if (items.length === 0) {
+    grid.innerHTML = `<p style="color:var(--text-dim);grid-column:1/-1;text-align:center;padding:40px">这个柜子还是空的</p>`;
+    return;
+  }
+  grid.innerHTML = items.map(item => {
+    const primaryAsset = getItemPrimaryImage(item);
+    const statusCls = item.status === "archived" ? "archived" : "active";
+    const tags = (item.tags || []).slice(0, 4);
+    const attrs = item.attributes || {};
+    return `<div class="item-card" onclick="showItemDetail('${item.id}')">
+      <div class="item-card-image">
+        ${primaryAsset
+          ? `<img src="/api/asset?path=${encodeURIComponent(primaryAsset)}" alt="${item.name}" loading="lazy">`
+          : `<div class="no-image"><span>🖼</span><span>无资产图</span></div>`}
+        <span class="item-card-badge ${statusCls}">${item.status === "archived" ? "归档" : "可用"}</span>
+      </div>
+      <div class="item-card-info">
+        <div class="item-card-name">${item.name}</div>
+        <div class="item-card-meta">
+          ${item.quantity > 1 ? `<span>×${item.quantity}</span>` : ""}
+          ${item.cleanliness_state ? `<span>${item.cleanliness_state}</span>` : ""}
+          ${(item.asset_counts?.available || 0) > 0 ? `<span>📦${item.asset_counts.available}</span>` : ""}
+        </div>
+        ${tags.length > 0 ? `<div class="item-card-tags">${tags.map(t => `<span class="item-card-tag">${t}</span>`).join("")}</div>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function getItemPrimaryImage(item) {
+  // Priority: DB asset URI > attributes > asset_bundle
+  if (item.primary_asset_uri) return item.primary_asset_uri;
+  const attrs = item.attributes || {};
+  if (attrs.reference_image) return attrs.reference_image;
+  if (attrs.presentation_board) return attrs.presentation_board;
+  if (attrs.reference_crop) return attrs.reference_crop;
+  const bundle = item.asset_bundle || {};
+  if (bundle.primary_image) return bundle.primary_image;
+  return null;
+}
+
+// ── Item Detail Modal ─────────────────────────
+async function showItemDetail(itemId) {
+  const board = collectionsData?.board || [];
+  let item = null;
+  for (const b of board) {
+    item = (b.items || []).find(i => i.id === itemId);
+    if (item) break;
+  }
+  if (!item) return;
+
+  const modalBody = document.getElementById("item-modal-body");
+  const primaryAsset = getItemPrimaryImage(item);
+  const attrs = item.attributes || {};
+  const matSpec = item.material_spec || {};
+  const tags = item.tags || [];
+  const aliases = item.aliases || [];
+
+  // Build attribute fields
+  const attrFields = Object.entries(attrs)
+    .filter(([k]) => !["image_reference_role", "presentation_board", "reference_image", "reference_crop"].includes(k))
+    .filter(([, v]) => v != null && v !== "" && (typeof v !== "string" || !v.startsWith("/")))
+    .map(([k, v]) => `<div class="im-field"><div class="im-field-label">${attrLabel(k)}</div><div class="im-field-value">${String(v)}</div></div>`)
+    .join("");
+
+  const matFields = Object.entries(matSpec)
+    .filter(([, v]) => v != null && v !== "")
+    .map(([k, v]) => `<div class="im-field"><div class="im-field-label">${attrLabel(k)}</div><div class="im-field-value">${String(v).slice(0, 200)}</div></div>`)
+    .join("");
+
+  modalBody.innerHTML = `
+    <h2>${item.name}</h2>
+    <div class="im-subtitle">${item.collection_name || ""} · ${item.status} · ${item.cleanliness_state || ""} ${aliases.length > 0 ? "· 别名: " + aliases.join(", ") : ""}</div>
+    ${primaryAsset ? `<div class="im-image"><img src="/api/asset?path=${encodeURIComponent(primaryAsset)}" alt="${item.name}"></div>` : ""}
+    ${item.description ? `<div class="im-section"><p style="font-size:13px;line-height:1.6">${item.description}</p></div>` : ""}
+    ${attrFields ? `<div class="im-section"><h3 style="font-size:12px;color:var(--gold);margin-bottom:8px">属性</h3><div class="im-grid">${attrFields}</div></div>` : ""}
+    ${matFields ? `<div class="im-section"><h3 style="font-size:12px;color:var(--gold);margin-bottom:8px">材质 / 规格</h3><div class="im-grid">${matFields}</div></div>` : ""}
+    ${tags.length > 0 ? `<div class="im-section"><div style="display:flex;flex-wrap:wrap;gap:4px">${tags.map(t => `<span class="item-card-tag" style="padding:2px 8px;font-size:11px">${t}</span>`).join("")}</div></div>` : ""}
+  `;
+  document.getElementById("item-modal").classList.remove("hidden");
+}
+
+function closeModal() {
+  document.getElementById("item-modal").classList.add("hidden");
+}
+
+// ── Schedule Tab ──────────────────────────────
+function renderSchedule() {
+  const schedule = snapshotData.schedule || {};
+  const items = schedule.items || [];
+  const timeline = document.getElementById("schedule-timeline");
+  const label = document.getElementById("schedule-label");
+  label.textContent = schedule.label || "日程时间线";
+
+  if (items.length === 0) {
+    timeline.innerHTML = `<p style="color:var(--text-dim);text-align:center;padding:40px">暂无日程</p>`;
+    return;
+  }
+  timeline.innerHTML = items.map(s => {
+    const badge = s.status === "completed" ? `<span class="timeline-badge completed">完成</span>`
+      : s.status === "active" ? `<span class="timeline-badge active">进行中</span>`
+      : `<span class="timeline-badge planned">计划</span>`;
+    const time = formatTime(s.start) + "—" + formatTime(s.end);
+    const isSleep = s.is_sleep ? " 🌙" : "";
+    return `<div class="timeline-item">
+      <div class="timeline-time">${time}</div>
+      <div class="timeline-body">
+        <div class="timeline-title">${s.event_title || s.title || "—"}${isSleep} ${badge}</div>
+        <div class="timeline-meta">${s.event_category || ""} · ${s.block_type || ""} · ${s.status}</div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+// ── Dreams Tab ────────────────────────────────
+function renderDreams() {
+  const dreams = snapshotData.dreams || [];
+  const container = document.getElementById("dreams-list");
+  if (dreams.length === 0) {
+    container.innerHTML = `<p style="color:var(--text-dim);text-align:center;padding:40px">暂无梦境记录</p>`;
+    return;
+  }
+  container.innerHTML = dreams.map(d => {
+    const symbols = d.symbols || [];
+    return `<div class="dream-card">
+      <div class="dc-time">${d.created_at || "—"}</div>
+      <div class="dc-content">${d.content || d.summary || "—"}</div>
+      ${symbols.length > 0 ? `<div class="dc-symbols">${symbols.map(s => `<span class="dc-symbol">${s}</span>`).join("")}</div>` : ""}
+      ${d.severity ? `<div style="font-size:10px;color:var(--text-dim);margin-top:4px">严重度: ${d.severity}</div>` : ""}
+    </div>`;
+  }).join("");
+}
+
+// ── Trace / Log Tab ───────────────────────────
+function renderTrace() {
+  const trace = snapshotData.trace || [];
+  const container = document.getElementById("trace-list");
+  if (trace.length === 0) {
+    container.innerHTML = `<p style="color:var(--text-dim);text-align:center;padding:40px">暂无日志</p>`;
+    return;
+  }
+  container.innerHTML = trace.map(t => {
+    return `<div class="trace-item" onclick="showTraceDetail('${t.id}')">
+      <span class="ti-type">${t.entry_type || "—"}</span>
+      <span class="ti-source">${t.source || "—"}</span>
+      <span class="ti-time">${t.created_at || ""}</span>
+    </div>`;
+  }).join("");
+}
+
+async function showTraceDetail(id) {
+  try {
+    const res = await fetch(`${API}/api/trace/explain/${id}`);
+    const data = await res.json();
+    const body = document.getElementById("item-modal-body");
+    body.innerHTML = `
+      <h2 style="font-size:16px">追踪详情</h2>
+      <div class="im-subtitle">${id}</div>
+      <pre style="background:var(--bg-2);padding:12px;border-radius:4px;font-size:11px;overflow-x:auto;color:var(--text);max-height:60vh;line-height:1.5">${JSON.stringify(data, null, 2)}</pre>`;
+    document.getElementById("item-modal").classList.remove("hidden");
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function showEventDetail(id) {
+  try {
+    const res = await fetch(`${API}/api/event/${id}`);
+    const data = await res.json();
+    const ev = data.event || {};
+    const body = document.getElementById("item-modal-body");
+    const attrs = ev.attributes || {};
+    const costs = ev.resource_costs || {};
+    body.innerHTML = `
+      <h2>${ev.title || id}</h2>
+      <div class="im-subtitle">${ev.event_category || ""} · ${ev.status} · ${ev.importance || ""}</div>
+      ${ev.description ? `<p style="font-size:13px;line-height:1.6;margin-bottom:12px">${ev.description}</p>` : ""}
+      <div class="im-grid">
+        <div class="im-field"><div class="im-field-label">类型</div><div class="im-field-value">${ev.event_type || "—"}</div></div>
+        <div class="im-field"><div class="im-field-label">活动域</div><div class="im-field-value">${ev.activity_domain || "—"}</div></div>
+        <div class="im-field"><div class="im-field-label">优先级</div><div class="im-field-value">${ev.priority || "—"}</div></div>
+        <div class="im-field"><div class="im-field-label">子类型</div><div class="im-field-value">${ev.subtype || "—"}</div></div>
+      </div>
+      ${Object.keys(costs).length > 0 ? `<div class="im-section"><div class="im-field-label">资源消耗</div><pre style="font-size:11px;color:var(--text-dim)">${JSON.stringify(costs, null, 2)}</pre></div>` : ""}
+      <div class="im-section">
+        <div class="im-field-label">调度块 (${(data.schedule_blocks || []).length})</div>
+        ${(data.schedule_blocks || []).map(s => `<div style="font-size:11px;color:var(--text-dim);margin-top:4px">${formatTime(s.start)}—${formatTime(s.end)} · ${s.status}</div>`).join("")}
+      </div>`;
+    document.getElementById("item-modal").classList.remove("hidden");
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+// ── Actions ───────────────────────────────────
+async function doAction(action) {
+  try {
+    const res = await fetch(`${API}/api/action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const data = await res.json();
+    if (data.ok !== false) {
+      loadSnapshot();
+    } else {
+      console.warn("Action failed:", data);
+    }
+  } catch (err) {
+    console.error("Action error:", err);
+  }
+}
+
+// ── Tab Switching ─────────────────────────────
+function switchTab(tab) {
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".tab-panel").forEach(p => { p.classList.remove("active"); p.classList.add("hidden"); });
+  document.querySelector(`[data-tab="${tab}"]`).classList.add("active");
+  const panel = document.getElementById(`tab-${tab}`);
+  if (panel) { panel.classList.add("active"); panel.classList.remove("hidden"); }
+}
+
+// ── Helpers ───────────────────────────────────
+function formatTime(ts) {
+  if (!ts) return "—";
+  try {
+    const d = new Date(ts);
+    if (isNaN(d)) return String(ts).slice(11, 16) || "—";
+    return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  } catch { return "—"; }
+}
+
+function formatNum(n) {
+  if (n == null) return "—";
+  if (Math.abs(n) >= 1000) return n.toLocaleString("zh-CN", { maximumFractionDigits: 1 });
+  return Number(n).toFixed(n % 1 === 0 ? 0 : 1);
+}
+
+function attrLabel(key) {
+  const map = {
+    category: "类别", color_family: "色系", season: "季节", style_tags: "风格",
+    material: "材质", warmth: "保暖", formalness: "正式度", shoe_type: "鞋型",
+    weather_suitability: "天气适配", comfort: "舒适度", sock_type: "袜型",
+    length: "长度", thickness: "厚薄", quantity_per_pair: "每双数量",
+    accessory_type: "配饰类型", symbolic_meaning: "象征意义",
+    vanity_type: "造型类型", palette: "色盘", hair_accessories: "发饰",
+    time_cost_minutes: "造型时间", structure: "结构", sole: "鞋底", heel: "鞋跟",
+  };
+  return map[key] || key;
+}

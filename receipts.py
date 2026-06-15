@@ -64,19 +64,6 @@ def _fact_text_for(op_type: str, payload: dict[str, Any], result: Any) -> tuple[
         diary = result if isinstance(result, dict) else {}
         return "diary", f"diary {payload.get('date','')} {payload.get('content','') or diary.get('content','')}", {"diary_id": diary.get("id")}
 
-    if op_type == "CREATE_INVENTORY_ITEM":
-        item = result if isinstance(result, dict) else {}
-        return "inventory", f"inventory item {payload.get('name') or item.get('name')} category={payload.get('category','other')} quantity={payload.get('quantity', 1)}", {"item_id": item.get("id")}
-    if op_type == "UPDATE_INVENTORY_ITEM":
-        item = result if isinstance(result, dict) else {}
-        return "inventory", f"updated inventory item {payload.get('item_id')} {payload}", {"item_id": payload.get("item_id") or item.get("id")}
-    if op_type == "INVENTORY_DELTA":
-        item = result.get("item", {}) if isinstance(result, dict) else {}
-        movement = result.get("movement", {}) if isinstance(result, dict) else {}
-        return "inventory", f"inventory {item.get('name', payload.get('item_id'))} changed by {payload.get('quantity_delta')} operation={payload.get('operation','adjust')} reason={payload.get('reason','')}", {"item_id": payload.get("item_id"), "movement_id": movement.get("id")}
-    if op_type == "INVENTORY_MOVE":
-        movement = result.get("movement", {}) if isinstance(result, dict) else {}
-        return "inventory", f"inventory item {payload.get('item_id')} movement {payload.get('movement_type') or payload.get('operation','move')} delta={payload.get('quantity_delta',0)} reason={payload.get('reason','')}", {"item_id": payload.get("item_id"), "movement_id": movement.get("id")}
     if op_type == "CREATE_MEAL_RECORD":
         meal = result if isinstance(result, dict) else {}
         foods = payload.get("food_items") or meal.get("food_items") or []
@@ -283,22 +270,12 @@ def canonical_fact_texts(conn, owner_kind: str, owner_id: str, limit: int = 100)
         pass
     try:
         for r in conn.execute(
-            "SELECT name, category, quantity, unit, condition, location FROM inventory_items WHERE owner_kind=? AND owner_id=? ORDER BY updated_at DESC LIMIT ?",
-            (owner_kind, owner_id, limit),
-        ).fetchall():
-            texts.append(f"inventory {r['name']} {r['category']} quantity {r['quantity']} {r['unit'] or ''} {r['condition'] or ''} {r['location'] or ''}")
-        for r in conn.execute(
             "SELECT meal_type, eaten_at, food_items_json, notes FROM meal_records WHERE owner_kind=? AND owner_id=? ORDER BY eaten_at_ts DESC LIMIT ?",
             (owner_kind, owner_id, limit),
         ).fetchall():
             texts.append(f"meal {r['meal_type']} {r['eaten_at']} {r['food_items_json']} {r['notes'] or ''}")
     except Exception:
         pass
-    for r in conn.execute(
-        "SELECT name, category, quantity, unit, condition, location FROM inventory_items WHERE owner_kind=? AND owner_id=? ORDER BY updated_at DESC LIMIT ?",
-        (owner_kind, owner_id, limit),
-    ).fetchall():
-        texts.append(f"inventory {r['name']} {r['category']} quantity {r['quantity']} {r['unit'] or ''} condition {r['condition'] or ''} location {r['location'] or ''}")
     try:
         for r in conn.execute(
             "SELECT title, description, status, progress, target_date FROM goals WHERE owner_kind=? AND owner_id=? ORDER BY updated_at DESC LIMIT ?",

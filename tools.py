@@ -215,11 +215,12 @@ def life_confirmation(args: dict, **kwargs) -> str:
     return _run(lambda rt: rt.confirmation(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
 
 
-def life_inventory(args: dict, **kwargs) -> str:
+def life_meals(args: dict, **kwargs) -> str:
+    """Meal records: what the agent ate, when, where, and cost."""
     owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
-    action = args.get("action", "list")
+    action = args.get("action", "meals")
     payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action"}}
-    return _run(lambda rt: rt.inventory(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
+    return _run(lambda rt: rt.meals(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
 
 
 def life_goal(args: dict, **kwargs) -> str:

@@ -515,7 +515,7 @@ def large_db_smoke(conn: sqlite3.Connection, owner_kind: str, owner_id: str, *, 
 _LIFEENGINE_TOOL_SURFACE = [
     "life_status", "life_upgrade", "life_doctor", "life_control", "life_setup",
     "life_commit", "life_resource", "life_event", "life_memory", "life_tick",
-    "life_diary", "life_trace", "life_final_gate", "life_truth", "life_inventory",
+    "life_diary", "life_trace", "life_final_gate", "life_truth", "life_meals",
     "life_confirmation", "life_goal", "life_autonomy", "life_proactive", "life_execution",
 ]
 
@@ -525,7 +525,7 @@ _MINIMAL_HUMAN_COMMANDS = [
 ]
 
 _ADVANCED_COMMAND_GROUPS = [
-    "trace", "final_gate", "truth", "resource", "inventory", "goal", "autonomy",
+    "trace", "final_gate", "truth", "resource", "goal", "autonomy",
     "proactive", "execution", "confirmation", "upgrade", "heartbeat", "module",
 ]
 

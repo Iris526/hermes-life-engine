@@ -29,7 +29,7 @@ provides_tools:
   - life_trace
   - life_final_gate
   - life_truth
-  - life_inventory
+  - life_meals
   - life_confirmation
   - life_goal
   - life_autonomy

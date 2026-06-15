@@ -14,7 +14,7 @@ def fresh_home(tmp_path):
 
 
 def activate_agent(rt: LifeEngineRuntime):
-    rt.setup("测试 Agent，支持库存、饭食和用户确认流。")
+    rt.setup("测试 Agent，支持衣橱集合、饭食和用户确认流。")
     rt.commit_canon()
     rt.control("resume")
 
@@ -60,41 +60,37 @@ def test_user_confirmation_reject_does_not_commit(tmp_path):
         rt.close()
 
 
-def test_inventory_item_meal_and_receipt_final_gate(tmp_path):
+def test_meal_record_and_receipt(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
         activate_agent(rt)
-        item = rt.inventory("add", session_id="s5", turn_id="t5", name="藏青色百褶裙", category="clothing", quantity=1, unit="件", condition="new", location="衣柜", source="agent_narrative_assertion")
-        assert item["ok"] is True
-        tx_id = item["transaction_id"]
-        explained = rt.traces("explain", transaction_id=tx_id)
-        assert any(f["fact_kind"] == "inventory" for f in explained["facts"])
-        assert rt.audit_final_output("我的衣柜里有一条藏青色百褶裙。", session_id="s5", turn_id="t5") is None
-        inv = rt.inventory("list", category="clothing")["items"]
-        assert inv and inv[0]["name"] == "藏青色百褶裙"
-
-        meal = rt.inventory("meal", meal_type="lunch", food_items=["咖喱饭"], satisfaction=6, notes="有点辣", source="agent_retro_assertion")
+        meal = rt.meals("meal", meal_type="lunch", food_items=["咖喱饭"], satisfaction=6, notes="有点辣", source="agent_retro_assertion")
         assert meal["ok"] is True
-        meals = rt.inventory("meals", meal_type="lunch")["meals"]
+        tx_id = meal["transaction_id"]
+        explained = rt.traces("explain", transaction_id=tx_id)
+        assert any(f["fact_kind"] == "meal" for f in explained["facts"])
+        meals = rt.meals("meals", meal_type="lunch")["meals"]
         assert meals and "咖喱饭" in meals[0]["food_items"]
     finally:
         rt.close()
 
 
-def test_inventory_consume_prevents_negative_quantity(tmp_path):
+def test_collection_item_requires_collection(tmp_path):
+    """collection_items cannot exist without a parent collection."""
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
         activate_agent(rt)
-        item = rt.inventory("add", name="洗衣液", category="daily_supply", quantity=1, unit="瓶")
-        item_id = item["results"][0]["result"]["id"]
-        consumed = rt.inventory("consume", item_id=item_id, quantity=1, reason="用完了")
-        assert consumed["ok"] is True
-        try:
-            rt.inventory("consume", item_id=item_id, quantity=1, reason="再用一次")
-            assert False, "expected negative inventory validation failure"
-        except Exception as exc:
-            assert "negative" in str(exc) or "负" in str(exc) or "quantity" in str(exc)
+        # Ensure default collections exist (wardrobe, shoe_cabinet, etc.)
+        rt.collection("init", "agent", "default-agent")
+        # Add a clothing item to the wardrobe collection
+        item = rt.collection("add_item", "agent", "default-agent", collection_type="wardrobe", name="藏青色百褶裙", attributes={"category": "skirt", "color_family": "navy"})
+        assert item["ok"] is True
+        ci = item["item"]
+        assert ci["collection_id"]  # must belong to a collection
+        # List wardrobe items
+        wardrobe = rt.collection("items", "agent", "default-agent", collection_type="wardrobe")
+        assert any(i["name"] == "藏青色百褶裙" for i in wardrobe["items"])
     finally:
         rt.close()

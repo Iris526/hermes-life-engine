@@ -203,6 +203,34 @@ def create_app(life_dir: str | None = None) -> FastAPI:
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    @app.get("/api/asset")
+    def serve_asset(path: str = Query(...)):
+        """Serve image files from allowed directories (image_cache, assets, webui static)."""
+        from pathlib import Path as P
+        requested = P(path).expanduser().resolve()
+        hermes_home = P(os.getenv("HERMES_HOME", str(P.home() / ".hermes"))).resolve()
+        allowed_roots = [
+            hermes_home / "image_cache",
+            hermes_home / "assets",
+            hermes_home / "assets" / "collections",
+            _STATIC_DIR / "assets",
+        ]
+        # Also allow subdirectories of assets (iris-wardrobe, iris-emotes, etc.)
+        assets_dir = hermes_home / "assets"
+        if assets_dir.is_dir():
+            for child in assets_dir.iterdir():
+                if child.is_dir():
+                    allowed_roots.append(child)
+        if not any(str(requested).startswith(str(r)) for r in allowed_roots):
+            raise HTTPException(status_code=403, detail="Asset outside allowed directories")
+        if not requested.exists() or not requested.is_file():
+            raise HTTPException(status_code=404, detail="Asset not found")
+        ext = requested.suffix.lower()
+        media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                       ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml"}
+        media_type = media_types.get(ext, "application/octet-stream")
+        return FileResponse(str(requested), media_type=media_type)
+
     @app.get("/api/stream")
     async def stream(period: str = "today", date: str | None = None):
         async def gen():

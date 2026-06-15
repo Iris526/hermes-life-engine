@@ -67,11 +67,11 @@ DEFAULT_CANON_TEMPLATE = {
     },
     "resources": {
         "definitions": {
-            "energy": {"display_name": "Energy", "resource_class": "capacity", "unit": "points", "min": 0, "max": 100, "initial": 60},
-            "focus": {"display_name": "Focus", "resource_class": "capacity", "unit": "points", "min": 0, "max": 100, "initial": 60},
-            "mood": {"display_name": "Mood", "resource_class": "state", "unit": "points", "min": -100, "max": 100, "initial": 0},
-            "fatigue": {"display_name": "Fatigue", "resource_class": "state", "unit": "points", "min": 0, "max": 100, "initial": 20},
-            "sleep_debt_minutes": {"display_name": "Sleep debt", "resource_class": "state", "unit": "minutes", "min": 0, "initial": 0},
+            "energy": {"display_name": "Energy", "resource_class": "vital", "unit": "points", "min": 0, "max": 100, "initial": 60},
+            "focus": {"display_name": "Focus", "resource_class": "vital", "unit": "points", "min": 0, "max": 100, "initial": 60},
+            "mood": {"display_name": "Mood", "resource_class": "vital", "unit": "points", "min": -100, "max": 100, "initial": 0},
+            "fatigue": {"display_name": "Fatigue", "resource_class": "vital", "unit": "points", "min": 0, "max": 100, "initial": 20},
+            "sleep_debt_minutes": {"display_name": "Sleep debt", "resource_class": "vital", "unit": "minutes", "min": 0, "initial": 0},
         }
     },
     "schedule_rules": {"timezone": "Asia/Tokyo"},
@@ -120,7 +120,7 @@ DEFAULT_CANON_TEMPLATE = {
 
 BOOT_PROTOCOL = """
 <LIFEENGINE_BOOT_PROTOCOL>
-LifeEngine is a code-enforced runtime. The model should not rely on prompt text to maintain life state. Durable facts, resources, schedules, inventory, dreams, replies, and reviews must be created through LifeEngine tools/LifeOps.
+LifeEngine is a code-enforced runtime. The model should not rely on prompt text to maintain life state. Durable facts, resources, schedules, collection items, dreams, replies, and reviews must be created through LifeEngine tools/LifeOps.
 Use the compact context for the current turn only; call tools for details. Do not expose internal diagnostics, private behavior sources, or FinalGate feedback to the user.
 </LIFEENGINE_BOOT_PROTOCOL>
 """.strip()

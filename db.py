@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 45
+_SCHEMA_VERSION = 47
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -95,7 +95,7 @@ def migrate(conn: sqlite3.Connection) -> None:
     """Apply incremental schema migrations.
 
     v0 -> v1 creates the original LifeEngine tables; later versions add
-    receipts, truth sources, inventory, goals, autonomy, proactive, execution,
+    receipts, truth sources, collection items, meals, goals, autonomy, proactive, execution,
     doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets, and v0.12.8 behavior-to-truth-source mapping, and v0.12.8 outfit resolver/current outfit/action-chain closure, and v0.12.9 resolver aliases/outfit presets/collection board, and v0.12.10 prompt/context slimming with progressive disclosure.
     """
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
@@ -237,6 +237,12 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 45:
         _create_schema_v45(conn)
         _record_schema_migration(conn, 45, "prompt_context_slimming_progressive_disclosure")
+    if current < 46:
+        _create_schema_v46(conn)
+        _record_schema_migration(conn, 46, "drop_legacy_inventory_tables")
+    if current < 47:
+        _create_schema_v47(conn)
+        _record_schema_migration(conn, 47, "migrate_consumable_resources_to_collection")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3408,3 +3414,94 @@ def _create_schema_v45(conn: sqlite3.Connection) -> None:
           ON prompt_context_runs(session_id, turn_id);
         """
     )
+
+
+def _create_schema_v46(conn: sqlite3.Connection) -> None:
+    """Drop legacy inventory_items and inventory_movements tables.
+
+    collection_items (with mandatory collection_id FK) is the single canonical
+    item table.  meal_records is preserved because meals are ephemeral
+    consumption events, not durable inventory.
+    """
+    conn.executescript(
+        """
+        DROP TABLE IF EXISTS inventory_items;
+        DROP TABLE IF EXISTS inventory_movements;
+        """
+    )
+
+
+def _create_schema_v47(conn: sqlite3.Connection) -> None:
+    """Migrate consumable/tool resources to collection items.
+
+    Resources like supplies.talisman_paper, supplies.incense, tools.barrier_meter_condition
+    are physical items, not scalar resources. Move them into a supply_cabinet collection,
+    preserving quantities. Resource definitions/accounts for these keys are removed.
+    The resource_ledger entries are kept as audit history.
+    """
+    import json
+    from .trace import new_id
+
+    # Mapping of old resource keys to collection item names and attributes.
+    RESOURCE_TO_ITEM = {
+        "supplies.talisman_paper": {"name": "符纸", "attributes": {"category": "daily_supply", "is_consumable": True, "material": "黄纸朱砂", "purpose": "净符"}},
+        "supplies.incense": {"name": "线香", "attributes": {"category": "daily_supply", "is_consumable": True, "material": "檀香", "purpose": "供奉"}},
+        "tools.barrier_meter_condition": {"name": "小型结界仪", "attributes": {"category": "tool", "is_consumable": False, "material": "金属/灵子回路", "purpose": "结界检测"}},
+        "wardrobe.clean_outfits": None,  # skip, not a real item
+    }
+
+    for owner_kind, owner_id in conn.execute("SELECT DISTINCT owner_kind, owner_id FROM resource_definitions").fetchall():
+        owner_kind, owner_id = owner_kind if owner_kind else "agent", owner_id if owner_id else "default-agent"
+        # Check if supply_cabinet already exists
+        cab = conn.execute(
+            "SELECT id FROM item_collections WHERE owner_kind=? AND owner_id=? AND collection_type='supply_cabinet' AND status!='archived' LIMIT 1",
+            (owner_kind, owner_id),
+        ).fetchone()
+        if cab:
+            collection_id = cab[0]
+        else:
+            collection_id = new_id("collection")
+            conn.execute(
+                """INSERT INTO item_collections(id, owner_kind, owner_id, collection_type, name, description, status, rules_json,
+                     image_generation_rule_json, usage_rule_json, maintenance_rule_json, required_metadata_json, sort_order)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (collection_id, owner_kind, owner_id, "supply_cabinet", "随身物品柜", "日常消耗品、法器、工具、委托物资", "active", "{}",
+                 '{"subject":"supply_or_tool_item","views":["main_display","detail_view","material_sheet"],"must":["单品展示"],"exclude":[]}',
+                 '{"consumable":true,"checkout_for":["ritual","commission","daily_life"]}',
+                 '{}', '["category","is_consumable","material","purpose"]', 60),
+            )
+
+        for res_key, item_spec in RESOURCE_TO_ITEM.items():
+            if item_spec is None:
+                continue
+            acct = conn.execute(
+                "SELECT current_value FROM resource_accounts WHERE owner_kind=? AND owner_id=? AND resource_key=?",
+                (owner_kind, owner_id, res_key),
+            ).fetchone()
+            if not acct:
+                continue
+            quantity = float(acct[0] or 0)
+            if quantity <= 0:
+                continue
+            # Create collection item if not already exists
+            existing = conn.execute(
+                "SELECT id FROM collection_items WHERE owner_kind=? AND owner_id=? AND collection_id=? AND name=? AND status='active'",
+                (owner_kind, owner_id, collection_id, item_spec["name"]),
+            ).fetchone()
+            if existing:
+                continue
+            item_id = new_id("colitem")
+            conn.execute(
+                """INSERT INTO collection_items(id, owner_kind, owner_id, collection_id, item_type, name, description, status, tags_json,
+                     attributes_json, material_spec_json, care_spec_json, asset_bundle_json, usage_state_json, quantity, condition_score, cleanliness_state, availability_state)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (item_id, owner_kind, owner_id, collection_id, "supply", item_spec["name"], "", "active", "[]",
+                 json.dumps(item_spec["attributes"]), "{}", "{}", '{"status":"skip"}', "{}", quantity, 100, "clean", "available"),
+            )
+
+        # Remove migrated resource definitions and accounts (ledger kept for audit)
+        for res_key in RESOURCE_TO_ITEM:
+            if RESOURCE_TO_ITEM[res_key] is None:
+                continue
+            conn.execute("DELETE FROM resource_accounts WHERE owner_kind=? AND owner_id=? AND resource_key=?", (owner_kind, owner_id, res_key))
+            conn.execute("DELETE FROM resource_definitions WHERE owner_kind=? AND owner_id=? AND key=?", (owner_kind, owner_id, res_key))

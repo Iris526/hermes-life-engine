@@ -22,7 +22,7 @@ REQUIRED_TABLES = {
     "controls", "canon_versions", "canon_drafts", "life_transactions", "life_ops",
     "life_journal", "trace_runs", "trace_spans", "commit_receipts", "commit_receipt_facts",
     "resource_definitions", "resource_accounts", "resource_ledger", "events", "schedule_blocks",
-    "wake_jobs", "truth_source_reads", "inventory_items", "goals", "autonomy_decisions",
+    "wake_jobs", "truth_source_reads", "goals", "autonomy_decisions",
     "proactive_intents", "execution_decisions", "serendipity_events", "memory_vec", "schema_migrations", "install_checks", "final_gate_reports", "final_gate_feedback_queue", "trace_coverage_reports", "acceptance_reports", "api_freeze_snapshots",
     "event_state_transitions", "schedule_block_state_transitions", "action_state_transitions", "agent_realtime_state", "agent_state_snapshots", "sleep_plans", "sleep_sessions", "sleep_interruptions", "sleep_doctor_findings", "sleep_session_state_transitions",
     "reply_gate_decisions", "delayed_replies", "call_overrides", "reply_gate_recoveries",

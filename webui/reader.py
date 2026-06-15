@@ -306,12 +306,17 @@ class LifeEngineReader:
                     for a in self._all(conn, "SELECT item_id, alias FROM collection_item_aliases WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY created_at", (owner_kind, owner_id)):
                         alias_by_item.setdefault(a.get("item_id"), []).append(a.get("alias"))
                 asset_by_item = {}
+                asset_uri_by_item = {}
                 if self._table_exists(conn, "collection_item_assets"):
-                    for a in self._all(conn, "SELECT item_id, status, asset_uri FROM collection_item_assets WHERE owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
+                    for a in self._all(conn, "SELECT item_id, status, asset_uri, view_name FROM collection_item_assets WHERE owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
                         d = asset_by_item.setdefault(a.get("item_id"), {"total":0,"available":0,"pending":0})
                         d["total"] += 1
                         if a.get("status") == "available" and a.get("asset_uri"):
                             d["available"] += 1
+                            # Keep first available asset URI as primary image
+                            iid = a.get("item_id")
+                            if iid not in asset_uri_by_item:
+                                asset_uri_by_item[iid] = a.get("asset_uri")
                         else:
                             d["pending"] += 1
                 for i in items:
@@ -320,6 +325,7 @@ class LifeEngineReader:
                             i[key.replace("_json", "")] = _safe_json(i.get(key), [] if key == "tags_json" else {})
                     i["aliases"] = alias_by_item.get(i.get("id"), [])
                     i["asset_counts"] = asset_by_item.get(i.get("id"), {"total":0,"available":0,"pending":0})
+                    i["primary_asset_uri"] = asset_uri_by_item.get(i.get("id"))
             # Build a collection board grouped by cabinet/drawer/shelf.
             items_by_collection = {}
             for i in items:

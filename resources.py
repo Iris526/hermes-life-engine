@@ -50,7 +50,8 @@ def define_resource(conn, owner_kind: str, owner_id: str, key: str, display_name
     if not row:
         conn.execute(
             """INSERT INTO resource_accounts(id, owner_kind, owner_id, resource_key, current_value, unit, capacity)
-                   VALUES(?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,?)
+                   ON CONFLICT(owner_kind, owner_id, resource_key) DO NOTHING""",
             (new_id("resacct"), owner_kind, owner_id, key, float(initial), unit, max_value),
         )
         conn.execute(
@@ -93,7 +94,7 @@ def apply_delta(conn, owner_kind: str, owner_id: str, resource_key: str, delta: 
                 operation: str = "adjust", reason: str = "resource delta", source: str = "life_event",
                 event_id: str | None = None, action_id: str | None = None,
                 result_id: str | None = None, schedule_block_id: str | None = None,
-                inventory_item_id: str | None = None, meal_id: str | None = None,
+                meal_id: str | None = None,
                 allow_ad_hoc: bool = False) -> dict[str, Any]:
     definition = conn.execute(
         "SELECT * FROM resource_definitions WHERE owner_kind=? AND owner_id=? AND key=?",
@@ -136,7 +137,7 @@ def apply_delta(conn, owner_kind: str, owner_id: str, resource_key: str, delta: 
                event_id, action_id, result_id, schedule_block_id, inventory_item_id, meal_id, reason, source)
                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (ledger_id, owner_kind, owner_id, resource_key, float(delta), unit, operation,
-         event_id, action_id, result_id, schedule_block_id, inventory_item_id, meal_id, reason, source),
+         event_id, action_id, result_id, schedule_block_id, None, meal_id, reason, source),
     )
     conn.execute(
         "UPDATE resource_accounts SET current_value=?, unit=?, capacity=?, updated_at=datetime('now') WHERE owner_kind=? AND owner_id=? AND resource_key=?",

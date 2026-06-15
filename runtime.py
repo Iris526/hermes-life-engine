@@ -136,6 +136,7 @@ from .collections import (
     archive_collection,
     build_outfit,
     check_out_item,
+    consume_item,
     create_collection,
     create_collection_item,
     ensure_default_collections,
@@ -150,6 +151,7 @@ from .collections import (
     render_collections_summary,
     render_items,
     render_item_assets,
+    restock_item,
     return_item,
     set_item_asset_uri,
     update_collection,
@@ -177,14 +179,9 @@ from .collection_flow import (
 )
 
 from .invariants import run_doctor as run_invariant_doctor
-from .inventory import (
-    create_inventory_item,
+from .meals import (
     create_meal_record,
-    inventory_delta,
-    list_inventory,
-    list_inventory_movements,
     list_meals,
-    update_inventory_item,
 )
 from .memory import create_memory, search_memories
 from .migration import create_branch, list_migrations
@@ -399,7 +396,6 @@ class LifeEngineRuntime:
             resources = list_resources(self.conn, owner_kind, owner_id)
             goals = list_goals(self.conn, owner_kind, owner_id, limit=5)
             arcs = list_life_arcs(self.conn, owner_kind, owner_id, limit=5)
-            inventory = list_inventory(self.conn, owner_kind, owner_id, limit=10)
             confirmations = list_confirmations(self.conn, owner_kind, owner_id, limit=5) if owner_kind == "user" else []
             pending = list_proactive_intents(self.conn, owner_id, limit=5) if owner_kind == "agent" else []
             proactive_outbox = list_outbox(self.conn, owner_id, status="queued", limit=5) if owner_kind == "agent" else []
@@ -413,7 +409,7 @@ class LifeEngineRuntime:
             dreams = dream_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}
             required = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False) if owner_kind == "agent" else {"ok": True, "missing": []}
             schedule = list_human_schedule(self.conn, owner_kind, owner_id, period="today", tz_name=_tz_from_canon(canon), limit=20) if owner_kind == "agent" else {"items": []}
-            out = {"control": c, "canon": canon, "realtime_state": realtime_state, "sleep_plans": sleep_plans, "sleep_sessions": sleep_sessions, "dreams": dreams, "resources": resources, "inventory": inventory, "goals": goals, "life_arcs": arcs, "pending_confirmations": confirmations, "pending_proactive": pending, "proactive_outbox": proactive_outbox if owner_kind == "agent" else [], "proactive_states": proactive_states if owner_kind == "agent" else [], "recent_autonomy": autonomy, "recent_execution": execution, "recent_serendipity": serendipity, "required_settings": required, "today_schedule": schedule.get("summary", {})}
+            out = {"control": c, "canon": canon, "realtime_state": realtime_state, "sleep_plans": sleep_plans, "sleep_sessions": sleep_sessions, "dreams": dreams, "resources": resources, "goals": goals, "life_arcs": arcs, "pending_confirmations": confirmations, "pending_proactive": pending, "proactive_outbox": proactive_outbox if owner_kind == "agent" else [], "proactive_states": proactive_states if owner_kind == "agent" else [], "recent_autonomy": autonomy, "recent_execution": execution, "recent_serendipity": serendipity, "required_settings": required, "today_schedule": schedule.get("summary", {})}
             out["rendered"] = _render_status_page(out)
             return out
 
@@ -652,16 +648,6 @@ class LifeEngineRuntime:
             return create_memory(self.conn, owner_kind, owner_id, canon_version=canon_version, **payload)
         if op_type == "CREATE_DIARY":
             return self._create_diary(owner_kind, owner_id, canon_version=canon_version, **payload)
-        if op_type == "CREATE_INVENTORY_ITEM":
-            return create_inventory_item(self.conn, owner_kind, owner_id, canon_version=canon_version, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "UPDATE_INVENTORY_ITEM":
-            return update_inventory_item(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "INVENTORY_DELTA":
-            return inventory_delta(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
-        if op_type == "INVENTORY_MOVE":
-            p = dict(payload)
-            p.setdefault("operation", p.pop("movement_type", "move"))
-            return inventory_delta(self.conn, owner_kind, owner_id, source=p.get("source") or source, **{k: v for k, v in p.items() if k != "source"})
         if op_type == "CREATE_MEAL_RECORD":
             return create_meal_record(self.conn, owner_kind, owner_id, canon_version=canon_version, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
         if op_type == "CREATE_LIFE_ARC":
@@ -1422,41 +1408,16 @@ class LifeEngineRuntime:
             return {"ok": True, "confirmation": c, "commit": commit}
         raise ValueError(f"Unknown confirmation action: {action}")
 
-    # ----- inventory / entity resources -----------------------------------
-    def inventory(self, action: str, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
-                  session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
-        if action == "list":
-            with transaction(self.conn):
-                return {"ok": True, "items": list_inventory(self.conn, owner_kind, owner_id, category=payload.get("category"), status=payload.get("status", "active"), limit=int(payload.get("limit", 50)))}
-        if action == "movements":
-            with transaction(self.conn):
-                return {"ok": True, "movements": list_inventory_movements(self.conn, owner_kind, owner_id, item_id=payload.get("item_id"), limit=int(payload.get("limit", 50)))}
+    # ----- meals -----------------------------------------------------------
+    def meals(self, action: str, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+              session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """Meal records: what the agent ate, when, where, and cost."""
         if action == "meals":
             with transaction(self.conn):
                 return {"ok": True, "meals": list_meals(self.conn, owner_kind, owner_id, meal_type=payload.get("meal_type"), limit=int(payload.get("limit", 30)))}
-        if action in {"add", "create"}:
-            return self.commit_ops([{"type": "CREATE_INVENTORY_ITEM", "payload": payload}], owner_kind, owner_id, "life_inventory_tool", session_id, turn_id)
-        if action == "update":
-            return self.commit_ops([{"type": "UPDATE_INVENTORY_ITEM", "payload": payload}], owner_kind, owner_id, "life_inventory_tool", session_id, turn_id)
-        if action in {"delta", "consume", "discard", "move"}:
-            p = dict(payload)
-            if action == "consume":
-                p.setdefault("operation", "consume")
-                if "quantity_delta" not in p and "quantity" in p:
-                    p["quantity_delta"] = -abs(float(p["quantity"]))
-                p.pop("quantity", None)
-            elif action == "discard":
-                p.setdefault("operation", "discard")
-                if "quantity_delta" not in p and "quantity" in p:
-                    p["quantity_delta"] = -abs(float(p["quantity"]))
-                p.pop("quantity", None)
-            elif action == "move":
-                p.setdefault("operation", "move")
-                p.setdefault("quantity_delta", 0)
-            return self.commit_ops([{"type": "INVENTORY_DELTA", "payload": p}], owner_kind, owner_id, "life_inventory_tool", session_id, turn_id)
         if action == "meal":
-            return self.commit_ops([{"type": "CREATE_MEAL_RECORD", "payload": payload}], owner_kind, owner_id, "life_inventory_tool", session_id, turn_id)
-        raise ValueError(f"Unknown inventory action: {action}")
+            return self.commit_ops([{"type": "CREATE_MEAL_RECORD", "payload": payload}], owner_kind, owner_id, "life_meals_tool", session_id, turn_id)
+        raise ValueError(f"Unknown meal action: {action}")
 
     # ----- goals / life arcs / decomposition -------------------------------
     def goals(self, action: str, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
@@ -2298,7 +2259,7 @@ class LifeEngineRuntime:
                     "life_journal", "trace_runs", "trace_spans", "commit_receipts",
                     "resource_definitions", "resource_accounts", "resource_ledger",
                     "events", "schedule_blocks", "wake_jobs", "truth_source_reads",
-                    "inventory_items", "goals", "autonomy_decisions", "proactive_intents",
+                    "goals", "autonomy_decisions", "proactive_intents",
                     "execution_decisions", "serendipity_events", "memory_vec", "life_invariant_checks", "schema_migrations", "install_checks", "final_gate_reports", "final_gate_feedback_queue", "trace_coverage_reports", "acceptance_reports", "api_freeze_snapshots", "event_state_transitions", "schedule_block_state_transitions", "action_state_transitions", "agent_realtime_state", "agent_state_snapshots", "dream_runs", "dream_audit_findings", "dream_entries", "dream_repair_runs",
     "sleep_day_states", "sleep_recovery_plans", "delayed_reply_digests", "dream_repair_policies",
                 ]
@@ -2702,9 +2663,9 @@ class LifeEngineRuntime:
 
     def living(self, action: str = "summary", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
                session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
-        """Concrete living layer: consistency doctor, day rhythm, inventory presets, paper notes."""
+        """Concrete living layer: consistency doctor, day rhythm, resource presets, paper notes."""
         from .living import (
-            canon_consistency_check, inventory_preset_ops, rhythm_templates, abstract_goal_children,
+            canon_consistency_check, resource_preset_ops, rhythm_templates, abstract_goal_children,
             is_abstract_goal_event, list_paper_notes, diary_draft_content,
         )
         action_l = str(action or "summary").strip().lower()
@@ -2717,22 +2678,21 @@ class LifeEngineRuntime:
         if action_l in {"canon_consistency", "consistency", "doctor", "check"}:
             with transaction(self.conn):
                 return canon_consistency_check(self.conn, owner_kind, owner_id, persist=bool(payload.get("persist", True)))
-        if action_l in {"init_inventory", "inventory_preset", "bootstrap_inventory"}:
+        if action_l in {"init_resources", "resource_preset", "bootstrap_resources", "init_inventory", "inventory_preset", "bootstrap_inventory"}:
             preset = str(payload.get("preset") or "guimingguan")
-            ops = inventory_preset_ops(preset)
-            commit = self.commit_ops(ops, owner_kind, owner_id, "living_inventory_preset", session_id, turn_id)
-            item_names = [op["payload"].get("name") for op in ops if op["type"] == "CREATE_INVENTORY_ITEM"]
+            ops = resource_preset_ops(preset)
+            commit = self.commit_ops(ops, owner_kind, owner_id, "living_resource_preset", session_id, turn_id)
             resource_keys = [op["payload"].get("key") for op in ops if op["type"] == "RESOURCE_DEFINE"]
-            rendered = "生活库存预设已写入\n==================\n资源：" + "、".join(resource_keys) + "\n物品：" + "、".join(item_names)
+            rendered = "生活资源预设已写入\n==================\n资源：" + "、".join(resource_keys)
             with transaction(self.conn):
                 run_id = new_id("invpreset")
                 self.conn.execute(
                     """INSERT INTO living_inventory_preset_runs(id, owner_kind, owner_id, preset, status, resource_keys_json, item_names_json, transaction_id, receipt_id, rendered_text)
                          VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                    (run_id, owner_kind, owner_id, preset, "committed", dumps(resource_keys), dumps(item_names), commit.get("transaction_id"), (commit.get("receipt") or {}).get("receipt_id"), rendered),
+                    (run_id, owner_kind, owner_id, preset, "committed", dumps(resource_keys), dumps([]), commit.get("transaction_id"), (commit.get("receipt") or {}).get("receipt_id"), rendered),
                 )
-                append_journal(self.conn, owner_kind, owner_id, "living_inventory_preset_applied", {"run_id": run_id, "preset": preset, "resources": resource_keys, "items": item_names}, "living")
-            return {"ok": True, "run_id": run_id, "commit": commit, "resource_keys": resource_keys, "item_names": item_names, "rendered": rendered}
+                append_journal(self.conn, owner_kind, owner_id, "living_resource_preset_applied", {"run_id": run_id, "preset": preset, "resources": resource_keys}, "living")
+            return {"ok": True, "run_id": run_id, "commit": commit, "resource_keys": resource_keys, "rendered": rendered}
         if action_l in {"day_rhythm", "rhythm", "plan_day", "generate_day", "living_day"}:
             # Concrete daily rhythm: create specific events and schedule blocks instead of abstract "推进目标" placeholders.
             preset = str(payload.get("preset") or "guimingguan")
@@ -3010,7 +2970,7 @@ class LifeEngineRuntime:
                 c = archive_collection(self.conn, owner_kind, owner_id, collection_id=payload.get("collection_id"), collection_type=payload.get("collection_type") or payload.get("type"))
                 return {"ok": True, "collection": c, "rendered": "已归档集合：" + c["name"]}
             if action_l in {"items", "list_items", "wardrobe", "shoes", "shoe_cabinet", "socks", "sock_drawer", "accessories", "accessory_cabinet", "vanity"}:
-                ctype_map = {"wardrobe":"wardrobe", "shoes":"shoe_cabinet", "shoe_cabinet":"shoe_cabinet", "socks":"sock_drawer", "sock_drawer":"sock_drawer", "accessories":"accessory_cabinet", "accessory_cabinet":"accessory_cabinet", "vanity":"vanity"}
+                ctype_map = {"wardrobe":"wardrobe", "shoes":"shoe_cabinet", "shoe_cabinet":"shoe_cabinet", "socks":"sock_drawer", "sock_drawer":"sock_drawer", "accessories":"accessory_cabinet", "accessory_cabinet":"accessory_cabinet", "vanity":"vanity", "supplies":"supply_cabinet", "supply_cabinet":"supply_cabinet", "items_cabinet":"supply_cabinet"}
                 ctype = payload.get("collection_type") or payload.get("type") or ctype_map.get(action_l)
                 if ctype in DEFAULT_COLLECTION_PRESETS:
                     ensure_default_collections(self.conn, owner_kind, owner_id)
@@ -3042,6 +3002,20 @@ class LifeEngineRuntime:
             if action_l in {"set_asset", "attach_asset", "fulfill_asset"}:
                 asset = set_item_asset_uri(self.conn, owner_kind, owner_id, asset_id=payload["asset_id"], asset_uri=payload.get("asset_uri") or payload.get("path") or payload.get("url"), status=payload.get("status", "available"), metadata=payload.get("metadata"))
                 return {"ok": True, "asset": asset, "rendered": f"资产已绑定：{asset.get('asset_type')} → {asset.get('asset_uri')}"}
+            if action_l in {"set_display_image", "set_display"}:
+                item = get_collection_item(self.conn, owner_kind, owner_id, payload["item_id"])
+                bundle = item.get("asset_bundle") or {}
+                bundle["display_image"] = payload.get("asset_uri") or payload.get("path") or payload.get("url")
+                bundle["status"] = "available" if (bundle.get("display_image") or bundle.get("reference_image")) else "needs_generation"
+                item = update_collection_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], asset_bundle=bundle)
+                return {"ok": True, "item": item, "rendered": f"display_image 已设置：{bundle['display_image']}"}
+            if action_l in {"set_reference_image", "set_reference"}:
+                item = get_collection_item(self.conn, owner_kind, owner_id, payload["item_id"])
+                bundle = item.get("asset_bundle") or {}
+                bundle["reference_image"] = payload.get("asset_uri") or payload.get("path") or payload.get("url")
+                bundle["status"] = "available" if (bundle.get("display_image") or bundle.get("reference_image")) else "needs_generation"
+                item = update_collection_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], asset_bundle=bundle)
+                return {"ok": True, "item": item, "rendered": f"reference_image 已设置：{bundle['reference_image']}"}
             if action_l in {"checkout", "check_out", "wear", "use"}:
                 return check_out_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], reason=payload.get("reason") or action_l, event_id=payload.get("event_id"))
             if action_l in {"return", "return_item", "put_back"}:
@@ -3051,6 +3025,10 @@ class LifeEngineRuntime:
                 return {"ok": True, "item": item, "rendered": item["name"] + " 已标记为 dirty。"}
             if action_l in {"maintain", "clean", "wash", "repair"}:
                 return maintain_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], maintenance_type=payload.get("maintenance_type") or action_l, reason=payload.get("reason") or action_l)
+            if action_l in {"consume", "use_up", "spend"}:
+                return consume_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], quantity=float(payload.get("quantity", 1)), reason=payload.get("reason") or action_l, event_id=payload.get("event_id"))
+            if action_l in {"restock", "replenish", "add_stock", "buy"}:
+                return restock_item(self.conn, owner_kind, owner_id, item_id=payload["item_id"], quantity=float(payload.get("quantity", 1)), reason=payload.get("reason") or action_l, event_id=payload.get("event_id"))
             if action_l in {"outfit", "build_outfit", "style", "wear_today"}:
                 ensure_default_collections(self.conn, owner_kind, owner_id)
                 # v0.12.8: default outfit action is resolver-first, so missing cabinets/assets are explicit.
@@ -3185,7 +3163,6 @@ class LifeEngineRuntime:
                     behavior_mappings = list_behavior_mappings(self.conn, owner_kind, owner_id, include_sources=False, limit=8) if owner_kind == "agent" else []
                 except Exception:
                     behavior_mappings = []
-                inventory = list_inventory(self.conn, owner_kind, owner_id, limit=8)
                 confirmations = list_confirmations(self.conn, owner_kind, owner_id, limit=5) if owner_kind == "user" else []
                 pending = list_proactive_intents(self.conn, owner_id, status="queued", limit=3) if owner_kind == "agent" else []
                 proactive_outbox = list_outbox(self.conn, owner_id, status="queued", limit=3) if owner_kind == "agent" else []
@@ -3214,7 +3191,6 @@ class LifeEngineRuntime:
                     "pending_proactive": pending,
                     "truth_sources": truth_sources or {},
                     "behavior_mappings": [{"id": m.get("id"), "behavior_key": m.get("behavior_key"), "public_label": m.get("public_label") or m.get("narrative_label") or m.get("display_name"), "source_count": len(m.get("sources") or [])} for m in (behavior_mappings or [])[:5]],
-                    "inventory": [{"id": i["id"], "name": i["name"], "category": i["category"], "quantity": i["quantity"], "condition": i.get("condition"), "location": i.get("location")} for i in (inventory or [])[:8]],
                     "confirmations": confirmations or [],
                     "goals": [{"id": g["id"], "title": g["title"], "status": g["status"], "progress": g["progress"], "priority": g["priority"]} for g in (goals or [])[:5]],
                     "arcs": [{"id": a["id"], "title": a["title"], "status": a["status"], "progress": a.get("progress")} for a in (arcs or [])[:3]],
@@ -3426,8 +3402,7 @@ def _render_setup_context(control: dict[str, Any], draft: dict[str, Any], scope:
 def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events: list[dict[str, Any]],
                          resources: dict[str, Any], memories: list[dict[str, Any]], pending: list[dict[str, Any]],
                          scope: OwnerScope | None = None, truth_sources: dict[str, Any] | None = None,
-                         behavior_mappings: list[dict[str, Any]] | None = None,
-                         inventory: list[dict[str, Any]] | None = None, confirmations: list[dict[str, Any]] | None = None,
+                         behavior_mappings: list[dict[str, Any]] | None = None, confirmations: list[dict[str, Any]] | None = None,
                          goals: list[dict[str, Any]] | None = None, arcs: list[dict[str, Any]] | None = None,
                          autonomy: list[dict[str, Any]] | None = None,
                          proactive_outbox: list[dict[str, Any]] | None = None, proactive_states: list[dict[str, Any]] | None = None,
@@ -3449,7 +3424,6 @@ def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events:
     ]
     compact_mem = [{"id": m["id"], "type": m["memory_type"], "content": m["content"][:300]} for m in memories[:5]]
     compact_behavior_mappings = [{"behavior_key": b.get("behavior_key"), "public_label": b.get("public_label") or b.get("narrative_label"), "description": (b.get("description") or "")[:160], "rule": "private sources are internal only; user-facing narration must use public_label"} for b in (behavior_mappings or [])[:8]]
-    compact_inventory = [{"id": i["id"], "name": i["name"], "category": i["category"], "quantity": i["quantity"], "unit": i.get("unit"), "condition": i.get("condition"), "location": i.get("location")} for i in (inventory or [])[:8]]
     compact_confirmations = [{"id": c["id"], "reason": c.get("reason"), "status": c.get("status"), "proposed_ops": c.get("proposed_ops", [])[:2]} for c in (confirmations or [])[:5]]
     compact_goals = [{"id": g["id"], "title": g["title"], "status": g["status"], "progress": g["progress"], "priority": g["priority"], "target_date": g.get("target_date")} for g in (goals or [])[:5]]
     compact_arcs = [{"id": a["id"], "title": a["title"], "status": a["status"], "stage": a.get("current_stage"), "progress": a.get("progress"), "goal_id": a.get("goal_id")} for a in (arcs or [])[:5]]
@@ -3494,7 +3468,6 @@ def _render_life_context(control: dict[str, Any], canon: dict[str, Any], events:
         "pending_proactive_intents": pending,
         "truth_sources": truth_sources or {},
         "behavior_mappings": compact_behavior_mappings,
-        "inventory": compact_inventory,
         "goals": compact_goals,
         "life_arcs": compact_arcs,
         "recent_autonomy_decisions": compact_autonomy,

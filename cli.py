@@ -28,8 +28,8 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_context.add_argument("budget_chars", nargs="?", type=int, default=None)
     p_context.add_argument("--limit", type=int, default=20)
 
-    p_living = sub.add_parser("living", help="Concrete living layer: rhythm, Canon consistency, inventory presets, paper notes")
-    p_living.add_argument("action", nargs="?", default="summary", choices=["summary", "consistency", "init_inventory", "day_rhythm", "decompose_abstract", "paper_notes", "create_note", "diary_draft"])
+    p_living = sub.add_parser("living", help="Concrete living layer: rhythm, Canon consistency, resource presets, paper notes")
+    p_living.add_argument("action", nargs="?", default="summary", choices=["summary", "consistency", "init_resources", "day_rhythm", "decompose_abstract", "paper_notes", "create_note", "diary_draft"])
     p_living.add_argument("text", nargs="*", help="Optional note text or additional args")
     p_living.add_argument("--preset", default="guimingguan")
     p_living.add_argument("--date")
@@ -199,25 +199,14 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_resource.add_argument("--amount", type=float)
     p_resource.add_argument("--reservation-id")
 
-    p_inventory = sub.add_parser("inventory", help="Inventory/entity resource operations")
-    p_inventory.add_argument("action", choices=["list", "add", "create", "update", "delta", "consume", "discard", "move", "movements", "meal", "meals"])
-    p_inventory.add_argument("--item-id")
-    p_inventory.add_argument("--name")
-    p_inventory.add_argument("--category")
-    p_inventory.add_argument("--quantity", type=float)
-    p_inventory.add_argument("--quantity-delta", type=float)
-    p_inventory.add_argument("--unit")
-    p_inventory.add_argument("--condition")
-    p_inventory.add_argument("--location")
-    p_inventory.add_argument("--from-location")
-    p_inventory.add_argument("--to-location")
-    p_inventory.add_argument("--reason", default="manual CLI")
-    p_inventory.add_argument("--meal-type")
-    p_inventory.add_argument("--eaten-at")
-    p_inventory.add_argument("--food", action="append", default=[])
-    p_inventory.add_argument("--notes")
-    p_inventory.add_argument("--source", default="manual_entry")
-    p_inventory.add_argument("--limit", type=int, default=30)
+    p_meals = sub.add_parser("meals", help="Meal records (breakfast/lunch/dinner)")
+    p_meals.add_argument("action", choices=["meal", "meals"])
+    p_meals.add_argument("--meal-type")
+    p_meals.add_argument("--eaten-at")
+    p_meals.add_argument("--food", action="append", default=[])
+    p_meals.add_argument("--notes")
+    p_meals.add_argument("--source", default="manual_entry")
+    p_meals.add_argument("--limit", type=int, default=30)
 
 
     p_goal = sub.add_parser("goal", help="Goals, life arcs, and event decomposition")
@@ -582,8 +571,8 @@ def handle_cli(args) -> None:
             print(format_result(rt.tick(now=args.now)))
         elif action == "resource":
             _handle_resource_cli(rt, args)
-        elif action == "inventory":
-            _handle_inventory_cli(rt, args)
+        elif action == "meals":
+            _handle_meals_cli(rt, args)
         elif action == "goal":
             _handle_goal_cli(rt, args)
         elif action == "autonomy":
@@ -651,33 +640,17 @@ def _handle_resource_cli(rt: LifeEngineRuntime, args: Any) -> None:
         print(format_result(rt.resources("reconcile")))
 
 
-def _handle_inventory_cli(rt: LifeEngineRuntime, args: Any) -> None:
+def _handle_meals_cli(rt: LifeEngineRuntime, args: Any) -> None:
     payload = {
-        "item_id": args.item_id,
-        "name": args.name,
-        "category": args.category,
-        "quantity": args.quantity,
-        "quantity_delta": args.quantity_delta,
-        "unit": args.unit,
-        "condition": args.condition,
-        "location": args.location,
-        "from_location": args.from_location,
-        "to_location": args.to_location,
-        "reason": args.reason,
         "meal_type": args.meal_type,
         "eaten_at": args.eaten_at,
         "food_items": args.food,
         "notes": args.notes,
         "source": args.source,
         "limit": args.limit,
-        "workers": getattr(args, "workers", None),
-        "items": getattr(args, "items", None),
-        "report_id": getattr(args, "report_id", None),
-        "acceptance_run_id": getattr(args, "acceptance_run_id", None),
-        "report_path": getattr(args, "report_path", None),
     }
     payload = {k: v for k, v in payload.items() if v not in (None, [], "")}
-    print(format_result(rt.inventory(args.action, **payload)))
+    print(format_result(rt.meals(args.action, **payload)))
 
 
 
@@ -903,7 +876,7 @@ def _advanced_help() -> str:
     return (
         "Advanced /life commands:\n"
         "  heartbeat <mode|install|status|run-script|test> | tick | module <key> <value>\n"
-        "  resource list/add <key> | inventory list/add/meals | closet wardrobe/add/outfit | goal list/create/decompose/progress\n"
+        "  resource list/add <key> | meals meal/meals | closet wardrobe/add/outfit | goal list/create/decompose/progress\n"
         "  autonomy list/plan/run/sleep_context | proactive list/create/evaluate/outbox/send/suppress\n"
         "  execution list/run/serendipity | sleep status/plan/start/wake/plans/sessions | dream status/run/entries/findings | reply status/list/release/doctor | call | confirmation list/confirm/reject <id>\n"
         "  truth list/resolve/observe/bind | behavior summary/init/resolve/add_source | final_gate check/reports/get\n"
@@ -1008,8 +981,8 @@ def slash_life(raw_args: str, **kwargs) -> str:
             payload = {"preset": "guimingguan"}
             if action in {"day", "daily", "today"}:
                 action = "day_rhythm"
-            if action in {"inventory", "库存初始化"}:
-                action = "init_inventory"
+            if action in {"resources", "init_resources", "库存初始化", "inventory", "init_inventory"}:
+                action = "init_resources"
             if action in {"notes", "纸条", "小纸条"}:
                 action = "paper_notes"
             if action in {"note", "写纸条"}:
@@ -1266,13 +1239,8 @@ def slash_life(raw_args: str, **kwargs) -> str:
             if rest[0] in {"add", "define"} and len(rest) >= 2:
                 key = rest[1]
                 return format_result(rt.resources("define", key=key, display_name=key, resource_class="capacity", unit="points", initial=50))
-        if cmd in {"inventory", "inv", "items"}:
-            if not rest or rest[0] == "list":
-                return format_result(rt.inventory("list"))
-            if rest[0] in {"add", "create"} and len(rest) >= 2:
-                return format_result(rt.inventory("add", name=" ".join(rest[1:]), category="other", quantity=1, source="slash"))
-            if rest[0] == "meals":
-                return format_result(rt.inventory("meals"))
+        if cmd in {"meals", "meal", "inventory", "inv", "items"}:
+            return format_result(rt.meals("meals"))
         if cmd in {"goal", "goals", "目标"}:
             if not rest or rest[0] == "list":
                 return format_result(rt.goals("list"))

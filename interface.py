@@ -36,17 +36,11 @@ DOMAINS: dict[str, dict[str, Any]] = {
         "write": ["define", "delta", "reserve", "release"],
         "rule": "资源必须先定义；变更写入资源账本。",
     },
-    "inventory": {
-        "label": "物品 / Inventory",
-        "read": ["list", "movements", "meals"],
-        "write": ["create", "update", "consume", "discard", "move", "meal"],
-        "rule": "实体资源记录物品、衣柜、日用品、饭食。",
-    },
     "collection": {
         "label": "衣橱/鞋柜/梳妆台/配饰柜/袜子抽屉 / Collections",
-        "read": ["summary", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "items", "outfits", "outfit_presets", "aliases", "resolve_outfit", "current_outfit", "asset_check", "purchase_chains"],
-        "write": ["init", "create_collection", "update_collection", "archive_collection", "add_item", "add_alias", "create_outfit_preset", "update_outfit_preset", "archive_outfit_preset", "generate_assets", "set_asset", "resolve_outfit", "wear_outfit", "return_outfit", "asset_check", "purchase_chain", "checkout", "return", "maintain", "outfit"],
-        "rule": "集合分类是预设但可增删改；Collection 是道具集合，Item 是具体道具；Resolver V2 支持 exact name、alias、outfit preset、当前活动上下文优先级。",
+        "read": ["summary", "collections", "wardrobe", "shoes", "socks", "accessories", "vanity", "supplies", "items", "outfits", "outfit_presets", "aliases", "resolve_outfit", "current_outfit", "asset_check", "purchase_chains"],
+        "write": ["init", "create_collection", "update_collection", "archive_collection", "add_item", "add_alias", "create_outfit_preset", "update_outfit_preset", "archive_outfit_preset", "generate_assets", "set_asset", "resolve_outfit", "wear_outfit", "return_outfit", "asset_check", "purchase_chain", "checkout", "return", "maintain", "consume", "restock", "outfit"],
+        "rule": "集合分类是预设但可增删改；Collection 是道具集合（衣橱/鞋柜/随身物品柜等），Item 是具体道具，数量记在 Item 上；消耗品用 consume 扣减、restock 补货。",
     },
     "behavior": {
         "label": "行为映射 / Behavior Mapping",
@@ -129,8 +123,6 @@ def read(rt: Any, owner_kind: str, owner_id: str, domain: str, view: str | None 
         return rt.event_tool(view if view != "summary" else "list", owner_kind, owner_id, **p)
     if domain == "resource":
         return rt.resources(view if view != "summary" else "list", owner_kind, owner_id, **p)
-    if domain == "inventory":
-        return rt.inventory(view if view != "summary" else "list", owner_kind, owner_id, None, None, **p)
     if domain in {"collection", "closet", "wardrobe"}:
         return rt.collection(view if view != "summary" else "summary", owner_kind, owner_id, None, None, **p)
     if domain in {"behavior", "behavior_mapping", "mapping"}:
@@ -167,8 +159,6 @@ def write(rt: Any, owner_kind: str, owner_id: str, domain: str, intent: str | No
         return rt.event_tool(intent, owner_kind, owner_id, session_id, turn_id, **p)
     if domain == "resource":
         return rt.resources(intent, owner_kind, owner_id, session_id, turn_id, **p)
-    if domain == "inventory":
-        return rt.inventory(intent, owner_kind, owner_id, session_id, turn_id, **p)
     if domain in {"collection", "closet", "wardrobe"}:
         return rt.collection(intent, owner_kind, owner_id, session_id, turn_id, **p)
     if domain in {"behavior", "behavior_mapping", "mapping"}:

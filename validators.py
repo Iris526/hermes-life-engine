@@ -31,7 +31,7 @@ USER_ALLOWED_FACT_SOURCES = {
     "life_resource_tool",
     "life_memory_tool",
     "life_diary_tool",
-    "life_inventory_tool",
+    "life_meals_tool",
     "life_goal_tool",
     "cli",
 }
@@ -83,10 +83,6 @@ ALLOWED_OPS = {
     "CREATE_SERENDIPITY_EVENT",
     "AUTONOMY_CREATE_GOAL_STEP",
     "AUTONOMY_SCHEDULE_EVENT",
-    "CREATE_INVENTORY_ITEM",
-    "UPDATE_INVENTORY_ITEM",
-    "INVENTORY_DELTA",
-    "INVENTORY_MOVE",
     "CREATE_MEAL_RECORD",
     # v0.6 long-term life structure
     "CREATE_LIFE_ARC",
@@ -118,7 +114,6 @@ ALLOWED_OPS = {
 
 USER_WRITE_OPS = {
     "CREATE_EVENT", "CREATE_MEMORY", "RESOURCE_DELTA", "CREATE_DIARY",
-    "CREATE_INVENTORY_ITEM", "UPDATE_INVENTORY_ITEM", "INVENTORY_DELTA", "INVENTORY_MOVE",
     "CREATE_MEAL_RECORD", "CREATE_LIFE_ARC", "CREATE_GOAL", "UPDATE_GOAL_PROGRESS", "CREATE_GOAL_MILESTONE",
     "LINK_EVENT_TO_GOAL", "CREATE_EVENT_DEPENDENCY", "DECOMPOSE_EVENT", "CREATE_REFLECTION", "RECOMPUTE_EVENT_PROGRESS",
     "CREATE_GOAL_MILESTONE",
@@ -424,20 +419,6 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     elif op_type == "AUTONOMY_SCHEDULE_EVENT":
         _require(payload, "event_id", "start", "end")
         _validate_time_range(payload, "start", "end")
-    elif op_type == "CREATE_INVENTORY_ITEM":
-        _require(payload, "name")
-        if float(payload.get("quantity", 1)) < 0:
-            raise ValidationError("inventory quantity cannot be negative")
-    elif op_type == "UPDATE_INVENTORY_ITEM":
-        _require(payload, "item_id")
-    elif op_type in {"INVENTORY_DELTA", "INVENTORY_MOVE"}:
-        _require(payload, "item_id")
-        if op_type == "INVENTORY_DELTA":
-            _require(payload, "quantity_delta", "reason")
-        try:
-            float(payload.get("quantity_delta", 0))
-        except Exception as exc:
-            raise ValidationError("inventory quantity_delta must be numeric") from exc
     elif op_type == "CREATE_MEAL_RECORD":
         _require(payload, "meal_type")
         if payload.get("cost_amount") is not None:
@@ -568,19 +549,6 @@ def validate_resource_reservation_against_db(conn, owner_kind: str, owner_id: st
     available = float(acct["current_value"]) - float(reserved or 0)
     if amount > available:
         raise ValidationError(f"resource {key} reservation exceeds available value: requested {amount}, available {available}")
-
-
-def validate_inventory_delta_against_db(conn, owner_kind: str, owner_id: str, payload: dict[str, Any]) -> None:
-    item_id = payload.get("item_id")
-    if not item_id:
-        return
-    row = conn.execute("SELECT quantity FROM inventory_items WHERE owner_kind=? AND owner_id=? AND id=?", (owner_kind, owner_id, item_id)).fetchone()
-    if not row:
-        raise ValidationError(f"inventory item not found: {item_id}")
-    if not payload.get("allow_negative"):
-        new_q = float(row["quantity"]) + float(payload.get("quantity_delta", 0))
-        if new_q < 0:
-            raise ValidationError(f"inventory delta would make item quantity negative: {new_q}")
 
 
 def _assert_event_exists(conn, owner_kind: str, owner_id: str, event_id: str | None, label: str = "event") -> None:
@@ -742,8 +710,6 @@ def validate_life_ops(conn, owner_kind: str, owner_id: str, control: dict[str, A
             validate_resource_delta_against_db(conn, owner_kind, owner_id, payload)
         if op_type == "RESOURCE_RESERVE":
             validate_resource_reservation_against_db(conn, owner_kind, owner_id, payload)
-        if op_type in {"INVENTORY_MOVE", "INVENTORY_DELTA", "UPDATE_INVENTORY_ITEM"}:
-            validate_inventory_delta_against_db(conn, owner_kind, owner_id, payload)
         if op_type == "CREATE_MEAL_RECORD" and payload.get("cost_resource_key"):
             validate_resource_delta_against_db(conn, owner_kind, owner_id, {"resource_key": payload.get("cost_resource_key")})
         if op_type == "CREATE_GOAL":
