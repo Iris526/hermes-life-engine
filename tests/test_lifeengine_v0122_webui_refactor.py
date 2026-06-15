@@ -96,7 +96,7 @@ def test_webui_refactor_assets_and_human_layout_exist():
     css = (root / "webui" / "static" / "styles.css").read_text(encoding="utf-8")
     js = (root / "webui" / "static" / "app.js").read_text(encoding="utf-8")
     assert "portrait" in html
-    assert "agent-sprite" in html
+    assert "sprite-img" in html
     assert "object-fit" in css
     assert "sprite" in js
-    assert "原始" in js or "JSON" in js
+    assert "JSON" in js

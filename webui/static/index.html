@@ -3,136 +3,264 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>归明观 · Observatory</title>
+<title>归明观 · 废土观星台</title>
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
 <div id="app">
-  <!-- Loading -->
+  <!-- 加载屏 -->
   <div id="loading-screen" class="loading-screen">
-    <div class="loading-circle"></div>
-    <p>归明观载入中…</p>
+    <div class="loading-sigil">◈</div>
+    <p class="loading-text">归明观·载入中</p>
+    <div class="loading-bar"><div class="loading-bar-fill"></div></div>
   </div>
 
-  <!-- Main Layout (hidden until loaded) -->
+  <!-- 主布局(三栏 grid + 顶栏 + 底栏 hotbar,整屏固定) -->
   <div id="main-layout" class="main-layout hidden">
-    <!-- Top Bar -->
-    <header class="top-bar">
+
+    <!-- ========== 顶栏 ========== -->
+    <header class="top-bar hud-border-bottom">
       <div class="bar-left">
+        <span class="logo-sigil">◈</span>
         <span class="logo">归明观</span>
-        <span class="logo-sub">Observatory</span>
+        <span class="logo-sub">WASTELAND OBSERVATORY</span>
       </div>
       <div class="bar-center">
-        <span id="avatar-label" class="status-tag">—</span>
-        <span id="avatar-bubble" class="speech-bubble hidden"></span>
+        <span id="db-selector" class="db-tag" title="LifeEngine DB">—</span>
+        <span id="owner-tag" class="owner-tag"></span>
+        <span id="engine-state-tag" class="state-chip">—</span>
       </div>
       <div class="bar-right">
-        <button id="btn-refresh" class="icon-btn" title="刷新">↻</button>
-        <button id="btn-tick" class="icon-btn" title="推进">▶</button>
+        <button id="btn-tick" class="hud-btn" title="推进心跳">▶<span class="btn-label">推进</span></button>
+        <button id="btn-refresh" class="hud-btn" title="刷新数据">↻<span class="btn-label">刷新</span></button>
       </div>
     </header>
 
-    <div class="body-area">
-      <!-- Left Sidebar -->
-      <aside class="sidebar">
-        <div class="char-panel">
-          <div class="sprite-frame" id="sprite-frame">
-            <img id="sprite-img" src="/static/assets/sprite-idle.png" alt="sprite">
+    <!-- ========== 左栏:角色 / 状态 / 资源 ========== -->
+    <aside class="sidebar hud-border-right panel-rune">
+      <!-- 立绘 -->
+      <div class="char-portrait">
+        <div class="portrait-frame">
+          <img id="agent-portrait" src="/static/assets/default-agent-pixel.png" alt="agent">
+        </div>
+        <h2 id="char-name" class="char-name">—</h2>
+        <p id="char-title" class="char-title">—</p>
+      </div>
+
+      <!-- 实时状态 -->
+      <div class="panel-block">
+        <div class="block-header"><span class="block-icon">☱</span><span>当前状态</span></div>
+        <div id="state-grid" class="state-grid"></div>
+      </div>
+
+      <!-- 资源状态条 -->
+      <div class="panel-block">
+        <div class="block-header"><span class="block-icon">☲</span><span>灵息·状态</span></div>
+        <div id="vital-bars" class="vital-bars"></div>
+      </div>
+
+      <!-- 货币 / 物资统计 -->
+      <div class="panel-block">
+        <div class="block-header"><span class="block-icon">☳</span><span>财·物</span></div>
+        <div id="currency-stats" class="currency-stats"></div>
+      </div>
+
+      <!-- 睡眠指标 -->
+      <div class="panel-block">
+        <div class="block-header"><span class="block-icon">☴</span><span>睡眠·恢复</span></div>
+        <div id="sleep-metrics" class="sleep-metrics"></div>
+      </div>
+    </aside>
+
+    <!-- ========== 中央:大舞台 + 全屏覆盖面板 ========== -->
+    <main class="content-area">
+      <!-- 舞台(默认显示) -->
+      <div id="overlay-stage" class="overlay-panel active">
+        <div class="stage-scene" id="stage-scene">
+          <div class="stage-bg-vignette"></div>
+          <div class="stage-scanlines"></div>
+          <div class="stage-content">
+            <div class="sprite-stage">
+              <img id="sprite-img" class="sprite-img" src="/static/assets/sprite-idle.png" alt="sprite">
+            </div>
+            <div id="speech-bubble" class="speech-bubble hidden"></div>
           </div>
-          <div class="char-info">
-            <h2 id="char-name">Iris · 明灯</h2>
-            <p id="char-title" class="char-title">赛博驱鬼小道士</p>
+          <!-- 舞台底部信息条 -->
+          <div class="stage-footer">
+            <div id="stage-event" class="stage-event"></div>
+            <div id="stage-meta" class="stage-meta"></div>
+          </div>
+          <!-- 延迟回复指示 -->
+          <div id="reply-indicator" class="reply-indicator hidden"></div>
+        </div>
+      </div>
+
+      <!-- 背包面板 -->
+      <div id="overlay-bag" class="overlay-panel">
+        <div class="panel-full-header">
+          <span class="panel-title">🎒 随身物品柜</span>
+          <button class="panel-close" data-close>✕</button>
+        </div>
+        <div class="panel-full-body">
+          <div id="bag-tabs" class="sub-tabs"></div>
+          <div id="bag-grid" class="item-grid"></div>
+        </div>
+      </div>
+
+      <!-- 衣柜面板 -->
+      <div id="overlay-closet" class="overlay-panel">
+        <div class="panel-full-header">
+          <span class="panel-title">👘 法衣·衣橱</span>
+          <button class="panel-close" data-close>✕</button>
+        </div>
+        <div class="panel-full-body">
+          <div class="closet-section">
+            <h3 class="section-label">当前穿搭</h3>
+            <div id="current-outfit" class="current-outfit"></div>
+          </div>
+          <div class="closet-section">
+            <h3 class="section-label">穿搭预设</h3>
+            <div id="outfit-presets" class="outfit-presets"></div>
+          </div>
+          <div class="closet-section">
+            <h3 class="section-label">穿搭记录</h3>
+            <div id="outfit-history" class="outfit-history"></div>
           </div>
         </div>
+      </div>
 
-        <div class="resource-bars" id="resource-bars">
-          <!-- JS injects bars here -->
+      <!-- 梦境面板 -->
+      <div id="overlay-dreams" class="overlay-panel">
+        <div class="panel-full-header">
+          <span class="panel-title">💭 梦境·观星</span>
+          <button class="panel-close" data-close>✕</button>
         </div>
-
-        <div class="quick-stats" id="quick-stats">
-          <!-- JS injects stats here -->
+        <div class="panel-full-body">
+          <div id="dreams-list" class="dreams-list"></div>
         </div>
-      </aside>
+      </div>
 
-      <!-- Content Area -->
-      <main class="content-area">
-        <nav class="tab-bar">
-          <button class="tab active" data-tab="overview">总览</button>
-          <button class="tab" data-tab="wardrobe">装扮</button>
-          <button class="tab" data-tab="schedule">日程</button>
-          <button class="tab" data-tab="dreams">梦境</button>
-          <button class="tab" data-tab="log">日志</button>
-        </nav>
-
-        <div class="tab-content">
-          <!-- Overview -->
-          <section id="tab-overview" class="tab-panel active">
-            <div class="overview-grid">
-              <div class="card" id="card-state">
-                <h3>当前状态</h3>
-                <div id="state-detail" class="state-detail"></div>
-              </div>
-              <div class="card" id="card-goal">
-                <h3>当前目标</h3>
-                <div id="goal-detail"></div>
-              </div>
-              <div class="card" id="card-schedule-today">
-                <h3>今日日程</h3>
-                <div id="schedule-today-list"></div>
-              </div>
-              <div class="card" id="card-recent-events">
-                <h3>近期事件</h3>
-                <div id="recent-events-list" class="event-list"></div>
-              </div>
-              <div class="card" id="card-review">
-                <h3>待处理事项</h3>
-                <div id="review-list"></div>
-              </div>
-              <div class="card" id="card-doctor">
-                <h3>健康检查</h3>
-                <div id="doctor-detail"></div>
-              </div>
-            </div>
-          </section>
-
-          <!-- Wardrobe / Collections -->
-          <section id="tab-wardrobe" class="tab-panel hidden">
-            <div class="wardrobe-tabs" id="wardrobe-tabs">
-              <!-- JS injects collection tabs -->
-            </div>
-            <div class="wardrobe-grid" id="wardrobe-grid">
-              <!-- JS injects item cards -->
-            </div>
-          </section>
-
-          <!-- Item Detail Modal -->
-          <div id="item-modal" class="modal hidden" onclick="if(event.target===this)closeModal()">
-            <div class="modal-content item-modal-content">
-              <button class="modal-close" onclick="closeModal()">✕</button>
-              <div id="item-modal-body"></div>
-            </div>
+      <!-- 功法库面板 -->
+      <div id="overlay-codex" class="overlay-panel">
+        <div class="panel-full-header">
+          <span class="panel-title">📜 功法·典籍</span>
+          <button class="panel-close" data-close>✕</button>
+        </div>
+        <div class="panel-full-body codex-body">
+          <div id="codex-list" class="codex-list"></div>
+          <div id="codex-reader" class="codex-reader">
+            <p class="codex-hint">← 选择左侧典籍阅读</p>
           </div>
-
-          <!-- Schedule -->
-          <section id="tab-schedule" class="tab-panel hidden">
-            <div class="schedule-header">
-              <h3 id="schedule-label">日程时间线</h3>
-            </div>
-            <div class="timeline" id="schedule-timeline"></div>
-          </section>
-
-          <!-- Dreams -->
-          <section id="tab-dreams" class="tab-panel hidden">
-            <div id="dreams-list" class="dreams-list"></div>
-          </section>
-
-          <!-- Log / Trace -->
-          <section id="tab-log" class="tab-panel hidden">
-            <div id="trace-list" class="trace-list"></div>
-          </section>
         </div>
-      </main>
-    </div>
+      </div>
+
+      <!-- 回顾面板 -->
+      <div id="overlay-review" class="overlay-panel">
+        <div class="panel-full-header">
+          <span class="panel-title">📋 回顾·待办</span>
+          <button class="panel-close" data-close>✕</button>
+        </div>
+        <div class="panel-full-body">
+          <div id="review-actions" class="review-actions"></div>
+          <div id="review-list" class="review-list"></div>
+        </div>
+      </div>
+
+      <!-- 追溯面板 -->
+      <div id="overlay-trace" class="overlay-panel">
+        <div class="panel-full-header">
+          <span class="panel-title">🔎 追溯·因果链</span>
+          <button class="panel-close" data-close>✕</button>
+        </div>
+        <div class="panel-full-body trace-body">
+          <div id="trace-list" class="trace-list"></div>
+          <div id="trace-detail" class="trace-detail">
+            <p class="trace-hint">← 选择左侧条目查看因果链</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 设置面板 -->
+      <div id="overlay-settings" class="overlay-panel">
+        <div class="panel-full-header">
+          <span class="panel-title">⚙️ 引擎·阵盘</span>
+          <button class="panel-close" data-close>✕</button>
+        </div>
+        <div class="panel-full-body">
+          <div id="settings-engine" class="settings-block"></div>
+          <div id="settings-gates" class="settings-block"></div>
+          <div id="settings-doctor" class="settings-block"></div>
+          <div id="settings-meta" class="settings-block"></div>
+        </div>
+      </div>
+
+      <!-- 详情抽屉(事件/物品/梦境/追溯共用) -->
+      <div id="detail-drawer" class="detail-drawer hidden">
+        <div class="drawer-header">
+          <span id="drawer-title" class="drawer-title">详情</span>
+          <button class="panel-close" data-close-drawer>✕</button>
+        </div>
+        <div id="drawer-body" class="drawer-body"></div>
+      </div>
+    </main>
+
+    <!-- ========== 右栏:日程 + 消息流 ========== -->
+    <aside class="rightbar hud-border-left panel-rune">
+      <!-- 日程 -->
+      <div class="panel-block right-block">
+        <div class="block-header">
+          <span class="block-icon">☵</span>
+          <span id="schedule-label">日程·今日</span>
+          <div class="period-switch">
+            <button class="period-btn active" data-period="today">今</button>
+            <button class="period-btn" data-period="tomorrow">明</button>
+            <button class="period-btn" data-period="week">周</button>
+          </div>
+        </div>
+        <div id="schedule-list" class="schedule-list quest-list"></div>
+      </div>
+
+      <!-- 主动消息 -->
+      <div class="panel-block right-block">
+        <div class="block-header"><span class="block-icon">☶</span><span>传讯·待发</span></div>
+        <div id="proactive-list" class="proactive-list"></div>
+      </div>
+
+      <!-- 最近事件流 -->
+      <div class="panel-block right-block">
+        <div class="block-header"><span class="block-icon">☷</span><span>近期·事项</span></div>
+        <div id="recent-events" class="recent-events"></div>
+      </div>
+    </aside>
+
+    <!-- ========== 底栏 Hotbar ========== -->
+    <footer class="hotbar hud-border-top">
+      <button class="hotbar-btn active" data-overlay="stage" title="舞台">
+        <span class="hotbar-icon">🎭</span><span class="hotbar-label">舞台</span>
+      </button>
+      <button class="hotbar-btn" data-overlay="bag" title="背包">
+        <span class="hotbar-icon">🎒</span><span class="hotbar-label">物品</span>
+      </button>
+      <button class="hotbar-btn" data-overlay="closet" title="衣柜">
+        <span class="hotbar-icon">👘</span><span class="hotbar-label">衣橱</span>
+      </button>
+      <button class="hotbar-btn" data-overlay="dreams" title="梦境">
+        <span class="hotbar-icon">💭</span><span class="hotbar-label">梦境</span>
+      </button>
+      <button class="hotbar-btn" data-overlay="codex" title="功法库">
+        <span class="hotbar-icon">📜</span><span class="hotbar-label">典籍</span>
+      </button>
+      <button class="hotbar-btn" data-overlay="review" title="回顾">
+        <span class="hotbar-icon">📋</span><span class="hotbar-label">回顾</span>
+      </button>
+      <button class="hotbar-btn" data-overlay="trace" title="追溯">
+        <span class="hotbar-icon">🔎</span><span class="hotbar-label">追溯</span>
+      </button>
+      <button class="hotbar-btn" data-overlay="settings" title="设置">
+        <span class="hotbar-icon">⚙️</span><span class="hotbar-label">阵盘</span>
+      </button>
+    </footer>
+
   </div>
 </div>
 <script src="/static/app.js"></script>
