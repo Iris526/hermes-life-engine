@@ -52,10 +52,11 @@ def test_add_wardrobe_item_creates_pending_asset_generation_jobs():
         assert out["ok"] is True
         item = out["item"]
         assert item["name"] == "白色短上衣"
-        assert item["asset_bundle"]["status"] == "needs_generation"
-        assert len(item["assets"]) >= 3
-        assert all(a["status"] == "pending_generation" for a in item["assets"])
-        assert "不画穿在人身上" in " ".join(a.get("prompt_text") or "" for a in item["assets"])
+        # display_image + reference_image model: no per-view asset jobs
+        bundle = item["asset_bundle"]
+        assert bundle["status"] == "needs_generation"
+        assert bundle["display_image"] is None
+        assert bundle["reference_image"] is None
     finally:
         rt.close()
 
