@@ -18,6 +18,8 @@ from .collections import (
     ensure_default_collections,
     get_collection,
     get_collection_item,
+    get_display_image,
+    get_reference_image,
     list_collection_items,
     list_item_assets,
     create_collection_item,
@@ -128,26 +130,16 @@ def _best_item(conn, owner_kind: str, owner_id: str, collection_type: str, token
 
 def asset_completeness_for_item(conn, owner_kind: str, owner_id: str, item_id: str) -> dict[str, Any]:
     item = get_collection_item(conn, owner_kind, owner_id, item_id, include_assets=True)
-    reqs = (item.get("asset_bundle") or {}).get("requirements") or []
-    assets = item.get("assets") or []
-    available = {a.get("asset_type"): a for a in assets if a.get("status") == "available" and a.get("asset_uri")}
-    pending = {a.get("asset_type"): a for a in assets if a.get("status") != "available" or not a.get("asset_uri")}
-    missing_types = [r for r in reqs if r not in available]
-    primary_asset = None
-    for k in ["primary_image", "front_view", "main_display", "side_view"] + list(available.keys()):
-        a = available.get(k)
-        if a and a.get("asset_uri"):
-            primary_asset = a.get("asset_uri")
-            break
+    disp = get_display_image(item)
+    ref = get_reference_image(item)
+    has_any = bool(disp or ref)
     return {
         "item_id": item_id,
         "item_name": item.get("name"),
-        "complete": not missing_types,
-        "asset_uri": primary_asset,
-        "required": reqs,
-        "available_assets": list(available.keys()),
-        "missing_assets": missing_types,
-        "pending_assets": list(pending.keys()),
+        "complete": has_any,
+        "display_image": disp,
+        "reference_image": ref,
+        "asset_uri": disp or ref,  # backward compat: callers that used asset_uri
     }
 
 

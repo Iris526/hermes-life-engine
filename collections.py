@@ -26,10 +26,24 @@ DEFAULT_COLLECTION_PRESETS: dict[str, dict[str, Any]] = {
         "name": "衣橱",
         "description": "衣服本体资产集合：上衣、下装、连衣裙、外套、睡衣、家居服等。",
         "entry_image_rule": {
-            "subject": "clothing_item_only",
-            "views": ["front_view", "side_view", "back_view", "flat_lay_optional", "material_sheet"],
-            "must": ["只画衣服本体，不画穿在人身上", "简洁背景", "明确版型、长度、材质、颜色"],
-            "exclude": ["full_body_worn_by_person", "model_pose"],
+            "subject": "clothing_item_with_character_display",
+            "views": [
+                "item_front_view",
+                "item_side_view",
+                "item_back_view",
+                "material_detail_sheet",
+                "character_worn_display",
+            ],
+            "must": [
+                "三视图只画衣服本体平铺/悬挂，不画穿在人身上",
+                "材质细节展示面料、纹样、扣具、缝线",
+                "角色试穿图展示 agent 角色穿着该衣服的全身画面，配合简洁背景",
+            ],
+            "exclude": [
+                "三视图里出现人物身体",
+            ],
+            "character_ref": "agent_primary_reference",
+            "layout_hint": "试穿图作为独立一张展示，与三视图分开",
         },
         "usage_rule": {
             "checkout_for": ["outfit", "sleepwear", "work", "travel", "daily_life"],
@@ -42,10 +56,25 @@ DEFAULT_COLLECTION_PRESETS: dict[str, dict[str, Any]] = {
         "name": "鞋柜",
         "description": "鞋子本体资产集合：靴子、日常鞋、运动鞋、室内鞋、雨鞋等。",
         "entry_image_rule": {
-            "subject": "shoe_pair_only",
-            "views": ["side_view", "top_view", "back_view", "sole_view", "material_sheet"],
-            "must": ["只画鞋子本体，不画穿在脚上", "明确鞋型、鞋底、鞋跟、材质与天气适配"],
-            "exclude": ["worn_on_feet", "full_body_model"],
+            "subject": "shoe_pair_with_character_display",
+            "views": [
+                "shoe_side_view",
+                "shoe_top_view",
+                "shoe_sole_view",
+                "shoe_heel_view",
+                "material_detail_sheet",
+                "character_worn_display",
+            ],
+            "must": [
+                "三视图只画鞋子本体，明确展示鞋面、鞋底、鞋跟",
+                "材质细节展示鞋面材质、鞋底纹路、鞋跟高度",
+                "角色试穿图展示 agent 角色穿着该鞋的全身画面，可以看到鞋子的穿戴效果",
+            ],
+            "exclude": [
+                "三视图里出现脚部/人物",
+            ],
+            "character_ref": "agent_primary_reference",
+            "layout_hint": "试穿图作为独立一张展示，与三视图分开",
         },
         "usage_rule": {
             "checkout_for": ["outfit", "outdoor", "indoor", "rain"],
@@ -58,10 +87,21 @@ DEFAULT_COLLECTION_PRESETS: dict[str, dict[str, Any]] = {
         "name": "袜子抽屉",
         "description": "袜子集合：短袜、长袜、连裤袜、保暖袜、运动袜、居家袜。",
         "entry_image_rule": {
-            "subject": "socks_only_flat_lay",
-            "views": ["front_flat_view", "back_flat_view", "material_thickness_sheet"],
-            "must": ["不画穿在脚上", "重点展示长度、图案、厚薄、材质"],
-            "exclude": ["worn_on_feet"],
+            "subject": "socks_with_character_display",
+            "views": [
+                "socks_flat_front",
+                "socks_flat_back",
+                "material_thickness_sheet",
+                "character_worn_display",
+            ],
+            "must": [
+                "平铺图只画袜子本体，展示长度、图案、厚薄",
+                "角色试穿图展示 agent 角色穿着该袜子的腿部/脚部画面",
+            ],
+            "exclude": [
+                "平铺图里出现脚部",
+            ],
+            "character_ref": "agent_primary_reference",
         },
         "usage_rule": {"quantity_managed": True, "return_states": ["laundry", "clean", "worn_out"]},
         "required_metadata": ["sock_type", "length", "thickness", "material", "color_family", "quantity_per_pair"],
@@ -70,10 +110,19 @@ DEFAULT_COLLECTION_PRESETS: dict[str, dict[str, Any]] = {
         "name": "配饰柜",
         "description": "配饰集合：发饰、项链、耳饰、手链、腰带、包、披肩、护符、铜铃等。",
         "entry_image_rule": {
-            "subject": "accessory_item_only",
-            "views": ["main_display", "front_or_top_view", "side_or_detail_view", "material_sheet", "detail_views_optional"],
-            "must": ["单品为主", "展示材质、吊坠/纹样/扣具细节"],
-            "exclude": ["default_worn_on_body"],
+            "subject": "accessory_with_character_display",
+            "views": [
+                "accessory_main_display",
+                "accessory_detail_view",
+                "material_detail_sheet",
+                "character_worn_display",
+            ],
+            "must": [
+                "单品展示配饰本体，展示材质、吊坠/纹样/扣具细节",
+                "角色佩戴图展示 agent 角色佩戴该配饰的画面",
+            ],
+            "exclude": [],
+            "character_ref": "agent_primary_reference",
         },
         "usage_rule": {"stackable": True, "checkout_for": ["outfit", "ritual", "identity", "work"]},
         "required_metadata": ["accessory_type", "material", "color_family", "style_tags", "symbolic_meaning"],
@@ -82,13 +131,49 @@ DEFAULT_COLLECTION_PRESETS: dict[str, dict[str, Any]] = {
         "name": "梳妆台",
         "description": "妆容、发型、护肤/整理工具与可复用造型方案。",
         "entry_image_rule": {
-            "subject": "makeup_or_hairstyle_sheet",
-            "views": ["front_view", "side_view_optional", "back_view_for_hairstyle", "detail_sheet", "palette_or_material_notes"],
-            "must": ["妆容可以用 face chart；发型必须展示正侧背", "不强制完整穿搭图"],
-            "exclude": ["unrelated_outfit_full_body"],
+            "subject": "makeup_or_hairstyle_with_character_display",
+            "views": [
+                "style_front_view",
+                "style_side_view",
+                "style_back_view",
+                "detail_sheet",
+                "character_worn_display",
+            ],
+            "must": [
+                "发型必须展示正侧背三视图",
+                "妆容可以用 face chart",
+                "角色妆造图展示 agent 角色完成该妆造后的正面画面",
+            ],
+            "exclude": [],
+            "character_ref": "agent_primary_reference",
         },
         "usage_rule": {"recipe_allowed": True, "checkout_for": ["makeup", "hairstyle", "daily_grooming", "occasion"]},
         "required_metadata": ["vanity_type", "style_tags", "palette", "hair_accessories", "time_cost_minutes"],
+    },
+    "supply_cabinet": {
+        "name": "随身物品柜",
+        "description": "日常消耗品、法器、工具、委托物资：符纸、线香、朱砂墨、铜铃、结界仪等。",
+        "entry_image_rule": {
+            "subject": "supply_or_tool_item",
+            "views": [
+                "item_main_display",
+                "item_detail_view",
+                "material_detail_sheet",
+            ],
+            "must": [
+                "单品展示，标注用途和材质",
+                "消耗品展示外观和包装",
+                "工具展示功能细节",
+            ],
+            "exclude": [],
+        },
+        "usage_rule": {
+            "consumable": True,
+            "checkout_for": ["ritual", "commission", "daily_life", "travel"],
+            "return_states": ["clean", "dirty", "repair_needed"],
+            "cannot_use_when": ["repair_needed", "archived"],
+        },
+        "required_metadata": ["category", "is_consumable", "material", "purpose"],
     },
 }
 
@@ -111,6 +196,18 @@ def _row_to_asset(row) -> dict[str, Any]:
     d = dict(row)
     d["metadata"] = loads(d.pop("metadata_json"), {})
     return d
+
+
+def get_display_image(item: dict[str, Any]) -> str | None:
+    """封面/展示图：穿着立绘/全身图。为空时回退到 reference_image。"""
+    bundle = item.get("asset_bundle") or {}
+    return bundle.get("display_image") or bundle.get("reference_image")
+
+
+def get_reference_image(item: dict[str, Any]) -> str | None:
+    """参考图：complex asset sheet，穿搭生成用。为空时回退到 display_image。"""
+    bundle = item.get("asset_bundle") or {}
+    return bundle.get("reference_image") or bundle.get("display_image")
 
 
 def _row_to_outfit(row) -> dict[str, Any]:
@@ -168,6 +265,14 @@ def create_collection(conn, owner_kind: str, owner_id: str, *, collection_type: 
                       source: str = "life_collection") -> dict[str, Any]:
     if not name or not str(name).strip():
         raise CollectionError("collection name is required")
+    if not description or not str(description).strip():
+        raise CollectionError("collection description is required: explain what this collection holds")
+    # image_generation_rule must have at least a views list so items know what to generate.
+    if not image_generation_rule or not isinstance(image_generation_rule, dict):
+        raise CollectionError("image_generation_rule is required: must define views and must/exclude rules for asset generation")
+    views = image_generation_rule.get("views")
+    if not views or not isinstance(views, list) or len(views) == 0:
+        raise CollectionError("image_generation_rule.views is required: list at least one asset view (e.g. item_front_view, character_worn_display)")
     collection_id = new_id("collection")
     conn.execute(
         """INSERT INTO item_collections(id, owner_kind, owner_id, collection_type, name, description, status, rules_json,
@@ -216,18 +321,42 @@ def _asset_requirements_for_collection(collection: dict[str, Any]) -> list[str]:
 
 
 def build_asset_generation_prompt(collection: dict[str, Any], item: dict[str, Any], view: str | None = None) -> str:
+    """Build a prompt for generating an asset image for a collection item.
+
+    The prompt is driven by the collection's entry_image_rule.  When the view
+    is ``character_worn_display``, the prompt asks for the agent character
+    wearing/holding the item; otherwise it asks for the item-only sheet.
+    """
     rule = collection.get("image_generation_rule") or {}
     must = "; ".join(rule.get("must") or [])
     exclude = "; ".join(rule.get("exclude") or [])
     material = item.get("material_spec") or {}
     attrs = item.get("attributes") or {}
     view_text = f" View: {view}." if view else ""
-    return (
-        f"Create an inventory asset sheet for {collection.get('name')} / {collection.get('collection_type')}: {item.get('name')}."
-        f" Subject rule: {rule.get('subject', 'item only')}.{view_text} "
-        f"Description: {item.get('description') or ''}. Attributes: {attrs}. Material: {material}. "
-        f"Must: {must}. Exclude: {exclude}. No full-body worn styling unless collection rule explicitly asks for a sheet."
-    )
+    char_ref = rule.get("character_ref")
+    is_worn = view == "character_worn_display"
+
+    parts = [
+        f"Create an asset image for {collection.get('name')} / {collection.get('collection_type')}: {item.get('name')}.",
+        f" Subject rule: {rule.get('subject', 'item only')}.{view_text}",
+    ]
+    if is_worn and char_ref:
+        parts.append(
+            f" This is the CHARACTER WORN DISPLAY view: show the agent character wearing/holding "
+            f"'{item.get('name')}' in a full-body composition with a clean background. "
+            f"Use the agent primary reference image for character identity consistency. "
+            f"Item details: {attrs}. Material: {material}."
+        )
+    else:
+        parts.append(
+            f" This is an ITEM-ONLY view (no person/body). "
+            f"Description: {item.get('description') or ''}. Attributes: {attrs}. Material: {material}."
+        )
+    if must:
+        parts.append(f" Must: {must}.")
+    if exclude:
+        parts.append(f" Exclude: {exclude}.")
+    return " ".join(parts)
 
 
 def create_collection_item(conn, owner_kind: str, owner_id: str, *, collection_id: str | None = None, collection_type: str | None = None,
@@ -241,9 +370,9 @@ def create_collection_item(conn, owner_kind: str, owner_id: str, *, collection_i
     collection = get_collection(conn, owner_kind, owner_id, collection_id, collection_type)
     item_id = new_id("colitem")
     asset_bundle = {
+        "display_image": None,       # 封面/展示图：穿着立绘/全身图，视觉展示优先
+        "reference_image": None,     # 参考图：complex asset sheet，穿搭生成/功能参考优先
         "status": "needs_generation",
-        "requirements": _asset_requirements_for_collection(collection),
-        "primary_image": None,
         "generated_from_rule": collection.get("image_generation_rule"),
     }
     conn.execute(
@@ -254,11 +383,7 @@ def create_collection_item(conn, owner_kind: str, owner_id: str, *, collection_i
          dumps(tags or []), dumps(attributes or {}), dumps(material_spec or {}), dumps(care_spec or {}), dumps(asset_bundle), float(quantity), int(condition_score), cleanliness_state, availability_state),
     )
     item = get_collection_item(conn, owner_kind, owner_id, item_id)
-    # Create pending asset jobs for every required view. Actual image generation is fulfilled by image pipeline.
-    for view in asset_bundle["requirements"]:
-        prompt = build_asset_generation_prompt(collection, item, view=view)
-        create_item_asset(conn, owner_kind, owner_id, item_id=item_id, asset_type=view, prompt=prompt, status="pending_generation", source=source)
-    append_journal(conn, owner_kind, owner_id, "collection_item_created", {"item_id": item_id, "collection_id": collection["id"], "name": name, "asset_requirements": asset_bundle["requirements"]}, source)
+    append_journal(conn, owner_kind, owner_id, "collection_item_created", {"item_id": item_id, "collection_id": collection["id"], "name": name}, source)
     return get_collection_item(conn, owner_kind, owner_id, item_id, include_assets=True)
 
 
@@ -369,6 +494,60 @@ def return_item(conn, owner_kind: str, owner_id: str, *, item_id: str, cleanline
     return {"ok": True, "item": item, "usage_id": usage_id}
 
 
+def consume_item(conn, owner_kind: str, owner_id: str, *, item_id: str, quantity: float = 1, reason: str = "consume", event_id: str | None = None, source: str = "life_collection") -> dict[str, Any]:
+    """Consume (use up) quantity of an item. Item quantity decreases.
+
+    NOTE: consume never triggers asset re-generation. Assets are created once
+    at item creation time and persist regardless of quantity changes.
+    """
+    quantity = float(quantity)
+    if quantity <= 0:
+        raise CollectionError("consume quantity must be positive")
+    item = get_collection_item(conn, owner_kind, owner_id, item_id)
+    current = float(item.get("quantity") or 0)
+    if current < quantity:
+        raise CollectionError(f"insufficient quantity: has {current}, tried to consume {quantity}")
+    new_qty = current - quantity
+    conn.execute(
+        "UPDATE collection_items SET quantity=?, updated_at=datetime('now') WHERE id=? AND owner_kind=? AND owner_id=?",
+        (new_qty, item_id, owner_kind, owner_id),
+    )
+    usage_id = new_id("coluse")
+    conn.execute(
+        "INSERT INTO collection_usage_history(id, owner_kind, owner_id, item_id, operation, event_id, reason, status) VALUES(?,?,?,?,?,?,?,?)",
+        (usage_id, owner_kind, owner_id, item_id, "consume", event_id, f"{reason} (qty -{quantity})", "done"),
+    )
+    append_journal(conn, owner_kind, owner_id, "collection_item_consumed", {"item_id": item_id, "consumed": quantity, "remaining": new_qty, "reason": reason}, source)
+    updated = get_collection_item(conn, owner_kind, owner_id, item_id, include_assets=False)
+    return {"ok": True, "item": updated, "consumed": quantity, "remaining": new_qty, "usage_id": usage_id}
+
+
+def restock_item(conn, owner_kind: str, owner_id: str, *, item_id: str, quantity: float = 1, reason: str = "restock", event_id: str | None = None, source: str = "life_collection") -> dict[str, Any]:
+    """Restock (add) quantity to an item. Item quantity increases.
+
+    NOTE: restock never triggers asset re-generation. Assets are created once
+    at item creation time and persist regardless of quantity changes.
+    """
+    quantity = float(quantity)
+    if quantity <= 0:
+        raise CollectionError("restock quantity must be positive")
+    item = get_collection_item(conn, owner_kind, owner_id, item_id)
+    current = float(item.get("quantity") or 0)
+    new_qty = current + quantity
+    conn.execute(
+        "UPDATE collection_items SET quantity=?, updated_at=datetime('now') WHERE id=? AND owner_kind=? AND owner_id=?",
+        (new_qty, item_id, owner_kind, owner_id),
+    )
+    usage_id = new_id("coluse")
+    conn.execute(
+        "INSERT INTO collection_usage_history(id, owner_kind, owner_id, item_id, operation, event_id, reason, status) VALUES(?,?,?,?,?,?,?,?)",
+        (usage_id, owner_kind, owner_id, item_id, "restock", event_id, f"{reason} (qty +{quantity})", "done"),
+    )
+    append_journal(conn, owner_kind, owner_id, "collection_item_restocked", {"item_id": item_id, "restocked": quantity, "total": new_qty, "reason": reason}, source)
+    updated = get_collection_item(conn, owner_kind, owner_id, item_id, include_assets=False)
+    return {"ok": True, "item": updated, "restocked": quantity, "total": new_qty, "usage_id": usage_id}
+
+
 def maintain_item(conn, owner_kind: str, owner_id: str, *, item_id: str, maintenance_type: str = "clean", reason: str = "maintenance", source: str = "life_collection") -> dict[str, Any]:
     fields: dict[str, Any] = {}
     if maintenance_type in {"clean", "wash", "laundry"}:
@@ -438,24 +617,27 @@ def render_items(title: str, items: list[dict[str, Any]]) -> str:
         mat = material.get("material") or material.get("fabric") or "未注明"
         lines.append(f"{i}. {item['name']}（{item.get('cleanliness_state')} / {item.get('availability_state')}）")
         lines.append(f"   类型：{item.get('item_type')}；数量：{item.get('quantity')}；状态：{item.get('status')}；材质：{mat}")
-        if (item.get("asset_bundle") or {}).get("status") == "needs_generation":
-            lines.append("   图像：待生成资产图（按集合三视图/材质规则）。")
+        if not get_display_image(item):
+            lines.append("   图像：待生成（display_image 和 reference_image 均未设置）。")
     return "\n".join(lines)
 
 
 def render_item_assets(item: dict[str, Any]) -> str:
     lines = [f"{item.get('name')} · 资产图", "================"]
+    bundle = item.get("asset_bundle") or {}
+    disp = bundle.get("display_image")
+    ref = bundle.get("reference_image")
+    lines.append(f"- display_image（封面/展示）：{disp or '（未设置，回退 reference）'}")
+    lines.append(f"- reference_image（参考/sheet）：{ref or '（未设置，回退 display）'}")
+    status = bundle.get("status", "unknown")
+    lines.append(f"- 状态：{status}")
+    # Legacy per-view assets (if any from old data)
     assets = item.get("assets") or []
-    if not assets:
-        lines.append("暂无资产图任务。")
-    for a in assets:
-        lines.append(f"- {a.get('asset_type')} · {a.get('status')}")
-        if a.get("asset_uri"):
-            lines.append(f"  文件：{a.get('asset_uri')}")
-        else:
-            lines.append("  待生成。")
-            if a.get("prompt_text"):
-                lines.append(f"  提示词：{a.get('prompt_text')[:240]}...")
+    if assets:
+        lines.append("")
+        lines.append("旧版 per-view 资产（仅参考）：")
+        for a in assets:
+            lines.append(f"  - {a.get('asset_type')} · {a.get('status')}" + (f" → {a.get('asset_uri')}" if a.get("asset_uri") else " · 待生成"))
     return "\n".join(lines)
 
 

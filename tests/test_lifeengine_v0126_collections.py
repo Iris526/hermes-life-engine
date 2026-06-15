@@ -36,7 +36,7 @@ def test_default_collections_are_editable_and_custom_collection_can_be_created()
         assert out["ok"] is True
         types = {c["collection_type"] for c in out["collections"]}
         assert {"wardrobe", "shoe_cabinet", "sock_drawer", "accessory_cabinet", "vanity"}.issubset(types)
-        custom = rt.collection("create_collection", collection_type="weapon_cabinet", name="武器柜", image_generation_rule={"views":["front_view","side_view","detail_view"]})
+        custom = rt.collection("create_collection", collection_type="weapon_cabinet", name="武器柜", description="法器和武器的收纳柜", image_generation_rule={"views":["front_view","side_view","detail_view"]})
         assert custom["collection"]["collection_type"] == "weapon_cabinet"
         updated = rt.collection("update_collection", collection_type="weapon_cabinet", name="备用武器柜")
         assert updated["collection"]["name"] == "备用武器柜"
