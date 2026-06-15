@@ -131,38 +131,40 @@ def render_canon_consistency(status: str, issues: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-GUIMINGGUAN_INVENTORY = [
-    {"name": "符纸", "category": "daily_supply", "subcategory": "talisman", "quantity": 24, "unit": "张", "location": "归明观·偏柜", "notes": "日常净符和小委托会消耗。"},
-    {"name": "朱砂墨", "category": "daily_supply", "subcategory": "ink", "quantity": 1, "unit": "瓶", "location": "归明观·案头"},
-    {"name": "香", "category": "daily_supply", "subcategory": "incense", "quantity": 18, "unit": "支", "location": "归明观·香盒"},
-    {"name": "小型结界仪", "category": "tool", "subcategory": "barrier_meter", "quantity": 1, "unit": "台", "condition": "good", "location": "随身工具包"},
-    {"name": "铜铃", "category": "tool", "subcategory": "ritual_bell", "quantity": 1, "unit": "只", "location": "随身"},
-    {"name": "归明观钥匙", "category": "tool", "subcategory": "key", "quantity": 1, "unit": "把", "location": "随身"},
-    {"name": "委托记录册", "category": "book", "subcategory": "commission_log", "quantity": 1, "unit": "本", "location": "归明观·柜台"},
-    {"name": "干净道袍", "category": "clothing", "subcategory": "robe", "quantity": 2, "unit": "套", "condition": "clean", "location": "归明观·衣柜"},
-    {"name": "茶叶", "category": "food", "subcategory": "tea", "quantity": 1, "unit": "罐", "location": "归明观·茶柜"},
-    {"name": "十二城小点心", "category": "food", "subcategory": "snack", "quantity": 3, "unit": "份", "location": "归明观·小柜"},
-]
-
 GUIMINGGUAN_RESOURCES = [
-    {"key": "money.lingzhu", "display_name": "灵铢", "resource_class": "fungible", "unit": "枚", "min_value": 0, "max_value": None, "initial": 120},
-    {"key": "daily_cost.lingzhu", "display_name": "每日基础开销", "resource_class": "fungible", "unit": "枚/日", "min_value": 0, "max_value": None, "initial": 8},
-    {"key": "commission_income.lingzhu", "display_name": "委托收入累计", "resource_class": "fungible", "unit": "枚", "min_value": 0, "max_value": None, "initial": 0},
-    {"key": "supplies.talisman_paper", "display_name": "符纸库存", "resource_class": "consumable", "unit": "张", "min_value": 0, "max_value": None, "initial": 24},
-    {"key": "supplies.incense", "display_name": "香库存", "resource_class": "consumable", "unit": "支", "min_value": 0, "max_value": None, "initial": 18},
-    {"key": "tools.barrier_meter_condition", "display_name": "结界仪状态", "resource_class": "state", "unit": "points", "min_value": 0, "max_value": 100, "initial": 86},
-    {"key": "wardrobe.clean_outfits", "display_name": "干净衣物", "resource_class": "consumable", "unit": "套", "min_value": 0, "max_value": None, "initial": 2},
+    {"key": "money.lingzhu", "display_name": "灵铢", "resource_class": "currency", "unit": "枚", "min_value": 0, "max_value": None, "initial": 120},
+    {"key": "daily_cost.lingzhu", "display_name": "每日基础开销", "resource_class": "currency", "unit": "枚/日", "min_value": 0, "max_value": None, "initial": 8},
+    {"key": "commission_income.lingzhu", "display_name": "委托收入累计", "resource_class": "currency", "unit": "枚", "min_value": 0, "max_value": None, "initial": 0},
+    {"key": "energy", "display_name": "精力", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 60},
+    {"key": "focus", "display_name": "专注", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 60},
+    {"key": "mood", "display_name": "心情", "resource_class": "vital", "unit": "points", "min_value": -100, "max_value": 100, "initial": 0},
+    {"key": "fatigue", "display_name": "疲劳", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 20},
 ]
 
 
-def inventory_preset_ops(preset: str = "guimingguan") -> list[dict[str, Any]]:
+# Supply cabinet items: created via life_collection, not as resources.
+GUIMINGGUAN_SUPPLY_ITEMS = [
+    {"name": "符纸", "quantity": 24, "attributes": {"category": "daily_supply", "is_consumable": True, "material": "黄纸朱砂", "purpose": "净符和小委托"}},
+    {"name": "朱砂墨", "quantity": 1, "attributes": {"category": "daily_supply", "is_consumable": True, "material": "朱砂", "purpose": "画符"}},
+    {"name": "线香", "quantity": 18, "attributes": {"category": "daily_supply", "is_consumable": True, "material": "檀香", "purpose": "供奉、净场"}},
+    {"name": "铜铃", "quantity": 1, "attributes": {"category": "tool", "is_consumable": False, "material": "铜", "purpose": "仪式法器"}},
+    {"name": "小型结界仪", "quantity": 1, "attributes": {"category": "tool", "is_consumable": False, "material": "金属/灵子回路", "purpose": "结界检测"}},
+    {"name": "归明观钥匙", "quantity": 1, "attributes": {"category": "tool", "is_consumable": False, "material": "铜", "purpose": "开门"}},
+    {"name": "委托记录册", "quantity": 1, "attributes": {"category": "book", "is_consumable": False, "material": "纸", "purpose": "记录委托"}},
+]
+
+
+def resource_preset_ops(preset: str = "guimingguan") -> list[dict[str, Any]]:
+    """Resource preset for living initialization.
+
+    Only currency and vital resources are defined here.
+    Physical items (supplies/tools) should be created via life_collection (supply_cabinet).
+    """
     if preset not in {"guimingguan", "mingdeng", "taoist_temple", "default"}:
         preset = "guimingguan"
     ops: list[dict[str, Any]] = []
     for res in GUIMINGGUAN_RESOURCES:
         ops.append({"type": "RESOURCE_DEFINE", "payload": dict(res)})
-    for item in GUIMINGGUAN_INVENTORY:
-        ops.append({"type": "CREATE_INVENTORY_ITEM", "payload": {**item, "attributes": {"preset": preset}, "source": "living_inventory_preset"}})
     return ops
 
 
@@ -174,9 +176,9 @@ def rhythm_templates(date_key: str | None = None, tz: str = "Asia/Tokyo", preset
     date_key = date_key or datetime.now(ZoneInfo(tz)).date().isoformat()
     return [
         {"title": "归明观晨巡与开观", "start": _time_for(date_key, "07:30", tz), "end": _time_for(date_key, "08:05", tz), "event_type": "routine", "event_category": "maintenance", "activity_domain": "temple_morning", "resource_costs": {"energy": -4, "mood": 2}, "tags": ["晨巡", "开观", "归明观"], "worth_diary": False},
-        {"title": "打扫香案并补符纸", "start": _time_for(date_key, "08:20", tz), "end": _time_for(date_key, "08:55", tz), "event_type": "temple_chores", "event_category": "maintenance", "activity_domain": "altar_upkeep", "resource_costs": {"energy": -5, "supplies.incense": -1}, "tags": ["香案", "符纸", "日常"], "worth_diary": False},
-        {"title": "检查小型结界工具包", "start": _time_for(date_key, "09:40", tz), "end": _time_for(date_key, "10:15", tz), "event_type": "inspection", "event_category": "work", "activity_domain": "barrier_tools", "resource_costs": {"focus": -5, "tools.barrier_meter_condition": -1}, "tags": ["结界仪", "工具包"], "worth_diary": False},
-        {"title": "接一个低风险净符委托", "start": _time_for(date_key, "13:30", tz), "end": _time_for(date_key, "15:00", tz), "event_type": "commission", "event_category": "work", "activity_domain": "low_risk_talisman_commission", "resource_costs": {"energy": -12, "focus": -10, "supplies.talisman_paper": -3}, "tags": ["小委托", "净符", "十二城"], "worth_diary": True, "worth_proactive": True},
+        {"title": "打扫香案并补符纸", "start": _time_for(date_key, "08:20", tz), "end": _time_for(date_key, "08:55", tz), "event_type": "temple_chores", "event_category": "maintenance", "activity_domain": "altar_upkeep", "resource_costs": {"energy": -5, "mood": 1}, "tags": ["香案", "符纸", "日常"], "worth_diary": False},
+        {"title": "检查小型结界工具包", "start": _time_for(date_key, "09:40", tz), "end": _time_for(date_key, "10:15", tz), "event_type": "inspection", "event_category": "work", "activity_domain": "barrier_tools", "resource_costs": {"focus": -5}, "tags": ["结界仪", "工具包"], "worth_diary": False},
+        {"title": "接一个低风险净符委托", "start": _time_for(date_key, "13:30", tz), "end": _time_for(date_key, "15:00", tz), "event_type": "commission", "event_category": "work", "activity_domain": "low_risk_talisman_commission", "resource_costs": {"energy": -12, "focus": -10, "mood": 2}, "tags": ["小委托", "净符", "十二城"], "worth_diary": True, "worth_proactive": True},
         {"title": "傍晚记账与灵铢收支整理", "start": _time_for(date_key, "17:40", tz), "end": _time_for(date_key, "18:10", tz), "event_type": "bookkeeping", "event_category": "finance", "activity_domain": "temple_accounts", "resource_costs": {"focus": -4}, "tags": ["记账", "灵铢"], "worth_diary": True},
         {"title": "写一张给 Ringo 的小纸条草稿", "start": _time_for(date_key, "21:30", tz), "end": _time_for(date_key, "21:45", tz), "event_type": "proactive_note", "event_category": "relationship", "activity_domain": "pending_share", "resource_costs": {"mood": 1, "focus": -2}, "tags": ["Ringo", "小纸条", "pending"], "worth_proactive": True},
     ]

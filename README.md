@@ -59,7 +59,7 @@ Most humans only need:
 /life doctor                  Health check
 /life backup                  Export backup
 /life webui                   WebUI launch hint
-/life living                  Concrete living rhythm / notes / inventory preset
+/life living                  Concrete living rhythm / notes / resource preset
 /life closet                  Collections / outfit / closet tools
 /life behavior                Private behavior mapping
 /life context                 Prompt/context slimming policy
