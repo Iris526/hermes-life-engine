@@ -258,6 +258,11 @@ def create_app(life_dir: str | None = None) -> FastAPI:
             try:
                 if req.action == "tick":
                     return rt.tick(state.owner_kind, state.owner_id, manual=True)
+                if req.action == "start":
+                    resume = rt.control("resume", state.owner_kind, state.owner_id, reason="webui manual start")
+                    heartbeat = rt.control("heartbeat", state.owner_kind, state.owner_id, mode="hermes_cron")
+                    tick = rt.tick(state.owner_kind, state.owner_id, manual=True)
+                    return {"ok": resume.get("ok", True) and heartbeat.get("ok", True), "resume": resume, "heartbeat": heartbeat, "tick": tick}
                 if req.action == "call":
                     return rt.call(state.owner_kind, state.owner_id, reason="webui call", message_text=req.payload.get("message_text"), user_id=req.payload.get("user_id"))
                 if req.action == "review_apply":

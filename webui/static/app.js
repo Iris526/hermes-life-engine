@@ -21,7 +21,7 @@ document.addEventListener("DOMContentLoaded", () => {
 function bindEvents() {
   document.getElementById("btn-refresh").onclick = () => loadSnapshot();
   document.getElementById("btn-reload").onclick = () => reloadInPage();
-  document.getElementById("btn-tick").onclick = () => doAction("tick");
+  document.getElementById("btn-tick").onclick = () => doEnginePrimaryAction();
   // hotbar
   document.querySelectorAll(".hotbar-btn").forEach(btn => {
     btn.onclick = () => switchOverlay(btn.dataset.overlay);
@@ -139,12 +139,18 @@ function renderTopBar() {
   const owner = snapshotData.owner || {};
   const control = snapshotData.control || {};
   const state = snapshotData.state || {};
+  const engine = engineDisplayState(control, state, snapshotData.current_event);
   document.getElementById("db-selector").textContent = meta.db_path ? meta.db_path.split("/").pop() : "—";
   document.getElementById("owner-tag").textContent = `${owner.owner_kind || "agent"}:${owner.owner_id || "—"}`;
-  const engState = control.engine_state || "—";
   const chip = document.getElementById("engine-state-tag");
-  chip.textContent = engState;
-  chip.className = "state-chip" + (engState === "active" ? " active" : "");
+  chip.textContent = engine.label;
+  chip.title = `engine=${control.engine_state || "—"}; heartbeat=${control.heartbeat_mode || "—"}`;
+  chip.className = `state-chip ${engine.className}`;
+  const tickBtn = document.getElementById("btn-tick");
+  if (tickBtn) {
+    tickBtn.title = engine.active ? "手动推进一次 LifeEngine 心跳" : "开启 LifeEngine 并推进一次";
+    tickBtn.innerHTML = `${engine.active ? "▶" : "⏵"}<span class="btn-label">${engine.active ? "推进" : "开启"}</span>`;
+  }
 }
 
 // ── 左栏 ──────────────────────────────────────
@@ -154,9 +160,20 @@ function renderSidebar() {
   const avatar = snapshotData.avatar || {};
   // 立绘信息
   const owner = snapshotData.owner || {};
-  document.getElementById("agent-portrait").src = staticAssetUrl("default-agent-pixel.png");
+  document.getElementById("agent-portrait").src = staticAssetUrl("default-agent-reference.jpg");
   document.getElementById("char-name").textContent = owner.owner_id || "—";
   document.getElementById("char-title").textContent = avatar.label || avatar.scene || state.mode || "—";
+  const engine = engineDisplayState(control, state, snapshotData.current_event);
+  const eventTitle = snapshotData.current_event?.title || "暂无当前事项";
+  const engineCard = document.getElementById("engine-live-card");
+  if (engineCard) {
+    engineCard.className = `engine-live-card ${engine.className}`;
+    engineCard.innerHTML = `<div class="engine-live-head">
+      <span><span class="engine-dot"></span><span class="engine-state-text">${engine.label}</span></span>
+      <button class="engine-mini-btn" onclick="doEnginePrimaryAction()">${engine.active ? "推进" : "开启"}</button>
+    </div>
+    <div class="engine-live-sub">${escapeHtml(eventTitle)}<br>心跳：${escapeHtml(control.heartbeat_mode || "—")}</div>`;
+  }
 
   // 状态网格
   const stateGrid = document.getElementById("state-grid");
@@ -652,7 +669,23 @@ async function doAction(action, payload = {}) {
   } catch (err) { console.error("Action error:", err); }
 }
 
+function doEnginePrimaryAction() {
+  const control = snapshotData?.control || {};
+  const action = control.engine_state === "active" ? "tick" : "start";
+  return doAction(action);
+}
+
 // ── 辅助函数 ──────────────────────────────────
+function engineDisplayState(control = {}, state = {}, currentEvent = null) {
+  const active = control.engine_state === "active";
+  const activeModes = new Set(["busy", "asleep", "napping", "dreaming", "uninterruptible_event"]);
+  const running = active && (!!currentEvent || activeModes.has(state.mode));
+  if (running) return { active, running, label: "进行中", className: "running" };
+  if (active) return { active, running, label: "已开启", className: "active" };
+  if (control.engine_state === "paused") return { active, running, label: "已暂停", className: "paused" };
+  return { active, running, label: control.engine_state || "未开启", className: "paused" };
+}
+
 function formatTime(ts) {
   if (!ts) return "—";
   try {
@@ -671,6 +704,15 @@ function formatNum(n) {
 function kv(k, v) {
   if (v == null || v === "" || v === "—") return "";
   return `<div class="kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function getItemPrimaryImage(item) {

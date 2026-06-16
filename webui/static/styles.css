@@ -52,6 +52,8 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .owner-tag { font-size: 13px; color: var(--cyan); font-family: var(--font-mono); }
 .state-chip { font-size: 12px; padding: 2px 8px; border-radius: 2px; background: var(--cinnabar-dim); color: var(--text); border: 1px solid var(--cinnabar); text-transform: uppercase; letter-spacing: 1px; }
 .state-chip.active { background: rgba(74,222,128,.15); border-color: var(--good); color: var(--good); }
+.state-chip.running { background: rgba(0,212,255,.12); border-color: var(--cyan); color: var(--cyan); box-shadow: 0 0 8px var(--cyan-glow); }
+.state-chip.paused { background: rgba(251,191,36,.12); border-color: var(--warn); color: var(--warn); }
 .bar-right { display: flex; gap: 8px; }
 .hud-btn { display: flex; align-items: center; gap: 4px; background: var(--bg-2); border: 1px solid var(--border-dim); color: var(--text); padding: 5px 10px; border-radius: 2px; cursor: pointer; font-size: 14px; transition: all .15s; }
 .hud-btn:hover { border-color: var(--cyan); color: var(--cyan); box-shadow: 0 0 8px var(--cyan-glow); }
@@ -62,11 +64,23 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 
 .sidebar { grid-area: sidebar; overflow-y: auto; overflow-x: hidden; padding: 8px; display: flex; flex-direction: column; gap: 8px; background: var(--bg-1); }
 .char-portrait { text-align: center; padding: 12px 8px 8px; }
-.portrait-frame { width: 100%; max-width: 180px; aspect-ratio: 9/16; margin: 0 auto 8px; border: 1px solid var(--gold-dim); border-radius: 2px; overflow: hidden; position: relative; box-shadow: inset 0 0 16px var(--bg-0),0 0 8px var(--gold-glow); }
+.portrait-frame { width: 100%; max-width: 210px; aspect-ratio: 9/16; margin: 0 auto 8px; border: 1px solid var(--gold-dim); border-radius: 2px; overflow: hidden; position: relative; box-shadow: inset 0 0 16px var(--bg-0),0 0 8px var(--gold-glow); }
 .portrait-frame::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg,transparent 60%,var(--bg-0)); }
-.portrait-frame img { width: 100%; height: 100%; object-fit: contain; image-rendering: auto; }
+.portrait-frame img { width: 100%; height: 100%; object-fit: cover; object-position: center top; image-rendering: auto; }
 .char-name { font-size: 16px; color: var(--gold); font-weight: 600; letter-spacing: 1px; }
 .char-title { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.engine-live-card { margin: 8px auto 0; max-width: 210px; padding: 7px 8px; background: rgba(10,6,18,.72); border: 1px solid var(--border-dim); border-radius: 2px; text-align: left; }
+.engine-live-card.running { border-color: var(--cyan-dim); box-shadow: 0 0 8px var(--cyan-glow); }
+.engine-live-card.paused { border-color: var(--warn); }
+.engine-live-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+.engine-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); box-shadow: 0 0 0 transparent; display: inline-block; margin-right: 5px; }
+.engine-live-card.running .engine-dot { background: var(--cyan); box-shadow: 0 0 8px var(--cyan-glow); }
+.engine-live-card.active .engine-dot { background: var(--good); box-shadow: 0 0 8px rgba(74,222,128,.3); }
+.engine-live-card.paused .engine-dot { background: var(--warn); box-shadow: 0 0 8px rgba(251,191,36,.3); }
+.engine-state-text { color: var(--text); font-weight: 600; }
+.engine-live-sub { margin-top: 4px; font-size: 11px; color: var(--text-dim); line-height: 1.35; }
+.engine-mini-btn { flex-shrink: 0; padding: 2px 7px; background: var(--bg-2); border: 1px solid var(--border-dim); border-radius: 2px; color: var(--text-dim); font-size: 11px; cursor: pointer; }
+.engine-mini-btn:hover { border-color: var(--cyan); color: var(--cyan); }
 .panel-block { background: var(--bg-2); border: 1px solid var(--border-dim); border-radius: 2px; padding: 8px; }
 .block-header { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gold-dim); letter-spacing: 2px; padding-bottom: 6px; border-bottom: 1px solid var(--border-dim); margin-bottom: 6px; text-transform: uppercase; }
 .block-icon { color: var(--cyan); font-size: 14px; }

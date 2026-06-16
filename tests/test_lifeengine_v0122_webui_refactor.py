@@ -85,6 +85,25 @@ def test_server_detail_endpoints(tmp_path):
     assert trace["kind"] == "transaction"
 
 
+def test_reader_control_supports_current_controls_table(tmp_path):
+    db = tmp_path / "lifeengine.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE controls(owner_kind TEXT, owner_id TEXT, engine_state TEXT, active_canon_version INTEGER, module_gates_json TEXT, heartbeat_mode TEXT, current_workspace TEXT, paused_json TEXT);
+        INSERT INTO controls VALUES('agent','iris','active',12,'{"heartbeat":"hermes_cron"}','hermes_cron','agent_self','{}');
+        """
+    )
+    conn.close()
+
+    control = LifeEngineReader(str(db)).control("agent", "iris")
+
+    assert control["engine_state"] == "active"
+    assert control["heartbeat_mode"] == "hermes_cron"
+    assert control["module_gates"]["heartbeat"] == "hermes_cron"
+    assert control["workspace"] == "agent_self"
+
+
 def test_server_asset_preview_keeps_original_and_generates_thumbnail(tmp_path, monkeypatch):
     from PIL import Image
 
@@ -122,7 +141,12 @@ def test_webui_refactor_assets_and_human_layout_exist():
     css = (root / "webui" / "static" / "styles.css").read_text(encoding="utf-8")
     js = (root / "webui" / "static" / "app.js").read_text(encoding="utf-8")
     assert "portrait" in html
+    assert "engine-live-card" in html
+    assert "default-agent-reference.jpg" in html
     assert "sprite-img" in html
     assert "object-fit" in css
+    assert "engine-live-card" in css
     assert "sprite" in js
+    assert "doEnginePrimaryAction" in js
+    assert 'req.action == "start"' in (root / "webui" / "server.py").read_text(encoding="utf-8")
     assert "JSON" in js

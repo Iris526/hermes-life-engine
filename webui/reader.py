@@ -140,12 +140,15 @@ class LifeEngineReader:
 
     def control(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
         with self._connect() as conn:
-            row = self._first(conn, "SELECT * FROM engine_control WHERE owner_kind=? AND owner_id=?", (owner_kind, owner_id))
+            table = "controls" if self._table_exists(conn, "controls") else "engine_control"
+            row = self._first(conn, f"SELECT * FROM {table} WHERE owner_kind=? AND owner_id=?", (owner_kind, owner_id))
             if not row:
-                row = self._first(conn, "SELECT * FROM engine_control LIMIT 1") or {}
-            for key in ["module_gates_json", "workspace_json", "heartbeat_json"]:
+                row = self._first(conn, f"SELECT * FROM {table} LIMIT 1") or {}
+            for key in ["module_gates_json", "workspace_json", "heartbeat_json", "paused_json"]:
                 if key in row:
                     row[key.replace("_json", "")] = _safe_json(row.get(key), {})
+            if "current_workspace" in row and "workspace" not in row:
+                row["workspace"] = row.get("current_workspace")
             return row
 
     def realtime_state(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
