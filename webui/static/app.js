@@ -9,6 +9,7 @@ let activeOverlay = "stage";
 let currentPeriod = "today";
 let currentBagTab = null;
 let codexDocs = [];
+let reloadSerial = Date.now();
 
 // ── 初始化 ────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
@@ -18,6 +19,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function bindEvents() {
   document.getElementById("btn-refresh").onclick = () => loadSnapshot();
+  document.getElementById("btn-reload").onclick = () => reloadInPage();
   document.getElementById("btn-tick").onclick = () => doAction("tick");
   // hotbar
   document.querySelectorAll(".hotbar-btn").forEach(btn => {
@@ -43,11 +45,11 @@ function bindEvents() {
 }
 
 // ── 数据拉取 ──────────────────────────────────
-async function loadSnapshot() {
+async function loadSnapshot(options = {}) {
   try {
-    const res = await fetch(`${API}/api/snapshot?period=${currentPeriod}`);
+    const res = await fetch(apiUrl("/api/snapshot", { period: currentPeriod }, options.force));
     snapshotData = await res.json();
-    try { collectionsData = await (await fetch(`${API}/api/snapshot?period=${currentPeriod}`)).json(); } catch {}
+    try { collectionsData = await (await fetch(apiUrl("/api/snapshot", { period: currentPeriod }, options.force))).json(); } catch {}
     // 如果是第一次加载,隐藏 loading
     document.getElementById("loading-screen").classList.add("hidden");
     document.getElementById("main-layout").classList.remove("hidden");
@@ -58,16 +60,34 @@ async function loadSnapshot() {
   }
 }
 
+async function reloadInPage() {
+  const btn = document.getElementById("btn-reload");
+  const keepOverlay = activeOverlay;
+  reloadSerial = Date.now();
+  if (sseSource) { sseSource.close(); sseSource = null; }
+  codexDocs = [];
+  closeDrawer();
+  btn?.classList.add("loading");
+  btn?.setAttribute("disabled", "disabled");
+  try {
+    await loadSnapshot({ force: true });
+    switchOverlay(keepOverlay);
+  } finally {
+    btn?.classList.remove("loading");
+    btn?.removeAttribute("disabled");
+  }
+}
+
 async function loadCollections() {
   try {
-    collectionsData = await (await fetch(`${API}/api/snapshot`)).json();
+    collectionsData = await (await fetch(apiUrl("/api/snapshot", {}, true))).json();
   } catch {}
 }
 
 async function loadSchedule() {
   if (!snapshotData) return;
   try {
-    const res = await fetch(`${API}/api/schedule?period=${currentPeriod}`);
+    const res = await fetch(apiUrl("/api/schedule", { period: currentPeriod }));
     const data = await res.json();
     snapshotData.schedule = data;
     renderSchedule();
@@ -317,7 +337,7 @@ function renderBag() {
     if (item.cleanliness_state === "dirty" || item.cleanliness_state === "laundry") badges.push('<span class="item-badge laundry">待洗</span>');
     if (item.usage_state?.checkout_for?.length) badges.push('<span class="item-badge used">在用</span>');
     return `<div class="item-card" onclick="showItemDetail('${item.id}')">
-      ${img ? `<img class="item-card-img" src="/api/asset?path=${encodeURIComponent(img)}" loading="lazy" onerror="this.outerHTML='<div class=\\'item-card-img placeholder\\'>◈</div>'">` : '<div class="item-card-img placeholder">◈</div>'}
+      ${img ? `<img class="item-card-img" src="${assetUrl(img)}" decoding="async" onerror="this.outerHTML='<div class=\\'item-card-img placeholder\\'>◈</div>'">` : '<div class="item-card-img placeholder">◈</div>'}
       <div class="item-card-name">${item.name}</div>
       <div class="item-card-meta">
         ${item.quantity > 1 ? `<span>×${item.quantity}</span>` : ""}
@@ -561,7 +581,7 @@ function showItemDetail(itemId) {
   const img = getItemPrimaryImage(item);
   const attrs = item.attributes || {};
   const attrItems = Object.entries(attrs).filter(([k]) => !["reference_image","presentation_board","reference_crop","primary_image","display_image"].includes(k));
-  body.innerHTML = `${img ? `<img class="detail-img" src="/api/asset?path=${encodeURIComponent(img)}" onerror="this.remove()">` : ""}
+  body.innerHTML = `${img ? `<img class="detail-img" src="${assetUrl(img)}" onerror="this.remove()">` : ""}
     <h4>${item.name}</h4>
     <div class="desc">${item.description || ""}</div>
     ${kv("状态", item.status)}${kv("数量", item.quantity)}${kv("清洁度", item.cleanliness_state)}
@@ -638,6 +658,19 @@ function getItemPrimaryImage(item) {
   if (ab.reference_image) return ab.reference_image;
   const attrs = item.attributes || {};
   return attrs.display_image || attrs.reference_image || attrs.presentation_board || attrs.reference_crop || ab.primary_image || null;
+}
+
+function apiUrl(path, params = {}, force = false) {
+  const url = new URL(`${API}${path}`, window.location.origin);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value != null && value !== "") url.searchParams.set(key, value);
+  });
+  if (force) url.searchParams.set("_", String(reloadSerial));
+  return `${url.pathname}${url.search}`;
+}
+
+function assetUrl(path) {
+  return `/api/asset?path=${encodeURIComponent(path)}&v=${reloadSerial}`;
 }
 
 function attrLabel(key) {

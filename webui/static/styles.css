@@ -56,6 +56,8 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .hud-btn { display: flex; align-items: center; gap: 4px; background: var(--bg-2); border: 1px solid var(--border-dim); color: var(--text); padding: 5px 10px; border-radius: 2px; cursor: pointer; font-size: 14px; transition: all .15s; }
 .hud-btn:hover { border-color: var(--cyan); color: var(--cyan); box-shadow: 0 0 8px var(--cyan-glow); }
 .hud-btn:active { transform: scale(.95); }
+.hud-btn:disabled { opacity: .55; cursor: progress; }
+.hud-btn.loading { border-color: var(--cyan); color: var(--cyan); }
 .btn-label { font-size: 12px; opacity: .7; }
 
 .sidebar { grid-area: sidebar; overflow-y: auto; overflow-x: hidden; padding: 8px; display: flex; flex-direction: column; gap: 8px; background: var(--bg-1); }
