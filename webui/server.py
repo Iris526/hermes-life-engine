@@ -205,9 +205,14 @@ def create_app(life_dir: str | None = None) -> FastAPI:
 
     @app.get("/api/asset")
     def serve_asset(path: str = Query(...)):
-        """Serve image files from allowed directories (image_cache, assets, webui static)."""
+        """Serve image files from allowed directories (image_cache, assets, webui static).
+
+        Accepts both absolute paths and relative paths. Relative paths are
+        resolved against HERMES_HOME subdirectories (image_cache, assets,
+        assets/*) so that DB-stored asset_uri values like 'iris-wardrobe/x.png'
+        work without the frontend needing to know HERMES_HOME.
+        """
         from pathlib import Path as P
-        requested = P(path).expanduser().resolve()
         hermes_home = P(os.getenv("HERMES_HOME", str(P.home() / ".hermes"))).resolve()
         allowed_roots = [
             hermes_home / "image_cache",
@@ -221,10 +226,25 @@ def create_app(life_dir: str | None = None) -> FastAPI:
             for child in assets_dir.iterdir():
                 if child.is_dir():
                     allowed_roots.append(child)
-        if not any(str(requested).startswith(str(r)) for r in allowed_roots):
-            raise HTTPException(status_code=403, detail="Asset outside allowed directories")
-        if not requested.exists() or not requested.is_file():
-            raise HTTPException(status_code=404, detail="Asset not found")
+        # Resolve the requested path. If it's relative, try to locate it under
+        # each allowed root (fixes DB-stored relative asset_uri values).
+        raw = P(path)
+        candidates = []
+        if raw.is_absolute():
+            candidates.append(raw.expanduser().resolve())
+        else:
+            rel = str(raw).lstrip("./")
+            for root in allowed_roots:
+                candidates.append((root / rel).resolve())
+                # also try under image_cache/<rel> and assets/<rel> explicitly
+            candidates.append((hermes_home / rel).resolve())
+        requested = None
+        for c in candidates:
+            if any(str(c).startswith(str(r)) for r in allowed_roots) and c.is_file():
+                requested = c
+                break
+        if requested is None:
+            raise HTTPException(status_code=404, detail="Asset not found or outside allowed directories")
         ext = requested.suffix.lower()
         media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                        ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml"}

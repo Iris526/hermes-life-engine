@@ -190,7 +190,10 @@ function renderStage() {
   const currentEvent = snapshotData.current_event;
   // sprite
   const spriteState = avatar.sprite_state || "idle";
+  const sceneName = avatar.scene || "observatory";
   document.getElementById("sprite-img").src = `/static/assets/sprite-${spriteState}.png`;
+  const stageEl = document.getElementById("stage-scene");
+  if (stageEl) stageEl.className = `stage-scene scene-${sceneName}`;;
   // 对话气泡
   const bubble = document.getElementById("speech-bubble");
   if (avatar.bubble) {
@@ -314,7 +317,7 @@ function renderBag() {
     if (item.cleanliness_state === "dirty" || item.cleanliness_state === "laundry") badges.push('<span class="item-badge laundry">待洗</span>');
     if (item.usage_state?.checkout_for?.length) badges.push('<span class="item-badge used">在用</span>');
     return `<div class="item-card" onclick="showItemDetail('${item.id}')">
-      ${img ? `<img class="item-card-img" src="/api/asset?path=${encodeURIComponent(img)}" loading="lazy">` : '<div class="item-card-img placeholder">◈</div>'}
+      ${img ? `<img class="item-card-img" src="/api/asset?path=${encodeURIComponent(img)}" loading="lazy" onerror="this.outerHTML='<div class=\\'item-card-img placeholder\\'>◈</div>'">` : '<div class="item-card-img placeholder">◈</div>'}
       <div class="item-card-name">${item.name}</div>
       <div class="item-card-meta">
         ${item.quantity > 1 ? `<span>×${item.quantity}</span>` : ""}
@@ -558,7 +561,7 @@ function showItemDetail(itemId) {
   const img = getItemPrimaryImage(item);
   const attrs = item.attributes || {};
   const attrItems = Object.entries(attrs).filter(([k]) => !["reference_image","presentation_board","reference_crop","primary_image","display_image"].includes(k));
-  body.innerHTML = `${img ? `<img class="detail-img" src="/api/asset?path=${encodeURIComponent(img)}">` : ""}
+  body.innerHTML = `${img ? `<img class="detail-img" src="/api/asset?path=${encodeURIComponent(img)}" onerror="this.remove()">` : ""}
     <h4>${item.name}</h4>
     <div class="desc">${item.description || ""}</div>
     ${kv("状态", item.status)}${kv("数量", item.quantity)}${kv("清洁度", item.cleanliness_state)}
