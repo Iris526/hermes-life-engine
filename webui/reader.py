@@ -298,7 +298,7 @@ class LifeEngineReader:
                     SELECT i.*, c.name AS collection_name, c.collection_type
                     FROM collection_items i
                     LEFT JOIN item_collections c ON c.id=i.collection_id
-                    WHERE i.owner_kind=? AND i.owner_id=?
+                    WHERE i.owner_kind=? AND i.owner_id=? AND i.status!='archived'
                     ORDER BY i.updated_at DESC LIMIT ?
                 """, (owner_kind, owner_id, limit))
                 alias_by_item = {}
