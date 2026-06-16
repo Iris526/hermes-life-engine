@@ -8,6 +8,7 @@ let collectionsData = null;
 let activeOverlay = "stage";
 let currentPeriod = "today";
 let currentBagTab = null;
+let currentCollectionTab = null;
 let codexDocs = [];
 let reloadSerial = Date.now();
 
@@ -124,6 +125,7 @@ function render() {
   renderRecentEvents();
   // 全屏面板(按当前激活的)
   renderBag();
+  renderCollections();
   renderCloset();
   renderDreams();
   renderReview();
@@ -309,36 +311,53 @@ function renderRecentEvents() {
   }).join("");
 }
 
-// ── 背包面板 ──────────────────────────────────
+// ── 随身物品面板 ──────────────────────────────
 function renderBag() {
-  const board = collectionsData?.collections?.board || snapshotData?.collections?.board || [];
-  if (!board.length) {
-    document.getElementById("bag-tabs").innerHTML = "";
-    document.getElementById("bag-grid").innerHTML = '<div class="empty-state">物品柜为空</div>';
+  const loadout = collectionsData?.collections?.loadout || snapshotData?.collections?.loadout || [];
+  const grid = document.getElementById("bag-grid");
+  if (!loadout.length) {
+    grid.innerHTML = '<div class="empty-state">当前没有随身携带物品</div>';
     return;
   }
-  if (!currentBagTab) currentBagTab = board[0]?.collection?.id;
+  grid.innerHTML = renderItemCards(loadout, { showSlot: true });
+}
+
+// ── Collection 仓库面板 ────────────────────────
+function renderCollections() {
+  const board = collectionsData?.collections?.board || snapshotData?.collections?.board || [];
+  if (!board.length) {
+    document.getElementById("collection-tabs").innerHTML = "";
+    document.getElementById("collection-grid").innerHTML = '<div class="empty-state">Collection 为空</div>';
+    return;
+  }
+  if (!currentCollectionTab) currentCollectionTab = board[0]?.collection?.id;
   // tabs
-  document.getElementById("bag-tabs").innerHTML = board.map(b => {
+  document.getElementById("collection-tabs").innerHTML = board.map(b => {
     const c = b.collection;
-    return `<button class="sub-tab ${c.id === currentBagTab ? "active" : ""}" onclick="switchBagTab('${c.id}')">${c.name} (${b.item_count})</button>`;
+    return `<button class="sub-tab ${c.id === currentCollectionTab ? "active" : ""}" onclick="switchCollectionTab('${c.id}')">${c.name} (${b.item_count})</button>`;
   }).join("");
   // grid
-  const entry = board.find(b => b.collection?.id === currentBagTab);
+  const entry = board.find(b => b.collection?.id === currentCollectionTab);
   const items = entry?.items || [];
-  const grid = document.getElementById("bag-grid");
+  const grid = document.getElementById("collection-grid");
   if (!items.length) {
     grid.innerHTML = '<div class="empty-state">此柜为空</div>';
     return;
   }
-  grid.innerHTML = items.map(item => {
+  grid.innerHTML = renderItemCards(items);
+}
+
+function renderItemCards(items, options = {}) {
+  return items.map(item => {
     const img = getItemPrimaryImage(item);
     const badges = [];
     if (item.status === "active") badges.push('<span class="item-badge active">可用</span>');
     if (item.attributes?.is_consumable) badges.push('<span class="item-badge consumable">耗</span>');
     if (item.cleanliness_state === "dirty" || item.cleanliness_state === "laundry") badges.push('<span class="item-badge laundry">待洗</span>');
     if (item.usage_state?.checkout_for?.length) badges.push('<span class="item-badge used">在用</span>');
-    return `<div class="item-card" onclick="showItemDetail('${item.id}')">
+    if (options.showSlot && item.slot) badges.push(`<span>${item.slot}</span>`);
+    const detailId = item.item_id || item.id;
+    return `<div class="item-card" onclick="showItemDetail('${detailId}')">
       ${img ? `<img class="item-card-img" src="${assetPreviewUrl(img)}" decoding="async" onerror="this.outerHTML='<div class=\\'item-card-img placeholder\\'>◈</div>'">` : '<div class="item-card-img placeholder">◈</div>'}
       <div class="item-card-name">${item.name}</div>
       <div class="item-card-meta">
@@ -349,21 +368,25 @@ function renderBag() {
   }).join("");
 }
 
-function switchBagTab(id) { currentBagTab = id; renderBag(); }
+function switchCollectionTab(id) { currentCollectionTab = id; renderCollections(); }
 
 // ── 衣柜面板 ──────────────────────────────────
 function renderCloset() {
   const collections = collectionsData?.collections || snapshotData?.collections || {};
   const outfits = collections.outfits || [];
   const presets = collections.outfit_presets || [];
+  const allItems = collections.items || [];
   // 当前穿搭
   const currentEl = document.getElementById("current-outfit");
   const current = outfits.find(o => o.status === "active") || outfits[0];
   if (current) {
     const itemIds = current.item_ids || [];
-    currentEl.innerHTML = `<div class="outfit-preset-card"><span>${current.name || current.title || "当前"}</span><span style="color:var(--cyan)">${itemIds.length} 件</span></div>`;
+    const wornItems = itemIds.map(id => allItems.find(item => item.id === id)).filter(Boolean);
+    currentEl.innerHTML = wornItems.length
+      ? renderItemCards(wornItems)
+      : `<div class="outfit-preset-card"><span>${current.context?.query_text || current.occasion || "当前穿着"}</span><span style="color:var(--cyan)">${itemIds.length} 件</span></div>`;
   } else {
-    currentEl.innerHTML = '<div class="outfit-empty">无当前穿搭</div>';
+    currentEl.innerHTML = '<div class="outfit-empty">当前没有着装记录</div>';
   }
   // 预设
   const presetEl = document.getElementById("outfit-presets");

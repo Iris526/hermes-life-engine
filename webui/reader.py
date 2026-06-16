@@ -343,6 +343,24 @@ class LifeEngineReader:
             for c in collections:
                 its = items_by_collection.get(c.get("id"), [])
                 board.append({"collection": c, "items": its, "item_count": len(its), "available_count": sum(1 for x in its if x.get("availability_state") == "available"), "needs_asset_count": sum(1 for x in its if (x.get("asset_counts") or {}).get("pending", 0) > 0)})
+            loadout = []
+            if self._table_exists(conn, "agent_loadout"):
+                loadout = self._all(conn, """
+                    SELECT l.*, i.description, i.tags_json, i.attributes_json, i.asset_bundle_json, i.usage_state_json,
+                           c.name AS collection_name
+                    FROM agent_loadout l
+                    LEFT JOIN collection_items i ON i.id=l.item_id
+                    LEFT JOIN item_collections c ON c.id=l.collection_id
+                    WHERE l.owner_kind=? AND l.owner_id=? AND l.status='active'
+                    ORDER BY l.slot, l.updated_at DESC
+                    LIMIT ?
+                """, (owner_kind, owner_id, limit))
+                for l in loadout:
+                    for key in ["tags_json", "attributes_json", "asset_bundle_json", "usage_state_json"]:
+                        if key in l:
+                            l[key.replace("_json", "")] = _safe_json(l.get(key), [] if key == "tags_json" else {})
+                    bundle = l.get("asset_bundle") or {}
+                    l["primary_asset_uri"] = bundle.get("display_image") or bundle.get("reference_image")
             outfits = []
             if self._table_exists(conn, "outfit_plans"):
                 outfits = self._all(conn, "SELECT * FROM outfit_plans WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT 20", (owner_kind, owner_id))
@@ -356,7 +374,7 @@ class LifeEngineReader:
                     p["aliases"] = _safe_json(p.get("aliases_json"), [])
                     p["item_refs"] = _safe_json(p.get("item_refs_json"), {})
                     p["context_priority"] = _safe_json(p.get("context_priority_json"), {})
-            return {"collections": collections, "items": items, "board": board, "outfits": outfits, "outfit_presets": presets}
+            return {"collections": collections, "items": items, "board": board, "loadout": loadout, "outfits": outfits, "outfit_presets": presets}
 
     def doctor_latest(self, owner_kind: str, owner_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
@@ -742,7 +760,7 @@ def map_avatar_state(state: dict[str, Any], current_event: dict[str, Any] | None
     elif recovery_pressure >= 70 or fatigue >= 75:
         sprite, label, bubble = "tired", "疲惫 / 需要恢复", "需要休息"
     elif mode in {"busy", "in_conversation"}:
-        sprite, label, bubble = "reply", "对话 / 忙碌", "正在回应"
+        sprite, label, bubble = "idle", "闲置", "暂无日程"
     else:
         sprite, label, bubble = "idle", "待机", "观察生活流"
     return {"sprite_state": sprite, "label": label, "bubble": bubble, "mode": mode, "scene": scene_for(sprite)}

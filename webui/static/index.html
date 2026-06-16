@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>归明观 · 废土观星台</title>
-<link rel="stylesheet" href="/static/styles.css?v=20260616-page-resource-reload">
+<link rel="stylesheet" href="/static/styles.css?v=20260616-loadout-outfit-collections">
 </head>
 <body>
 <div id="app">
@@ -96,22 +96,33 @@
         </div>
       </div>
 
-      <!-- 背包面板 -->
+      <!-- 随身物品面板 -->
       <div id="overlay-bag" class="overlay-panel">
         <div class="panel-full-header">
-          <span class="panel-title">🎒 随身物品柜</span>
+          <span class="panel-title">🎒 随身物品</span>
           <button class="panel-close" data-close>✕</button>
         </div>
         <div class="panel-full-body">
-          <div id="bag-tabs" class="sub-tabs"></div>
           <div id="bag-grid" class="item-grid"></div>
         </div>
       </div>
 
-      <!-- 衣柜面板 -->
+      <!-- Collection 仓库面板 -->
+      <div id="overlay-collections" class="overlay-panel">
+        <div class="panel-full-header">
+          <span class="panel-title">🗄️ Collection·仓库</span>
+          <button class="panel-close" data-close>✕</button>
+        </div>
+        <div class="panel-full-body">
+          <div id="collection-tabs" class="sub-tabs"></div>
+          <div id="collection-grid" class="item-grid"></div>
+        </div>
+      </div>
+
+      <!-- 着装面板 -->
       <div id="overlay-closet" class="overlay-panel">
         <div class="panel-full-header">
-          <span class="panel-title">👘 法衣·衣橱</span>
+          <span class="panel-title">👘 着装</span>
           <button class="panel-close" data-close>✕</button>
         </div>
         <div class="panel-full-body">
@@ -239,11 +250,14 @@
       <button class="hotbar-btn active" data-overlay="stage" title="舞台">
         <span class="hotbar-icon">🎭</span><span class="hotbar-label">舞台</span>
       </button>
-      <button class="hotbar-btn" data-overlay="bag" title="背包">
-        <span class="hotbar-icon">🎒</span><span class="hotbar-label">物品</span>
+      <button class="hotbar-btn" data-overlay="bag" title="随身物品">
+        <span class="hotbar-icon">🎒</span><span class="hotbar-label">随身</span>
       </button>
-      <button class="hotbar-btn" data-overlay="closet" title="衣柜">
-        <span class="hotbar-icon">👘</span><span class="hotbar-label">衣橱</span>
+      <button class="hotbar-btn" data-overlay="closet" title="着装">
+        <span class="hotbar-icon">👘</span><span class="hotbar-label">着装</span>
+      </button>
+      <button class="hotbar-btn" data-overlay="collections" title="Collection 仓库">
+        <span class="hotbar-icon">🗄️</span><span class="hotbar-label">仓库</span>
       </button>
       <button class="hotbar-btn" data-overlay="dreams" title="梦境">
         <span class="hotbar-icon">💭</span><span class="hotbar-label">梦境</span>
@@ -264,6 +278,6 @@
 
   </div>
 </div>
-<script src="/static/app.js?v=20260616-page-resource-reload"></script>
+<script src="/static/app.js?v=20260616-loadout-outfit-collections"></script>
 </body>
 </html>
