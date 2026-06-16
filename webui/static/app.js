@@ -629,9 +629,15 @@ function kv(k, v) {
 }
 
 function getItemPrimaryImage(item) {
+  // Priority: collection_item_assets primary → asset_bundle → attributes
   if (item.primary_asset_uri) return item.primary_asset_uri;
+  const ab = item.asset_bundle || {};
+  // asset_bundle uses display_image/reference_image (post-v0.13 migration);
+  // primary_image is the legacy field name kept as last-resort fallback.
+  if (ab.display_image) return ab.display_image;
+  if (ab.reference_image) return ab.reference_image;
   const attrs = item.attributes || {};
-  return attrs.display_image || attrs.reference_image || attrs.presentation_board || attrs.reference_crop || (item.asset_bundle || {}).primary_image || null;
+  return attrs.display_image || attrs.reference_image || attrs.presentation_board || attrs.reference_crop || ab.primary_image || null;
 }
 
 function attrLabel(key) {
