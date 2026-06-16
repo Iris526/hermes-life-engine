@@ -183,9 +183,12 @@ class LifeEngineReader:
     def current_event(self, owner_kind: str, owner_id: str, state: dict[str, Any] | None = None) -> dict[str, Any] | None:
         state = state or self.realtime_state(owner_kind, owner_id)
         event_id = state.get("active_event_id")
-        if not event_id:
-            return None
         with self._connect() as conn:
+            if not event_id and state.get("active_schedule_block_id") and self._table_exists(conn, "schedule_blocks"):
+                block = self._first(conn, "SELECT event_id FROM schedule_blocks WHERE id=?", (state.get("active_schedule_block_id"),))
+                event_id = (block or {}).get("event_id")
+            if not event_id:
+                return None
             if not self._table_exists(conn, "events"):
                 return None
             row = self._first(conn, "SELECT * FROM events WHERE id=?", (event_id,))
