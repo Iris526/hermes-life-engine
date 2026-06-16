@@ -50,7 +50,7 @@ async function loadSnapshot(options = {}) {
   try {
     const res = await fetch(apiUrl("/api/snapshot", { period: currentPeriod }, options.force));
     snapshotData = await res.json();
-    try { collectionsData = await (await fetch(apiUrl("/api/snapshot", { period: currentPeriod }, options.force))).json(); } catch {}
+    collectionsData = snapshotData;
     // 如果是第一次加载,隐藏 loading
     document.getElementById("loading-screen").classList.add("hidden");
     document.getElementById("main-layout").classList.remove("hidden");
@@ -106,12 +106,15 @@ function connectSSE() {
         const data = JSON.parse(e.data);
         if (data.snapshot_hash !== snapshotData?.snapshot_hash) {
           snapshotData = data;
-          try { collectionsData = await (await fetch(`${API}/api/snapshot`)).json(); } catch {}
+          collectionsData = data;
           render();
         }
       } catch {}
     });
-    sseSource.addEventListener("error", () => { sseSource = null; });
+    sseSource.addEventListener("error", () => {
+      if (sseSource) sseSource.close();
+      sseSource = null;
+    });
   } catch {}
 }
 

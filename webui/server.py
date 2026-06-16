@@ -305,10 +305,12 @@ def create_app(life_dir: str | None = None) -> FastAPI:
         return FileResponse(str(preview), media_type="image/jpeg")
 
     @app.get("/api/stream")
-    async def stream(period: str = "today", date: str | None = None):
+    async def stream(request: Request, period: str = "today", date: str | None = None):
         async def gen():
             last = None
             while True:
+                if await request.is_disconnected():
+                    break
                 try:
                     snap = state.reader().snapshot(state.owner_kind, state.owner_id, period=period, date=date)
                     h = snap.get("snapshot_hash")
@@ -317,6 +319,8 @@ def create_app(life_dir: str | None = None) -> FastAPI:
                         last = h
                     else:
                         yield f"event: heartbeat\ndata: {json.dumps({'hash': h, 'at': time.time()})}\n\n"
+                except asyncio.CancelledError:
+                    break
                 except Exception as exc:
                     yield f"event: error\ndata: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
                 await asyncio.sleep(2.0)
