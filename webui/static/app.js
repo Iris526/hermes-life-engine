@@ -67,6 +67,7 @@ async function reloadInPage() {
   if (sseSource) { sseSource.close(); sseSource = null; }
   codexDocs = [];
   closeDrawer();
+  reloadStylesheets();
   btn?.classList.add("loading");
   btn?.setAttribute("disabled", "disabled");
   try {
@@ -151,6 +152,7 @@ function renderSidebar() {
   const avatar = snapshotData.avatar || {};
   // 立绘信息
   const owner = snapshotData.owner || {};
+  document.getElementById("agent-portrait").src = staticAssetUrl("default-agent-pixel.png");
   document.getElementById("char-name").textContent = owner.owner_id || "—";
   document.getElementById("char-title").textContent = avatar.label || avatar.scene || state.mode || "—";
 
@@ -211,7 +213,7 @@ function renderStage() {
   // sprite
   const spriteState = avatar.sprite_state || "idle";
   const sceneName = avatar.scene || "observatory";
-  document.getElementById("sprite-img").src = `/static/assets/sprite-${spriteState}.png`;
+  document.getElementById("sprite-img").src = staticAssetUrl(`sprite-${spriteState}.png`);
   const stageEl = document.getElementById("stage-scene");
   if (stageEl) stageEl.className = `stage-scene scene-${sceneName}`;;
   // 对话气泡
@@ -675,6 +677,18 @@ function assetUrl(path) {
 
 function assetPreviewUrl(path) {
   return `/api/asset/preview?path=${encodeURIComponent(path)}&max_width=360&max_height=480&v=${reloadSerial}`;
+}
+
+function staticAssetUrl(name) {
+  return `/static/assets/${name}?v=${reloadSerial}`;
+}
+
+function reloadStylesheets() {
+  document.querySelectorAll('link[rel="stylesheet"]').forEach(link => {
+    const url = new URL(link.getAttribute("href"), window.location.origin);
+    url.searchParams.set("v", String(reloadSerial));
+    link.setAttribute("href", `${url.pathname}${url.search}`);
+  });
 }
 
 function attrLabel(key) {
