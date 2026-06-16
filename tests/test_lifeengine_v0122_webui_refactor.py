@@ -85,6 +85,32 @@ def test_server_detail_endpoints(tmp_path):
     assert trace["kind"] == "transaction"
 
 
+def test_server_asset_preview_keeps_original_and_generates_thumbnail(tmp_path, monkeypatch):
+    from PIL import Image
+
+    home = tmp_path / "home"
+    assets = home / "assets" / "collections"
+    assets.mkdir(parents=True)
+    original = assets / "large.png"
+    Image.effect_noise((1600, 1200), 100).convert("RGB").save(original)
+    original_size = original.stat().st_size
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    client = TestClient(create_app(str(_make_detail_db(tmp_path))))
+    res = client.get("/api/asset/preview", params={"path": str(original), "max_width": 200, "max_height": 200})
+
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("image/jpeg")
+    assert original.exists()
+    assert original.stat().st_size == original_size
+    thumbs = list((home / "cache" / "lifeengine-webui" / "thumbs").glob("*.jpg"))
+    assert len(thumbs) == 1
+    with Image.open(thumbs[0]) as preview:
+        assert preview.width <= 200
+        assert preview.height <= 200
+    assert thumbs[0].stat().st_size < original_size
+
+
 def test_webui_refactor_assets_and_human_layout_exist():
     root = Path(__file__).resolve().parents[1]
     assets = root / "webui" / "static" / "assets"

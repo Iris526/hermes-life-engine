@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import socket
@@ -29,6 +30,74 @@ from .reader import LifeEngineReader, resolve_lifeengine_db
 
 _THIS_DIR = Path(__file__).resolve().parent
 _STATIC_DIR = _THIS_DIR / "static"
+
+
+def _allowed_asset_roots() -> list[Path]:
+    hermes_home = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))).resolve()
+    allowed_roots = [
+        hermes_home / "image_cache",
+        hermes_home / "assets",
+        hermes_home / "assets" / "collections",
+        _STATIC_DIR / "assets",
+    ]
+    assets_dir = hermes_home / "assets"
+    if assets_dir.is_dir():
+        for child in assets_dir.iterdir():
+            if child.is_dir():
+                allowed_roots.append(child)
+    return [root.resolve() for root in allowed_roots]
+
+
+def _resolve_asset_path(path: str) -> Path:
+    hermes_home = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))).resolve()
+    allowed_roots = _allowed_asset_roots()
+    raw = Path(path)
+    candidates = []
+    if raw.is_absolute():
+        candidates.append(raw.expanduser().resolve())
+    else:
+        rel = str(raw).lstrip("./")
+        for root in allowed_roots:
+            candidates.append((root / rel).resolve())
+        candidates.append((hermes_home / rel).resolve())
+    for candidate in candidates:
+        if any(candidate == root or root in candidate.parents for root in allowed_roots) and candidate.is_file():
+            return candidate
+    raise HTTPException(status_code=404, detail="Asset not found or outside allowed directories")
+
+
+def _asset_media_type(path: Path) -> str:
+    media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                   ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml"}
+    return media_types.get(path.suffix.lower(), "application/octet-stream")
+
+
+def _thumbnail_path(source: Path, max_width: int, max_height: int) -> Path:
+    stat = source.stat()
+    hermes_home = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))).resolve()
+    cache_dir = hermes_home / "cache" / "lifeengine-webui" / "thumbs"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(f"{source}|{stat.st_mtime_ns}|{stat.st_size}|{max_width}x{max_height}".encode()).hexdigest()
+    return cache_dir / f"{key}.jpg"
+
+
+def _generate_thumbnail(source: Path, max_width: int, max_height: int) -> Path:
+    from PIL import Image, ImageOps
+
+    target = _thumbnail_path(source, max_width, max_height)
+    if target.is_file():
+        return target
+    with Image.open(source) as image:
+        image = ImageOps.exif_transpose(image)
+        image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+        if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+            background = Image.new("RGB", image.size, (10, 6, 18))
+            background.paste(image, mask=image.convert("RGBA").getchannel("A"))
+            image = background
+        else:
+            image = image.convert("RGB")
+        image.save(target, format="JPEG", quality=78, optimize=True, progressive=True)
+    return target
 
 
 class SelectRequest(BaseModel):
@@ -212,44 +281,23 @@ def create_app(life_dir: str | None = None) -> FastAPI:
         assets/*) so that DB-stored asset_uri values like 'iris-wardrobe/x.png'
         work without the frontend needing to know HERMES_HOME.
         """
-        from pathlib import Path as P
-        hermes_home = P(os.getenv("HERMES_HOME", str(P.home() / ".hermes"))).resolve()
-        allowed_roots = [
-            hermes_home / "image_cache",
-            hermes_home / "assets",
-            hermes_home / "assets" / "collections",
-            _STATIC_DIR / "assets",
-        ]
-        # Also allow subdirectories of assets (iris-wardrobe, iris-emotes, etc.)
-        assets_dir = hermes_home / "assets"
-        if assets_dir.is_dir():
-            for child in assets_dir.iterdir():
-                if child.is_dir():
-                    allowed_roots.append(child)
-        # Resolve the requested path. If it's relative, try to locate it under
-        # each allowed root (fixes DB-stored relative asset_uri values).
-        raw = P(path)
-        candidates = []
-        if raw.is_absolute():
-            candidates.append(raw.expanduser().resolve())
-        else:
-            rel = str(raw).lstrip("./")
-            for root in allowed_roots:
-                candidates.append((root / rel).resolve())
-                # also try under image_cache/<rel> and assets/<rel> explicitly
-            candidates.append((hermes_home / rel).resolve())
-        requested = None
-        for c in candidates:
-            if any(str(c).startswith(str(r)) for r in allowed_roots) and c.is_file():
-                requested = c
-                break
-        if requested is None:
-            raise HTTPException(status_code=404, detail="Asset not found or outside allowed directories")
-        ext = requested.suffix.lower()
-        media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                       ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml"}
-        media_type = media_types.get(ext, "application/octet-stream")
+        requested = _resolve_asset_path(path)
+        media_type = _asset_media_type(requested)
         return FileResponse(str(requested), media_type=media_type)
+
+    @app.get("/api/asset/preview")
+    def serve_asset_preview(path: str = Query(...), max_width: int = 360, max_height: int = 480):
+        """Serve a generated preview image while preserving the original asset file."""
+        requested = _resolve_asset_path(path)
+        if requested.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+            return FileResponse(str(requested), media_type=_asset_media_type(requested))
+        width = max(64, min(int(max_width or 360), 1200))
+        height = max(64, min(int(max_height or 480), 1600))
+        try:
+            preview = _generate_thumbnail(requested, width, height)
+        except Exception:
+            return FileResponse(str(requested), media_type=_asset_media_type(requested))
+        return FileResponse(str(preview), media_type="image/jpeg")
 
     @app.get("/api/stream")
     async def stream(period: str = "today", date: str | None = None):

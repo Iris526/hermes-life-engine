@@ -1,3 +1,4 @@
 sqlite-vec
 fastapi
 uvicorn
+Pillow

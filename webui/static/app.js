@@ -337,7 +337,7 @@ function renderBag() {
     if (item.cleanliness_state === "dirty" || item.cleanliness_state === "laundry") badges.push('<span class="item-badge laundry">待洗</span>');
     if (item.usage_state?.checkout_for?.length) badges.push('<span class="item-badge used">在用</span>');
     return `<div class="item-card" onclick="showItemDetail('${item.id}')">
-      ${img ? `<img class="item-card-img" src="${assetUrl(img)}" decoding="async" onerror="this.outerHTML='<div class=\\'item-card-img placeholder\\'>◈</div>'">` : '<div class="item-card-img placeholder">◈</div>'}
+      ${img ? `<img class="item-card-img" src="${assetPreviewUrl(img)}" decoding="async" onerror="this.outerHTML='<div class=\\'item-card-img placeholder\\'>◈</div>'">` : '<div class="item-card-img placeholder">◈</div>'}
       <div class="item-card-name">${item.name}</div>
       <div class="item-card-meta">
         ${item.quantity > 1 ? `<span>×${item.quantity}</span>` : ""}
@@ -671,6 +671,10 @@ function apiUrl(path, params = {}, force = false) {
 
 function assetUrl(path) {
   return `/api/asset?path=${encodeURIComponent(path)}&v=${reloadSerial}`;
+}
+
+function assetPreviewUrl(path) {
+  return `/api/asset/preview?path=${encodeURIComponent(path)}&max_width=360&max_height=480&v=${reloadSerial}`;
 }
 
 function attrLabel(key) {
