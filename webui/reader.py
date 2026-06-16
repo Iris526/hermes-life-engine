@@ -760,6 +760,8 @@ def map_avatar_state(state: dict[str, Any], current_event: dict[str, Any] | None
         sprite, label, bubble = "walk", "行动中", (current_event or {}).get("title") or "外出/活动"
     elif category in {"meal"}:
         sprite, label, bubble = "eat", "吃饭中", "补充能量"
+    elif current_event:
+        sprite, label, bubble = "work", "进行中", (current_event or {}).get("title") or "推进事项"
     elif recovery_pressure >= 70 or fatigue >= 75:
         sprite, label, bubble = "tired", "疲惫 / 需要恢复", "需要休息"
     elif mode in {"busy", "in_conversation"}:
