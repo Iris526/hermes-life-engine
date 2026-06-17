@@ -271,6 +271,10 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
   filter: drop-shadow(0 6px 10px rgba(0,0,0,.55)); animation: actor-bob 3.2s ease-in-out infinite; }
 .actor.moving .sprite-img { animation: actor-bob 0.9s ease-in-out infinite; }
 .actor.resting .sprite-img { animation: actor-breathe 5s ease-in-out infinite; }
+/* Sleep is a landscape lying-in-bed pose: size it by WIDTH (not the tall-pose
+   height), and drop the standing shadow since she's lying on the bed. */
+.actor.pose-sleep .sprite-img { height:auto; width:46vh; max-width:520px; max-height:none; }
+.actor.pose-sleep .actor-shadow { display:none; }
 @keyframes actor-bob { 0%,100%{transform:translateY(0);} 50%{transform:translateY(-8px);} }
 @keyframes actor-breathe { 0%,100%{transform:translateY(0) scale(1);} 50%{transform:translateY(2px) scale(1.012);} }
 .actor-shadow { position:absolute; bottom:-10px; left:50%; transform:translateX(-50%); width:140px; height:24px; border-radius:50%;

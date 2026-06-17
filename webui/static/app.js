@@ -397,7 +397,7 @@ function renderStage() {
 
   // 角色:落地 + 帧动画 + 动作姿态
   const actor = document.getElementById("actor");
-  if (actor) actor.className = "actor" + (MOVING_STATES.has(spriteState) ? " moving" : RESTING_STATES.has(spriteState) ? " resting" : "");
+  if (actor) actor.className = "actor pose-" + spriteState + (MOVING_STATES.has(spriteState) ? " moving" : RESTING_STATES.has(spriteState) ? " resting" : "");
   animateSprite(spriteState);
   buildParticles();
   positionCelestial(clock);
