@@ -16,3 +16,4 @@ exports/
 backups/
 cache/
 .DS_Store
+.claude/launch.json

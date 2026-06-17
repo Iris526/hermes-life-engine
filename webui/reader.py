@@ -239,6 +239,36 @@ class LifeEngineReader:
                 rows = self._all(conn, "SELECT * FROM events WHERE owner_kind=? AND owner_id=? ORDER BY updated_at DESC LIMIT ?", (owner_kind, owner_id, limit))
             return [self._decode_event(r) for r in rows]
 
+    def clock(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
+        """Agent local time + day-phase for the diegetic stage (day/night)."""
+        tz_name = "UTC"
+        with self._connect() as conn:
+            if self._table_exists(conn, "canon_versions"):
+                row = self._first(conn, "SELECT data_json FROM canon_versions WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY version DESC LIMIT 1", (owner_kind, owner_id))
+                canon = _safe_json((row or {}).get("data_json"), {}) or {}
+                tz_name = (
+                    ((canon.get("schedule_rules") or {}).get("timezone"))
+                    or (((canon.get("truth_sources") or {}).get("bindings") or {}).get("time") or {}).get("timezone")
+                    or "UTC"
+                )
+        try:
+            from zoneinfo import ZoneInfo
+            local = _now().astimezone(ZoneInfo(tz_name))
+        except Exception:
+            local = _now()
+            tz_name = "UTC"
+        hour = local.hour + local.minute / 60.0
+        if 5 <= hour < 8:
+            phase, label = "dawn", "拂晓"
+        elif 8 <= hour < 17:
+            phase, label = "day", "白日"
+        elif 17 <= hour < 20:
+            phase, label = "dusk", "黄昏"
+        else:
+            phase, label = "night", "夜晚"
+        return {"iso": local.isoformat(), "hour": round(hour, 2), "hhmm": local.strftime("%H:%M"),
+                "timezone": tz_name, "phase": phase, "label": label}
+
     def persona(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
         """Living-persona traits (v0.14.0) for the HUD — read-only."""
         with self._connect() as conn:
@@ -712,6 +742,7 @@ class LifeEngineReader:
             "workspace": workspace,
             "doctor": self.doctor_latest(owner_kind, owner_id),
             "persona": self.persona(owner_kind, owner_id),
+            "clock": self.clock(owner_kind, owner_id),
             "recent_events": self.events(owner_kind, owner_id, limit=30),
             "trace": self.trace_latest(limit=15),
             "avatar": sprite,

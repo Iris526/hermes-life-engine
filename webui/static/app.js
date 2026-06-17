@@ -250,39 +250,120 @@ function renderSidebar() {
   }
 }
 
-// ── 中央舞台 ──────────────────────────────────
+// ── 中央舞台(沉浸式场景) ──────────────────────
+const FRAME2_STATES = new Set(["walk", "work", "battle"]);   // 有第二帧动画
+const MOVING_STATES = new Set(["walk"]);
+const RESTING_STATES = new Set(["sleep", "tired", "recover", "dream"]);
+let spriteAnimTimer = null;
+let particlesBuilt = false;
+
+function animateSprite(spriteState) {
+  if (spriteAnimTimer) { clearInterval(spriteAnimTimer); spriteAnimTimer = null; }
+  const img = document.getElementById("sprite-img");
+  if (!img) return;
+  img.src = staticAssetUrl(`sprite-${spriteState}.png`);
+  if (FRAME2_STATES.has(spriteState)) {
+    let f = 0;
+    const frames = [`sprite-${spriteState}.png`, `sprite-${spriteState}-2.png`];
+    spriteAnimTimer = setInterval(() => { f ^= 1; img.src = staticAssetUrl(frames[f]); }, MOVING_STATES.has(spriteState) ? 380 : 600);
+  }
+}
+
+function buildParticles() {
+  if (particlesBuilt) return;
+  const host = document.getElementById("stage-particles");
+  if (!host) return;
+  let html = "";
+  for (let i = 0; i < 16; i++) {
+    const left = Math.round(Math.random() * 100);
+    const dur = (6 + Math.random() * 8).toFixed(1);
+    const delay = (Math.random() * 8).toFixed(1);
+    const bottom = Math.round(20 + Math.random() * 55);
+    html += `<span class="mote" style="left:${left}%;bottom:${bottom}%;animation-duration:${dur}s;animation-delay:${delay}s"></span>`;
+  }
+  host.innerHTML = html;
+  particlesBuilt = true;
+}
+
+function positionCelestial(clock) {
+  const el = document.getElementById("celestial");
+  if (!el) return;
+  const hour = clock && clock.hour != null ? clock.hour : 12;
+  const phase = (clock && clock.phase) || "day";
+  // sun rides 6→18, moon rides 18→6
+  let progress;
+  if (phase === "night") progress = (((hour - 18 + 24) % 24)) / 12;
+  else progress = Math.max(0, Math.min(1, (hour - 6) / 12));
+  const left = 8 + progress * 84;
+  const top = 42 - Math.sin(progress * Math.PI) * 30;   // arc
+  el.style.left = `${left}%`;
+  el.style.top = `${top}%`;
+}
+
 function renderStage() {
   const avatar = snapshotData.avatar || {};
   const state = snapshotData.state || {};
+  const owner = snapshotData.owner || {};
+  const clock = snapshotData.clock || {};
   const currentEvent = snapshotData.current_event;
-  // sprite
   const spriteState = avatar.sprite_state || "idle";
   const sceneName = avatar.scene || "observatory";
-  document.getElementById("sprite-img").src = staticAssetUrl(`sprite-${spriteState}.png`);
+  const phase = clock.phase || "day";
+
   const stageEl = document.getElementById("stage-scene");
-  if (stageEl) stageEl.className = `stage-scene scene-${sceneName}`;;
-  // 对话气泡
-  const bubble = document.getElementById("speech-bubble");
-  if (avatar.bubble) {
-    bubble.textContent = avatar.bubble;
-    bubble.classList.remove("hidden");
-  } else {
-    bubble.classList.add("hidden");
+  if (stageEl) stageEl.className = `stage-scene scene-${sceneName} phase-${phase}`;
+
+  // 角色:落地 + 帧动画 + 动作姿态
+  const actor = document.getElementById("actor");
+  if (actor) actor.className = "actor" + (MOVING_STATES.has(spriteState) ? " moving" : RESTING_STATES.has(spriteState) ? " resting" : "");
+  animateSprite(spriteState);
+  buildParticles();
+  positionCelestial(clock);
+
+  // 时钟
+  const clockEl = document.getElementById("stage-clock");
+  if (clockEl) {
+    const icon = phase === "night" ? "🌙" : phase === "dusk" ? "🌆" : phase === "dawn" ? "🌅" : "☀";
+    clockEl.innerHTML = clock.hhmm ? `${icon} ${clock.hhmm}<span class="ph">${clock.label || ""}</span>` : "";
   }
-  // 舞台事件
-  const eventEl = document.getElementById("stage-event");
-  if (currentEvent) {
-    eventEl.innerHTML = `<div class="ev-title">${currentEvent.title}</div><div class="ev-sub">${currentEvent.event_category || ""} · ${currentEvent.status}</div>`;
-    eventEl.style.cursor = "pointer";
-    eventEl.onclick = () => showEventDetail(currentEvent.id);
-  } else {
-    eventEl.innerHTML = `<div class="ev-title">${avatar.label || "静候"}</div><div class="ev-sub">${avatar.scene || ""}</div>`;
-    eventEl.onclick = null;
-    eventEl.style.cursor = "default";
+
+  // 任务条
+  const ribbon = document.getElementById("quest-ribbon");
+  if (ribbon) {
+    if (currentEvent) {
+      ribbon.innerHTML = `<span class="qr-tag">⚔ 当前</span>${escapeHtml(currentEvent.title)}`;
+      ribbon.classList.remove("hidden");
+      ribbon.onclick = () => showEventDetail(currentEvent.id);
+    } else {
+      ribbon.classList.add("hidden");
+      ribbon.onclick = null;
+    }
   }
-  // meta
-  const meta = snapshotData.meta || {};
-  document.getElementById("stage-meta").textContent = `v${meta.schema_version || "?"} · ${snapshotData.snapshot_hash ? snapshotData.snapshot_hash.slice(0,8) : ""}`;
+
+  // 生命力宝珠
+  const orbs = document.getElementById("vital-orbs");
+  if (orbs) {
+    const resources = snapshotData.resources || [];
+    const want = [["energy", "精"], ["focus", "专"], ["mood", "心"]];
+    orbs.innerHTML = want.map(([key, glyph]) => {
+      const r = resources.find(x => x.resource_key === key);
+      if (!r) return "";
+      const min = r.min_value != null ? r.min_value : 0;
+      const max = r.max_value != null ? r.max_value : 100;
+      const pct = max > min ? Math.max(0, Math.min(100, (r.current_value - min) / (max - min) * 100)) : 50;
+      return `<div class="v-orb ${key}" title="${r.display_name || key}: ${formatNum(r.current_value)}"><div class="fill" style="height:${pct}%"></div><span class="glyph">${glyph}</span></div>`;
+    }).join("");
+  }
+
+  // JRPG 对话框
+  document.getElementById("dlg-name").textContent = owner.owner_id || "—";
+  const dlgText = document.getElementById("dlg-text");
+  const line = avatar.bubble || (currentEvent ? currentEvent.title : null) || avatar.label || "观察生活流……";
+  dlgText.textContent = line;
+  const dlgMeta = document.getElementById("dlg-meta");
+  const sub = currentEvent ? `${currentEvent.event_category || ""} · ${currentEvent.status}` : (avatar.label || "");
+  dlgMeta.textContent = sub;
+
   // 延迟回复
   const delayed = snapshotData.delayed_replies || [];
   const replyEl = document.getElementById("reply-indicator");

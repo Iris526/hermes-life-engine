@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>归明观 · 废土观星台</title>
-<link rel="stylesheet" href="/static/styles.css?v=20260616-engine-start-portrait">
+<link rel="stylesheet" href="/static/styles.css?v=20260617-immersive-stage">
 </head>
 <body>
 <div id="app">
@@ -83,24 +83,42 @@
 
     <!-- ========== 中央:大舞台 + 全屏覆盖面板 ========== -->
     <main class="content-area">
-      <!-- 舞台(默认显示) -->
+      <!-- 舞台(默认显示) — 沉浸式场景 -->
       <div id="overlay-stage" class="overlay-panel active">
-        <div class="stage-scene" id="stage-scene">
-          <div class="stage-bg-vignette"></div>
+        <div class="stage-scene scene-observatory phase-day" id="stage-scene">
+          <!-- 分层场景 -->
+          <div class="layer sky-layer"></div>
+          <div class="celestial" id="celestial"></div>
+          <div class="layer backdrop-layer"></div>
+          <div class="layer mid-layer"></div>
+          <div class="layer prop-layer"></div>
+          <div class="layer ground-layer"></div>
+          <div class="stage-particles" id="stage-particles"></div>
           <div class="stage-scanlines"></div>
-          <div class="stage-content">
-            <div class="sprite-stage">
-              <img id="sprite-img" class="sprite-img" src="/static/assets/sprite-idle.png" alt="sprite">
-            </div>
-            <div id="speech-bubble" class="speech-bubble hidden"></div>
-          </div>
-          <!-- 舞台底部信息条 -->
-          <div class="stage-footer">
-            <div id="stage-event" class="stage-event"></div>
-            <div id="stage-meta" class="stage-meta"></div>
-          </div>
-          <!-- 延迟回复指示 -->
+          <div class="stage-vignette"></div>
+
+          <!-- 顶部:任务条 + 时钟 -->
+          <div class="quest-ribbon hidden" id="quest-ribbon"></div>
+          <div class="stage-clock" id="stage-clock"></div>
           <div id="reply-indicator" class="reply-indicator hidden"></div>
+
+          <!-- 角色(站在地面上) -->
+          <div class="actor" id="actor">
+            <div class="vital-orbs" id="vital-orbs"></div>
+            <img id="sprite-img" class="sprite-img" src="/static/assets/sprite-idle.png" alt="sprite">
+            <div class="actor-shadow"></div>
+          </div>
+
+          <!-- JRPG 对话框 -->
+          <div class="dialogue-box" id="dialogue-box">
+            <div class="dlg-portrait"><img id="dlg-portrait" src="/static/assets/agent-chibi-icon.png" alt=""></div>
+            <div class="dlg-main">
+              <div class="dlg-name" id="dlg-name">—</div>
+              <div class="dlg-text" id="dlg-text"></div>
+            </div>
+            <div class="dlg-meta" id="dlg-meta"></div>
+            <span class="dlg-cursor">▼</span>
+          </div>
         </div>
       </div>
 
@@ -286,6 +304,6 @@
 
   </div>
 </div>
-<script src="/static/app.js?v=20260616-engine-start-portrait"></script>
+<script src="/static/app.js?v=20260617-immersive-stage"></script>
 </body>
 </html>
