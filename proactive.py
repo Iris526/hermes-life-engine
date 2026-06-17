@@ -227,6 +227,22 @@ def _is_expired(intent: dict[str, Any]) -> bool:
     return ts is not None and int(ts) <= int(_now().timestamp())
 
 
+def _within_cooldown(state: dict[str, Any] | None) -> bool:
+    """True if we're still inside the post-send cooldown window.
+
+    The window is stored as ``next_allowed_proactive_at`` when a message is sent
+    (see ``mark_outbox_sent``). Until this fix it was written but never read, so
+    only the per-day cap throttled bursts; now the time-based cooldown is real.
+    """
+    nxt = (state or {}).get("next_allowed_proactive_at")
+    if not nxt:
+        return False
+    try:
+        return to_epoch(nxt) > int(_now().timestamp())
+    except Exception:
+        return False
+
+
 def _quiet_hours_active(policy: dict[str, Any]) -> bool:
     qh = policy.get("quiet_hours") or {}
     if not isinstance(qh, dict) or not qh.get("start") or not qh.get("end"):
@@ -339,6 +355,10 @@ def evaluate_proactive_intent(
                 conn.execute("UPDATE proactive_intents SET status='queued', queued_at=COALESCE(queued_at, datetime('now')), score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?", (dumps(score), dumps({"decision": "daily_limit", "reason": "daily proactive budget exhausted", "policy": policy}), intent["id"]))
                 _update_state_pending(conn, agent_id, user_id, intent["id"], "cooldown")
                 decision, reason = "queue_pending", "daily proactive budget exhausted"
+            elif not manual and _within_cooldown(state):
+                conn.execute("UPDATE proactive_intents SET status='queued', queued_at=COALESCE(queued_at, datetime('now')), score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?", (dumps(score), dumps({"decision": "cooldown", "reason": "within proactive cooldown window", "policy": policy}), intent["id"]))
+                _update_state_pending(conn, agent_id, user_id, intent["id"], "cooldown")
+                decision, reason = "queue_pending", "within proactive cooldown window"
             elif mode == "auto_send" and score["score"] < policy["min_score_to_auto_send"] and not manual:
                 conn.execute("UPDATE proactive_intents SET status='queued', queued_at=COALESCE(queued_at, datetime('now')), score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?", (dumps(score), dumps({"decision": "score_below_auto_send", "reason": "queued but not pushed", "policy": policy}), intent["id"]))
                 _update_state_pending(conn, agent_id, user_id, intent["id"], "has_something_to_share")
@@ -374,7 +394,8 @@ def mark_outbox_sent(conn, agent_id: str, outbox_id: str, *, result: dict[str, A
         conn.execute("UPDATE proactive_intents SET status='sent', sent_at=datetime('now'), updated_at=datetime('now') WHERE id=?", (intent_id,))
     state = ensure_proactive_state(conn, agent_id, user_id)
     pending = [pid for pid in (state.get("pending_intent_ids") or []) if pid != intent_id]
-    cooldown = (_now() + timedelta(minutes=180)).isoformat()
+    cooldown_minutes = int(_get_canon_policy(conn, agent_id).get("cooldown_minutes", 180))
+    cooldown = (_now() + timedelta(minutes=cooldown_minutes)).isoformat()
     conn.execute(
         """UPDATE agent_user_proactive_state SET state='cooldown', pending_intent_ids_json=?, last_proactive_sent_at=datetime('now'),
               next_allowed_proactive_at=?, daily_sent_count=daily_sent_count+1, updated_at=datetime('now')
