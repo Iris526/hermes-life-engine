@@ -373,14 +373,19 @@ class LifeEngineReader:
             return rows
 
     def proactive(self, owner_kind: str, owner_id: str, limit: int = 20) -> dict[str, Any]:
+        # proactive tables are keyed by agent_id (proactive is agent-only), not
+        # owner_kind/owner_id — query by whichever key the table actually has.
         with self._connect() as conn:
-            intents = []
-            outbox = []
-            if self._table_exists(conn, "proactive_intents"):
-                intents = self._all(conn, "SELECT * FROM proactive_intents WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT ?", (owner_kind, owner_id, limit))
-            if self._table_exists(conn, "proactive_outbox"):
-                outbox = self._all(conn, "SELECT * FROM proactive_outbox WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT ?", (owner_kind, owner_id, limit))
-            return {"intents": intents, "outbox": outbox}
+            def _q(table):
+                if not self._table_exists(conn, table):
+                    return []
+                cols = self._columns(conn, table)
+                if "agent_id" in cols:
+                    return self._all(conn, f"SELECT * FROM {table} WHERE agent_id=? ORDER BY created_at DESC LIMIT ?", (owner_id, limit))
+                if "owner_id" in cols:
+                    return self._all(conn, f"SELECT * FROM {table} WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT ?", (owner_kind, owner_id, limit))
+                return self._all(conn, f"SELECT * FROM {table} ORDER BY created_at DESC LIMIT ?", (limit,))
+            return {"intents": _q("proactive_intents"), "outbox": _q("proactive_outbox")}
 
     def collections(self, owner_kind: str, owner_id: str, limit: int = 100) -> dict[str, Any]:
         with self._connect() as conn:

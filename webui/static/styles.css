@@ -546,3 +546,20 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
   background: radial-gradient(ellipse at 50% 58%, rgba(0,212,255,.20), transparent 62%); }
 .tick-flash.flash { animation: tick-flash .6s ease-out; }
 @keyframes tick-flash { 0% { opacity: 0; } 25% { opacity: 1; } 100% { opacity: 0; } }
+
+/* ══════════ 主动说话气泡 ══════════ */
+.speech-bubble { position: absolute; top: 11%; left: 50%; transform: translateX(-50%); z-index: 8; max-width: 56%;
+  padding: 9px 16px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 3px;
+  background: linear-gradient(180deg,rgba(24,14,34,.96),rgba(12,8,20,.97)); border: 1px solid var(--gold-dim);
+  border-radius: 10px; box-shadow: 0 6px 22px rgba(0,0,0,.55), 0 0 14px var(--gold-glow);
+  animation: sb-in .4s ease, sb-bob 3s ease-in-out .4s infinite; }
+.speech-bubble.hidden { display: none; }
+.speech-bubble::after { content: ""; position: absolute; bottom: -9px; left: 50%; transform: translateX(-50%); border: 9px solid transparent; border-top-color: var(--gold-dim); }
+.speech-bubble::before { content: ""; position: absolute; bottom: -7px; left: 50%; transform: translateX(-50%); border: 8px solid transparent; border-top-color: rgba(12,8,20,.97); z-index: 1; }
+.speech-bubble .sb-tag { font-size: 11px; color: var(--gold); letter-spacing: .5px; }
+.speech-bubble .sb-text { font-size: 14px; color: var(--text); line-height: 1.4; }
+.speech-bubble.want-say { border-color: var(--cyan-dim); box-shadow: 0 6px 22px rgba(0,0,0,.55), 0 0 16px var(--cyan-glow); }
+.speech-bubble.want-say::after { border-top-color: var(--cyan-dim); }
+.speech-bubble.want-say .sb-tag { color: var(--cyan); }
+@keyframes sb-in { from { opacity: 0; transform: translateX(-50%) translateY(8px); } to { opacity: 1; transform: translateX(-50%); } }
+@keyframes sb-bob { 0%,100% { transform: translateX(-50%) translateY(0); } 50% { transform: translateX(-50%) translateY(-4px); } }

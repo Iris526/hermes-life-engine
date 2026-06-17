@@ -453,6 +453,9 @@ function renderStage() {
   const sub = currentEvent ? `${currentEvent.event_category || ""} · ${currentEvent.status}` : (avatar.label || "");
   dlgMeta.textContent = sub;
 
+  // 主动说话气泡
+  renderProactiveBubble();
+
   // 延迟回复
   const delayed = snapshotData.delayed_replies || [];
   const replyEl = document.getElementById("reply-indicator");
@@ -499,6 +502,26 @@ function renderActorEffects(spriteState, resources) {
   // Head emote removed: it rendered as a stray floating glyph and the dialogue
   // box + FX already convey state/mood.
   if (emoteEl) { emoteEl.textContent = ""; emoteEl.style.display = "none"; }
+}
+
+// 主动说话:有 outbox 待发(想对你说)或 pending 意图(想找机会说)时,头上冒话
+function renderProactiveBubble() {
+  const el = document.getElementById("speech-bubble");
+  if (!el) return;
+  const pro = snapshotData.proactive || {};
+  const term = new Set(["sent", "suppressed", "expired", "cancelled", "delivered"]);
+  const ob = (pro.outbox || []).find(o => !term.has(o.status) && (o.draft_text || o.message_text || o.summary));
+  const it = (pro.intents || []).find(i => (i.status === "queued" || i.status === "generated") && i.summary);
+  let text = null, kind = "";
+  if (ob) { text = ob.draft_text || ob.message_text || ob.summary; kind = "want-say"; }
+  else if (it) { text = it.summary; kind = "on-mind"; }
+  if (!text) { el.className = "speech-bubble hidden"; el.onclick = null; return; }
+  const full = String(text);
+  const tag = kind === "want-say" ? "📣 想对你说" : "💭 想找机会说";
+  const shown = full.length > 42 ? full.slice(0, 42) + "…" : full;
+  el.className = "speech-bubble " + kind;
+  el.innerHTML = `<span class="sb-tag">${tag}</span><span class="sb-text">${escapeHtml(shown)}</span>`;
+  el.onclick = () => { switchOverlay("stage"); showToast((kind === "want-say" ? "📣 " : "💭 ") + full, "ok", 6500); };
 }
 
 // ── 右栏:日程 ─────────────────────────────────
