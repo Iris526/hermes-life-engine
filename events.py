@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import event_costs
 from .jsonutil import dumps, loads
 from .resources import apply_delta
 from .time_utils import normalize_range, normalized_iso, to_epoch, now_iso
@@ -200,6 +201,27 @@ def create_event(conn, owner_kind: str, owner_id: str, title: str,
     if not title or not title.strip():
         raise ValueError("event title is required")
     planned_start_iso, planned_end_iso, planned_start_ts, planned_end_ts = normalize_range(planned_start, planned_end)
+    # If the agent didn't state a cost for a recognized activity, fall back to a
+    # baseline estimate so no real activity is silently free. An explicit {}
+    # (caller said "this one is free") is preserved.
+    _costs_were_absent = resource_costs is None
+    duration_minutes = None
+    if planned_start_ts is not None and planned_end_ts is not None:
+        try:
+            duration_minutes = (float(planned_end_ts) - float(planned_start_ts)) / 60.0
+        except (TypeError, ValueError):
+            duration_minutes = None
+    resource_costs = event_costs.fill_costs_if_absent(
+        resource_costs, owner_kind=owner_kind, event_type=event_type, duration_minutes=duration_minutes,
+    )
+    if _costs_were_absent and resource_costs:
+        # Only estimate against resources this world actually defines — never
+        # invent a cost on an undefined resource (an explicit caller cost still
+        # errors as before, surfacing a real mistake).
+        defined = {r["key"] for r in conn.execute(
+            "SELECT key FROM resource_definitions WHERE owner_kind=? AND owner_id=?", (owner_kind, owner_id),
+        ).fetchall()}
+        resource_costs = {k: v for k, v in resource_costs.items() if k in defined}
     event_id = new_id("event")
     category = event_category or event_type or "other"
     conn.execute(

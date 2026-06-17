@@ -176,7 +176,7 @@ LIFE_RESOURCE = {
 
 LIFE_EVENT = {
     "name": "life_event",
-    "description": "Create/list/schedule/transition/complete Life Events. Use for Agent self-life and user-life plans with the correct owner policy.",
+    "description": "Create/list/schedule/transition/complete Life Events. Use for Agent self-life and user-life plans with the correct owner policy. When you create an event, judge its resource_costs yourself: how much energy it drains (negative) and any mood effect (positive for things you enjoy), scaled by how long and how demanding it is — a deep 委托 costs far more than a short stroll. If you omit resource_costs for a recognized activity type, the engine fills a gentle baseline; passing an explicit estimate (or {} for genuinely free) is better. action=estimate_cost returns the baseline for a given event_type/duration as a reference.",
     "parameters": {
         "type": "object",
         "properties": {

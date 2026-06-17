@@ -41,6 +41,7 @@ from .constants import DEFAULT_AGENT_ID, DEFAULT_USER_ID, MUTATION_BLOCKING_STAT
 from .time_utils import to_epoch as _to_epoch
 from . import persona
 from . import emotion
+from . import event_costs
 from .impromptu import record_impromptu_activity
 from .behavior_mapping import (
     DEFAULT_BEHAVIOR_MAPPINGS,
@@ -774,6 +775,8 @@ class LifeEngineRuntime:
                 return {"ok": True, "realtime_state": get_realtime_state(self.conn, owner_kind, owner_id)}
         if action == "update_state":
             return self.commit_ops([{"type": "UPDATE_REALTIME_STATE", "payload": payload}], owner_kind, owner_id, "life_event_tool", session_id, turn_id)
+        if action == "estimate_cost":
+            return {"ok": True, "resource_costs": event_costs.estimate_event_cost(payload.get("event_type"), payload.get("duration_minutes"))}
         if action == "create":
             return self.commit_ops([{"type": "CREATE_EVENT", "payload": payload}], owner_kind, owner_id, "life_event_tool", session_id, turn_id)
         if action == "schedule":
