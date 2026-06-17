@@ -11,6 +11,26 @@ let currentBagTab = null;
 let currentCollectionTab = null;
 let codexDocs = [];
 let reloadSerial = Date.now();
+let soundOn = true;
+let audioCtx = null;
+
+// 程序化音效(WebAudio,无需素材)。需用户手势后才能发声。
+function blip(kind) {
+  if (!soundOn) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = audioCtx, t = ctx.currentTime;
+    const freq = kind === "open" ? 660 : kind === "primary" ? 392 : 523;
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = "triangle"; o.frequency.setValueAtTime(freq, t);
+    o.frequency.exponentialRampToValueAtTime(freq * 1.5, t + 0.06);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.05, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(t); o.stop(t + 0.18);
+  } catch (e) {}
+}
 
 // ── 初始化 ────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
@@ -21,7 +41,14 @@ document.addEventListener("DOMContentLoaded", () => {
 function bindEvents() {
   document.getElementById("btn-refresh").onclick = () => loadSnapshot();
   document.getElementById("btn-reload").onclick = () => reloadInPage();
-  document.getElementById("btn-tick").onclick = () => doEnginePrimaryAction();
+  document.getElementById("btn-tick").onclick = () => { blip("primary"); doEnginePrimaryAction(); };
+  const soundBtn = document.getElementById("btn-sound");
+  if (soundBtn) soundBtn.onclick = () => {
+    soundOn = !soundOn;
+    soundBtn.textContent = soundOn ? "🔊" : "🔇";
+    soundBtn.classList.toggle("muted", !soundOn);
+    if (soundOn) blip("open");
+  };
   // hotbar — 技能栏:槽位编号 + 1-9 快捷键
   const hotbarBtns = Array.from(document.querySelectorAll(".hotbar-btn"));
   hotbarBtns.forEach((btn, i) => {
@@ -369,6 +396,13 @@ function renderStage() {
     }).join("");
   }
 
+  // 角色:活动特效 + 情绪着色 + 头顶表情
+  renderActorEffects(spriteState, snapshotData.resources || []);
+  if (actor) {
+    actor.onclick = currentEvent ? () => showEventDetail(currentEvent.id) : null;
+    actor.style.cursor = currentEvent ? "pointer" : "default";
+  }
+
   // JRPG 对话框
   document.getElementById("dlg-name").textContent = owner.owner_id || "—";
   const dlgText = document.getElementById("dlg-text");
@@ -389,6 +423,54 @@ function renderStage() {
   }
 }
 
+const ACTOR_FX = {
+  work:    { fx: "✦ ✦ ✦", cls: "fx-rise" },
+  battle:  { fx: "⚡ ⚡", cls: "fx-rise" },
+  walk:    { fx: "· · ·", cls: "fx-trail" },
+  eat:     { fx: "♨ ♨", cls: "fx-rise" },
+  sleep:   { fx: "z Z z", cls: "fx-rise" },
+  dream:   { fx: "✧ ✦ ✧", cls: "fx-rise" },
+  reply:   { fx: "✉", cls: "fx-pop" },
+  tired:   { fx: "💧", cls: "fx-rise" },
+  recover: { fx: "✿ ✿", cls: "fx-rise" },
+  idle:    { fx: "", cls: "" },
+};
+
+function renderActorEffects(spriteState, resources) {
+  const fxEl = document.getElementById("actor-fx");
+  const emoteEl = document.getElementById("actor-emote");
+  const img = document.getElementById("sprite-img");
+  const def = ACTOR_FX[spriteState] || ACTOR_FX.idle;
+  if (fxEl) {
+    if (def.fx) {
+      fxEl.className = "actor-fx " + def.cls;
+      fxEl.innerHTML = def.fx.split(/\s+/).filter(Boolean)
+        .map((c, i) => `<span style="--i:${i}">${c}</span>`).join("");
+    } else { fxEl.className = "actor-fx"; fxEl.innerHTML = ""; }
+  }
+  const mood = (resources.find(r => r.resource_key === "mood") || {}).current_value;
+  if (img) {
+    let filter = "drop-shadow(0 6px 10px rgba(0,0,0,.55))";
+    if (mood != null && mood <= -30) filter += " saturate(.6) brightness(.9)";
+    else if (mood != null && mood >= 40) filter += " saturate(1.15) brightness(1.06)";
+    img.style.filter = filter;
+  }
+  if (emoteEl) {
+    let e = "";
+    if (spriteState === "sleep") e = "😴";
+    else if (spriteState === "dream") e = "💭";
+    else if (spriteState === "reply") e = "❕";
+    else if (spriteState === "tired") e = "😮‍💨";
+    else if (spriteState === "eat") e = "😋";
+    else if (spriteState === "battle") e = "❗";
+    else if (mood != null && mood <= -30) e = "😔";
+    else if (mood != null && mood >= 50) e = "😊";
+    else if (spriteState === "work") e = "✍";
+    emoteEl.textContent = e;
+    emoteEl.style.opacity = e ? "1" : "0";
+  }
+}
+
 // ── 右栏:日程 ─────────────────────────────────
 function renderSchedule() {
   const schedule = snapshotData.schedule || {};
@@ -399,15 +481,36 @@ function renderSchedule() {
     el.innerHTML = '<div class="empty-state">无日程</div>';
     return;
   }
-  el.innerHTML = items.slice(0, 20).map(it => {
-    const cls = it.status === "completed" ? "completed" : it.status === "active" || it.status === "in_progress" ? "active" : it.is_sleep ? "sleep" : "";
+  const nowMs = (snapshotData.clock && snapshotData.clock.iso) ? Date.parse(snapshotData.clock.iso) : Date.now();
+  const nowLabel = (snapshotData.clock && snapshotData.clock.hhmm) || "";
+  const isToday = currentPeriod === "today";
+  let nowMarked = false;
+  let html = '<div class="timeline">';
+  items.slice(0, 24).forEach(it => {
+    const s = Date.parse(it.start), e = Date.parse(it.end);
+    let temporal = "upcoming";
+    if (!isNaN(e) && e < nowMs) temporal = "past";
+    else if (!isNaN(s) && !isNaN(e) && s <= nowMs && nowMs <= e) temporal = "now";
+    if (isToday && !nowMarked && temporal !== "past") {
+      html += `<div class="tl-now"><span class="tl-now-label">现在 ${nowLabel}</span></div>`;
+      nowMarked = true;
+    }
+    const status = it.status || "";
+    const cls = status === "completed" ? "completed"
+      : temporal === "now" || status === "in_progress" || status === "active" ? "active"
+      : it.is_sleep ? "sleep" : temporal;
     const evTitle = it.event_title || it.title || "—";
-    return `<div class="quest-card ${cls}" onclick="showScheduleDetail('${it.event_id || ""}')">
-      <div class="quest-time">${formatTime(it.start)}—${formatTime(it.end)}</div>
-      <div class="quest-title">${evTitle}${it.is_sleep ? " 🌙" : ""}</div>
-      <div class="quest-sub">${it.status}${it.event_category ? " · " + it.event_category : ""}</div>
+    html += `<div class="tl-node ${cls}" onclick="showScheduleDetail('${it.event_id || ""}')">
+      <span class="tl-dot"></span>
+      <div class="tl-body">
+        <div class="tl-time">${formatTime(it.start)}—${formatTime(it.end)}</div>
+        <div class="tl-title">${escapeHtml(evTitle)}${it.is_sleep ? " 🌙" : ""}</div>
+        <div class="tl-sub">${escapeHtml(status)}${it.event_category ? " · " + escapeHtml(it.event_category) : ""}</div>
+      </div>
     </div>`;
-  }).join("");
+  });
+  html += "</div>";
+  el.innerHTML = html;
 }
 
 // ── 右栏:主动消息 ─────────────────────────────
@@ -764,6 +867,7 @@ function closeDrawer() { document.getElementById("detail-drawer").classList.add(
 
 // ── 面板切换 ──────────────────────────────────
 function switchOverlay(name) {
+  blip(name === "stage" ? "switch" : "open");
   activeOverlay = name;
   document.querySelectorAll(".overlay-panel").forEach(p => p.classList.remove("active"));
   document.querySelectorAll(".hotbar-btn").forEach(b => b.classList.remove("active"));

@@ -42,7 +42,12 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .panel-rune::before { top: 6px; left: 6px; border-width: 1px 0 0 1px; }
 .panel-rune::after { bottom: 6px; right: 6px; border-width: 0 1px 1px 0; }
 
-.top-bar { grid-area: topbar; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; background: linear-gradient(180deg,var(--bg-1),var(--bg-0)); }
+.top-bar { grid-area: topbar; display: flex; align-items: center; justify-content: space-between; padding: 0 16px;
+  background: linear-gradient(180deg,#140d22,var(--bg-0)); border-bottom: 1px solid var(--border-dim);
+  box-shadow: inset 0 -2px 8px rgba(0,0,0,.4); }
+.bar-center { padding: 4px 10px; background: rgba(10,6,18,.55); border: 1px solid var(--border-dim); border-radius: 4px;
+  box-shadow: inset 0 0 8px rgba(0,0,0,.5); }
+.bar-center::before { content: "◰"; color: var(--cyan-dim); margin-right: 2px; font-size: 12px; }
 .bar-left { display: flex; align-items: center; gap: 8px; }
 .logo-sigil { color: var(--gold); font-size: 18px; text-shadow: 0 0 8px var(--gold-glow); }
 .logo { font-size: 18px; font-weight: 600; color: var(--gold); letter-spacing: 2px; }
@@ -129,7 +134,11 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 
 .content-area { grid-area: main; position: relative; overflow: hidden; background: var(--bg-0); }
 .overlay-panel { position: absolute; inset: 0; display: none; flex-direction: column; }
-.overlay-panel.active { display: flex; }
+.overlay-panel.active { display: flex; animation: panel-in .26s cubic-bezier(.2,.8,.3,1); }
+@keyframes panel-in { from { opacity: 0; transform: translateY(10px) scale(.99); } to { opacity: 1; transform: none; } }
+#overlay-stage.active { animation: stage-in .4s ease; }
+@keyframes stage-in { from { opacity: .3; } to { opacity: 1; } }
+.hud-btn.muted { color: var(--text-faint); border-color: var(--border-dim); }
 
 /* ══════════ 沉浸式舞台 ══════════ */
 .stage-scene { position: relative; width: 100%; height: 100%; overflow: hidden; background: #06040c; }
@@ -224,6 +233,20 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .v-orb.energy .fill { background:linear-gradient(180deg,#ffd24a,#c0392b); }
 .v-orb.focus .fill { background:linear-gradient(180deg,#6fe0ff,#0088aa); }
 .v-orb.mood .fill { background:linear-gradient(180deg,#7dffae,#2a9d6a); }
+
+/* 角色:活动特效 + 头顶表情 */
+.actor-fx { position:absolute; left:50%; bottom:46%; transform:translateX(-50%); z-index:3; pointer-events:none; width:120px; height:120px; }
+.actor-fx span { position:absolute; left:50%; top:50%; font-size:18px; color:var(--gold); text-shadow:0 0 8px var(--gold-glow); opacity:0; }
+.actor-fx.fx-rise span { animation: fx-rise 2.4s ease-in-out infinite; animation-delay: calc(var(--i) * 0.5s); transform:translate(-50%,-50%); }
+.actor-fx.fx-rise span:nth-child(1){ margin-left:-26px; } .actor-fx.fx-rise span:nth-child(3){ margin-left:26px; }
+@keyframes fx-rise { 0%{ transform:translate(-50%,10px) scale(.8); opacity:0;} 25%{opacity:.9;} 100%{ transform:translate(-50%,-60px) scale(1.1); opacity:0;} }
+.actor-fx.fx-trail span { animation: fx-trail 1s linear infinite; animation-delay: calc(var(--i) * 0.2s); color:var(--text-dim); }
+@keyframes fx-trail { 0%{ transform:translate(10px,20px); opacity:.8;} 100%{ transform:translate(-40px,20px); opacity:0;} }
+.actor-fx.fx-pop span { animation: fx-pop 1.6s ease-in-out infinite; color:var(--cyan); font-size:22px; }
+@keyframes fx-pop { 0%,100%{ transform:translate(-50%,-50%) scale(.9); opacity:.5;} 50%{ transform:translate(-50%,-64px) scale(1.15); opacity:1;} }
+.actor-emote { position:absolute; left:50%; top:2%; transform:translateX(-50%); z-index:4; font-size:26px; transition:opacity .4s ease;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,.6)); animation: emote-bob 2.6s ease-in-out infinite; }
+@keyframes emote-bob { 0%,100%{ transform:translateX(-50%) translateY(0);} 50%{ transform:translateX(-50%) translateY(-6px);} }
 
 /* —— 顶部任务条 + 时钟 —— */
 .quest-ribbon { position:absolute; top:16px; left:50%; transform:translateX(-50%); z-index:8; max-width:70%;
@@ -370,6 +393,37 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .quest-time { font-size: 11px; color: var(--cyan-dim); font-family: var(--font-mono); }
 .quest-title { font-size: 13px; color: var(--text); margin-top: 1px; }
 .quest-sub { font-size: 11px; color: var(--text-dim); margin-top: 1px; }
+
+/* ══════════ 日程时间轴卷轴 ══════════ */
+.timeline { position: relative; padding-left: 18px; }
+.timeline::before { content: ""; position: absolute; left: 6px; top: 4px; bottom: 4px; width: 2px;
+  background: linear-gradient(180deg,var(--gold-dim),var(--border-dim) 60%,transparent); }
+.tl-node { position: relative; padding: 6px 8px 8px 12px; margin-bottom: 4px; cursor: pointer; border-radius: 3px; transition: background .15s; }
+.tl-node:hover { background: rgba(212,175,55,.06); }
+.tl-dot { position: absolute; left: -15px; top: 9px; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--bg-0); border: 2px solid var(--text-faint); z-index: 1; }
+.tl-time { font-size: 11px; color: var(--cyan-dim); font-family: var(--font-mono); }
+.tl-title { font-size: 13px; color: var(--text); margin-top: 1px; }
+.tl-sub { font-size: 11px; color: var(--text-dim); margin-top: 1px; }
+/* 过去:暗淡 */
+.tl-node.past { opacity: .5; }
+.tl-node.past .tl-dot { border-color: var(--border); background: var(--border-dim); }
+.tl-node.completed { opacity: .55; }
+.tl-node.completed .tl-dot { border-color: var(--good); background: var(--good); }
+/* 进行中:高亮发光 */
+.tl-node.active { background: rgba(0,212,255,.08); box-shadow: inset 2px 0 0 var(--cyan); }
+.tl-node.active .tl-dot { border-color: var(--cyan); background: var(--cyan); box-shadow: 0 0 8px var(--cyan-glow); animation: tl-pulse 1.8s ease-in-out infinite; }
+.tl-node.active .tl-title { color: var(--cyan); }
+@keyframes tl-pulse { 0%,100%{ box-shadow: 0 0 6px var(--cyan-glow);} 50%{ box-shadow: 0 0 12px var(--cyan-glow);} }
+/* 未来 / 睡眠 */
+.tl-node.upcoming .tl-dot { border-color: var(--gold-dim); }
+.tl-node.sleep .tl-dot { border-color: var(--cyan-dim); background: var(--bg-2); }
+/* “现在”游标 */
+.tl-now { position: relative; height: 0; margin: 4px 0 6px; }
+.tl-now::before { content: ""; position: absolute; left: -15px; right: 4px; top: 0; height: 1px;
+  background: linear-gradient(90deg,var(--cinnabar),transparent); }
+.tl-now-label { position: absolute; left: -16px; top: -7px; font-size: 10px; font-family: var(--font-mono);
+  color: var(--cinnabar); background: var(--bg-1); padding: 1px 5px; border: 1px solid var(--cinnabar-dim); border-radius: 2px; }
 .proactive-list { display: flex; flex-direction: column; gap: 4px; }
 .proactive-card { padding: 6px 8px; background: var(--bg-2); border: 1px solid var(--border-dim); border-radius: 2px; font-size: 12px; }
 .proactive-card .pi-type { color: var(--cyan); font-size: 11px; }

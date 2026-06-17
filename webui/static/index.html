@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>归明观 · 废土观星台</title>
-<link rel="stylesheet" href="/static/styles.css?v=20260617-skillbar">
+<link rel="stylesheet" href="/static/styles.css?v=20260617-hud-timeline">
 </head>
 <body>
 <div id="app">
@@ -34,6 +34,7 @@
         <button id="btn-tick" class="hud-btn" title="推进心跳">▶<span class="btn-label">推进</span></button>
         <button id="btn-refresh" class="hud-btn" title="刷新数据">↻<span class="btn-label">刷新</span></button>
         <button id="btn-reload" class="hud-btn" title="页面内重载当前页面资源，不刷新整个网页">⟳<span class="btn-label">重载</span></button>
+        <button id="btn-sound" class="hud-btn" title="切换音效">🔊</button>
       </div>
     </header>
 
@@ -103,8 +104,10 @@
           <div id="reply-indicator" class="reply-indicator hidden"></div>
 
           <!-- 角色(站在地面上) -->
-          <div class="actor" id="actor">
+          <div class="actor" id="actor" title="查看当前事项">
             <div class="vital-orbs" id="vital-orbs"></div>
+            <div class="actor-emote" id="actor-emote"></div>
+            <div class="actor-fx" id="actor-fx"></div>
             <img id="sprite-img" class="sprite-img" src="/static/assets/sprite-idle.png" alt="sprite">
             <div class="actor-shadow"></div>
           </div>
@@ -304,6 +307,6 @@
 
   </div>
 </div>
-<script src="/static/app.js?v=20260617-skillbar"></script>
+<script src="/static/app.js?v=20260617-hud-timeline"></script>
 </body>
 </html>
