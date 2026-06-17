@@ -330,6 +330,41 @@ def test_eaten_meal_is_not_marked_skipped(tmp_path):
         rt.close()
 
 
+def test_brunch_covers_breakfast_and_lunch(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        activate(rt, "明灯，小馋猫，时间 Asia/Tokyo。")
+        rt.living("init_resources")
+        # 11:00 Tokyo (02:00 UTC): breakfast window has passed, brunch window (10-12) active.
+        out = rt.tick(now="2026-06-17T02:00:00+00:00", manual=False)
+        assert "brunch" in out["meals"].get("derived", [])
+        st = _meal_status(rt, "2026-06-17")
+        # breakfast must NOT be a recorded skip — it's covered by brunch
+        assert st.get("breakfast") != "skipped"
+        assert "brunch" in st
+    finally:
+        rt.close()
+
+
+def test_agent_derives_afternoon_tea_when_inclined(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        activate(rt, "明灯，小馋猫，时间 Asia/Tokyo。")
+        rt.living("init_resources")
+        for _ in range(30):
+            persona.apply_persona_drift(rt.conn, "agent", "default-agent", signals={"expressiveness": 0.9, "optimism": 0.6}, source="t")
+        # 15:30 Tokyo (06:30 UTC): afternoon-tea window.
+        out = rt.tick(now="2026-06-17T06:30:00+00:00", manual=False)
+        assert "afternoon_tea" in out["meals"].get("derived", [])
+        st = _meal_status(rt, "2026-06-17")
+        assert st.get("afternoon_tea") == "eaten"
+        assert reconcile_resources(rt.conn, "agent", "default-agent", record=False)["ok"]
+    finally:
+        rt.close()
+
+
 def test_do_now_preserves_no_active_overlap_invariant(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()

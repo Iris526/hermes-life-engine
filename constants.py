@@ -91,10 +91,21 @@ DEFAULT_CANON_TEMPLATE = {
     "meals": {
         "enabled": True,
         "needs_food": True,
+        # base meals must be accounted for each day (eaten / skipped-with-reason / covered by brunch)
         "times": {"breakfast": "07:30", "lunch": "12:30", "dinner": "19:00"},
         "window_minutes": 150,
         "skip_penalty": {"energy": -6, "mood": -4},
         "default_skip_reason": "忙碌中没能按时吃饭",
+        # agent may autonomously DERIVE extra meals it isn't told to eat
+        "autonomy": True,
+        "snack_tendency": 0.5,          # 0..1 "嘴馋" propensity for optional meals
+        "optional": {
+            "afternoon_tea": {"window": ["14:30", "16:30"], "mood": 4, "reason": "嘴馋,给自己来了点下午茶"},
+            "late_night_snack": {"window": ["22:00", "25:00"], "mood": 3, "reason": "嘴馋,加了顿夜宵"},
+        },
+        "allow_brunch": True,
+        "brunch_window": ["10:00", "12:00"],   # if neither breakfast nor lunch yet, may merge into brunch
+        "brunch_reason": "起得晚,早午饭并作一顿 brunch",
     },
     "behavior_rules": {},
     "autonomy": {"enabled": True, "default_mode": "full", "agent_decides_self_life": True},

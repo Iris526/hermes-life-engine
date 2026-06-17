@@ -275,14 +275,16 @@ function renderSidebar() {
     if (!meals.length) { if (mealsBlock) mealsBlock.style.display = "none"; }
     else {
       if (mealsBlock) mealsBlock.style.display = "";
-      const icon = { eaten: "🍚", skipped: "✕", pending: "·" };
-      const label = { breakfast: "早", lunch: "午", dinner: "晚" };
-      mealsRow.innerHTML = meals.map(m =>
-        `<div class="meal-chip ${m.status}" title="${label[m.meal_type] || m.meal_type} ${m.time || ""}${m.skip_reason ? " — " + m.skip_reason : ""}">
-          <span class="meal-name">${label[m.meal_type] || m.meal_type}</span>
-          <span class="meal-mark">${icon[m.status] || "·"}</span>
-        </div>`
-      ).join("");
+      const icon = { eaten: "🍚", skipped: "✕", pending: "·", covered: "🍱" };
+      const label = { breakfast: "早", lunch: "午", dinner: "晚", brunch: "早午", afternoon_tea: "茶", late_night_snack: "夜宵", snack: "加餐" };
+      const extras = (snapshotData.meals_today || {}).extras || [];
+      const chip = (m, name) =>
+        `<div class="meal-chip ${m.status}" title="${name}${m.skip_reason ? " — " + m.skip_reason : ""}">
+          <span class="meal-name">${name}</span><span class="meal-mark">${icon[m.status] || "🍚"}</span>
+        </div>`;
+      mealsRow.innerHTML =
+        meals.map(m => chip(m, (label[m.meal_type] || m.meal_type) + (m.time ? " " + m.time : ""))).join("") +
+        extras.map(m => chip(m, label[m.meal_type] || m.meal_type)).join("");
     }
   }
 
@@ -319,14 +321,17 @@ const SPRITE_FOR = {
 };
 const MOVING_STATES = new Set(["walk"]);
 const RESTING_STATES = new Set(["sleep", "tired", "recover", "dream"]);
+// poses with a 2-frame looping WebP (native animation); others are static PNG + CSS motion.
+const ANIMATED_POSES = new Set(["idle", "walk", "work"]);
 let particlesBuilt = false;
 
 function animateSprite(spriteState) {
   const img = document.getElementById("sprite-img");
   if (!img) return;
   const file = SPRITE_FOR[spriteState] || "idle";
-  const next = staticAssetUrl(`sprite-${file}.png`);
-  if (!img.src.endsWith(`sprite-${file}.png`) && img.src.indexOf(`sprite-${file}.png?`) === -1) img.src = next;
+  const ext = ANIMATED_POSES.has(file) ? "webp" : "png";
+  const name = `sprite-${file}.${ext}`;
+  if (img.src.indexOf(name) === -1) img.src = staticAssetUrl(name);
 }
 
 function buildParticles() {

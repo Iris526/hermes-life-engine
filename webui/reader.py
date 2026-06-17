@@ -293,13 +293,22 @@ class LifeEngineReader:
                 rows = self._all(conn, "SELECT meal_type, status, skip_reason FROM meal_records WHERE owner_kind=? AND owner_id=? AND meal_date=?", (owner_kind, owner_id, date_key))
                 by_type = {r["meal_type"]: r for r in rows}
             order = {"breakfast": 0, "lunch": 1, "dinner": 2}
+            has_brunch = "brunch" in by_type
             meals = []
             for mt, hhmm in sorted(times.items(), key=lambda kv: order.get(kv[0], 9)):
                 rec = by_type.get(mt)
-                meals.append({"meal_type": mt, "time": hhmm,
-                              "status": (rec.get("status") if rec else None) or ("pending" if not rec else "eaten"),
+                if rec:
+                    status = rec.get("status") or "eaten"
+                elif has_brunch and mt in ("breakfast", "lunch"):
+                    status = "covered"
+                else:
+                    status = "pending"
+                meals.append({"meal_type": mt, "time": hhmm, "status": status,
                               "skip_reason": rec.get("skip_reason") if rec else None})
-            return {"date": date_key, "meals": meals}
+            # autonomously-derived extras (brunch / 下午茶 / 夜宵 …)
+            extras = [{"meal_type": mt, "status": v.get("status") or "eaten", "skip_reason": v.get("skip_reason")}
+                      for mt, v in by_type.items() if mt not in times]
+            return {"date": date_key, "meals": meals, "extras": extras}
 
     def persona(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
         """Living-persona traits (v0.14.0) for the HUD — read-only."""

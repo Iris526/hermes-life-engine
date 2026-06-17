@@ -288,6 +288,33 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
         except Exception:
             pass
 
+    # Missed meals today: surface skipped/pending meals so the owner can nudge
+    # the agent to eat (or knows why it didn't).
+    if owner_kind == "agent":
+        try:
+            from .meals import meal_status_for_date
+            canon = get_active_canon(conn, owner_kind, owner_id)
+            tz_name = (canon.get("meals") or {}).get("timezone") or (canon.get("schedule_rules") or {}).get("timezone") or "UTC"
+            try:
+                from zoneinfo import ZoneInfo
+                import datetime as _dt
+                date_key = _dt.datetime.now(_dt.timezone.utc).astimezone(ZoneInfo(tz_name)).date().isoformat()
+            except Exception:
+                date_key = now_iso()[:10]
+            ms = meal_status_for_date(conn, owner_kind, owner_id, date_key, canon).get("meals", {})
+            skipped = [mt for mt, v in ms.items() if v.get("status") == "skipped"]
+            label = {"breakfast": "早饭", "lunch": "午饭", "dinner": "晚饭"}
+            for mt in skipped:
+                reason = ms[mt].get("skip_reason") or "未按时进食"
+                items.append(_item(
+                    "meal_skipped", "warning", f"今天{label.get(mt, mt)}没吃",
+                    f"原因：{reason}。要不要提醒它补一顿或安排好下一餐？",
+                    section="meals", source_table="meal_records", source_id=f"{date_key}:{mt}",
+                    action_hint={"tool": "life_meals", "action": "create", "meal_type": mt},
+                ))
+        except Exception:
+            pass
+
     if include_doctor:
         doc = _doctor_summary(conn, owner_kind, owner_id)
         summary["doctor"] = {"ok": doc.get("ok"), "issue_count": doc.get("issue_count")}

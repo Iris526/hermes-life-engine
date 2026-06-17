@@ -119,9 +119,11 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .sleep-item .val { color: var(--cyan); font-family: var(--font-mono); }
 
 /* 一日三餐 */
-.meals-row { display: flex; gap: 6px; }
-.meal-chip { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 5px 0; border-radius: 3px;
+.meals-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.meal-chip { flex: 1 1 28%; min-width: 46px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 5px 0; border-radius: 3px;
   background: var(--bg-0); border: 1px solid var(--border-dim); }
+.meal-chip.covered { border-color: var(--gold-dim); }
+.meal-chip.covered .meal-name, .meal-chip.covered .meal-mark { color: var(--gold); }
 .meal-chip .meal-name { font-size: 11px; color: var(--text-dim); }
 .meal-chip .meal-mark { font-size: 14px; line-height: 1; }
 .meal-chip.eaten { border-color: var(--good); }
@@ -224,6 +226,21 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 @keyframes danger-pulse { 0%,100%{opacity:.4;} 50%{opacity:.85;} }
 /* 恢复室:柔和疗愈光 */
 .scene-recovery_room .prop-layer::after { left:50%; transform:translateX(-50%); width:200px; height:80px; bottom:24%; background:radial-gradient(ellipse,rgba(125,255,174,.14),transparent 65%); border-radius:50%; }
+
+/* —— 坐姿场景的配套氛围(mid-layer 不被道具占用) —— */
+/* 餐角:头顶暖灯笼 + 桌面热气 */
+.scene-meal_corner .mid-layer::before { content:""; position:absolute; left:50%; transform:translateX(-50%); top:14%; width:34px; height:46px;
+  background:radial-gradient(circle at 50% 35%,rgba(255,196,120,.9),rgba(192,57,43,.5) 60%,transparent 72%); border-radius:50% 50% 45% 45%; box-shadow:0 0 26px 8px rgba(255,180,90,.3); }
+.scene-meal_corner .mid-layer::after { content:""; position:absolute; left:50%; transform:translateX(-50%); bottom:34%; width:40px; height:60px;
+  background:linear-gradient(0deg,transparent,rgba(255,240,210,.18)); -webkit-mask:linear-gradient(0deg,#000,transparent); mask:linear-gradient(0deg,#000,transparent); filter:blur(2px); animation:steam-rise 3.5s ease-in-out infinite; }
+@keyframes steam-rise { 0%,100%{opacity:.3;transform:translateX(-50%) translateY(0);} 50%{opacity:.7;transform:translateX(-50%) translateY(-8px);} }
+/* 恢复室:坐垫 + 香炉细烟 */
+.scene-recovery_room .mid-layer::before { content:""; position:absolute; left:50%; transform:translateX(-50%); bottom:23%; width:170px; height:22px;
+  background:radial-gradient(ellipse,rgba(90,70,120,.6),rgba(40,30,60,.3) 70%,transparent); border-radius:50%; }
+/* 梦境:多层浮岛光环 + 星屑 */
+.scene-dream_space .mid-layer::before { content:""; position:absolute; left:50%; transform:translateX(-50%); bottom:30%; width:300px; height:90px;
+  background:radial-gradient(ellipse,rgba(0,212,255,.10),transparent 60%); border-radius:50%; animation:dream-float 6s ease-in-out infinite; }
+@keyframes dream-float { 0%,100%{transform:translateX(-50%) translateY(0);} 50%{transform:translateX(-50%) translateY(-10px);} }
 
 /* —— 角色 —— */
 .actor { position:absolute; left:50%; bottom:26%; z-index:6; transform:translateX(-50%); display:flex; flex-direction:column; align-items:center; }

@@ -192,6 +192,7 @@ from .meals import (
     create_meal_record,
     list_meals,
     plan_meal_settlement,
+    plan_meal_autonomy,
     meal_status_for_date,
 )
 from .memory import create_memory, search_memories
@@ -1399,13 +1400,29 @@ class LifeEngineRuntime:
                     offset = offset[:3] + ":" + offset[3:] if offset else "+00:00"
             except Exception:
                 pass
+            # 1) the agent may autonomously derive extra meals (下午茶/夜宵/brunch)
+            derived = []
+            if str(gates.get("autonomy", "full") or "full").lower() not in {"off", "disabled", "manual"}:
+                try:
+                    persona_traits = persona.get_persona(self.conn, owner_kind, owner_id)
+                    d_ops = plan_meal_autonomy(self.conn, owner_kind, owner_id, now=local_iso, canon=canon,
+                                               persona=persona_traits, tz_offset=offset)
+                    if d_ops:
+                        with trace.span("meal_autonomy", {"count": len(d_ops)}):
+                            self._commit_ops_locked(d_ops, owner_kind, owner_id, "autonomy_meal",
+                                                    session_id=None, turn_id=tick_id, trace=trace, control=control)
+                        derived = [o["payload"]["meal_type"] for o in d_ops if o["type"] == "CREATE_MEAL_RECORD"]
+                except Exception as exc:
+                    append_audit(self.conn, owner_kind, owner_id, "meal_autonomy_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
+            # 2) settle any base meal whose window passed without being eaten/covered
             ops = plan_meal_settlement(self.conn, owner_kind, owner_id, now=local_iso, canon=canon, tz_offset=offset)
-            if not ops:
-                return {"status": "ok", "settled": 0}
-            with trace.span("meal_settlement", {"count": len(ops)}):
-                commit = self._commit_ops_locked(ops, owner_kind, owner_id, "heartbeat_meals",
-                                                 session_id=None, turn_id=tick_id, trace=trace, control=control)
-            return {"status": "ok", "settled": len(ops), "meals": [o["payload"]["meal_type"] for o in ops], "commit": commit}
+            settled = []
+            if ops:
+                with trace.span("meal_settlement", {"count": len(ops)}):
+                    self._commit_ops_locked(ops, owner_kind, owner_id, "heartbeat_meals",
+                                            session_id=None, turn_id=tick_id, trace=trace, control=control)
+                settled = [o["payload"]["meal_type"] for o in ops]
+            return {"status": "ok", "derived": derived, "settled_count": len(settled), "skipped": settled, "meals": settled}
         except Exception as exc:
             append_audit(self.conn, owner_kind, owner_id, "meal_settlement_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
