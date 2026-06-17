@@ -292,22 +292,22 @@ function renderSidebar() {
 }
 
 // ── 中央舞台(沉浸式场景) ──────────────────────
-const FRAME2_STATES = new Set(["walk", "work", "battle"]);   // 有第二帧动画
+// 全部状态映射到新版明灯三头身像素形象的 4 个姿势,CSS 负责动作。
+const SPRITE_FOR = {
+  idle: "idle", work: "work", battle: "work", walk: "walk",
+  sleep: "sleep", dream: "sleep", recover: "sleep",
+  eat: "idle", reply: "idle", tired: "idle",
+};
 const MOVING_STATES = new Set(["walk"]);
 const RESTING_STATES = new Set(["sleep", "tired", "recover", "dream"]);
-let spriteAnimTimer = null;
 let particlesBuilt = false;
 
 function animateSprite(spriteState) {
-  if (spriteAnimTimer) { clearInterval(spriteAnimTimer); spriteAnimTimer = null; }
   const img = document.getElementById("sprite-img");
   if (!img) return;
-  img.src = staticAssetUrl(`sprite-${spriteState}.png`);
-  if (FRAME2_STATES.has(spriteState)) {
-    let f = 0;
-    const frames = [`sprite-${spriteState}.png`, `sprite-${spriteState}-2.png`];
-    spriteAnimTimer = setInterval(() => { f ^= 1; img.src = staticAssetUrl(frames[f]); }, MOVING_STATES.has(spriteState) ? 380 : 600);
-  }
+  const file = SPRITE_FOR[spriteState] || "idle";
+  const next = staticAssetUrl(`sprite-${file}.png`);
+  if (!img.src.endsWith(`sprite-${file}.png`) && img.src.indexOf(`sprite-${file}.png?`) === -1) img.src = next;
 }
 
 function buildParticles() {
