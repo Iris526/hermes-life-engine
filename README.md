@@ -1,10 +1,10 @@
-# LifeEngine Hermes Plugin v0.14.0
+# LifeEngine Hermes Plugin v0.15.0
 
 LifeEngine is an embedded, SQLite/sqlite-vec based Agent life runtime for Hermes.
 
-This release is the **Living Loop**: life time is now settled against real elapsed wall-clock time (with offline-gap reconciliation), being awake has a passive metabolic cost, and a separate living-persona layer slowly drifts from experience and feeds back into behavior.
+This release is the **Resource Model Reshape**: the dead `focus` vital is removed, `fatigue` stays as the distinct "need-to-sleep" axis, `mood` becomes an agent-triggerable emotional reaction that feeds back into behavior, and per-event energy/mood costs are judged by the agent (with a safe baseline fallback) instead of fixed presets. Builds on v0.14.0's Living Loop.
 
-- Plugin version: `0.14.0`
+- Plugin version: `0.15.0`
 - sqlite-vec: required by LifeEngine runtime
 - Integration: Hermes directory plugin; no core-loop fork
 

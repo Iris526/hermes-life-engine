@@ -23,7 +23,7 @@ def activate(rt: LifeEngineRuntime):
 
 
 def define_body_resources(rt: LifeEngineRuntime):
-    for key, initial in [("energy", 70), ("focus", 70), ("mood", 60), ("fatigue", 0)]:
+    for key, initial in [("energy", 70), ("mood", 60), ("fatigue", 0)]:
         rt.resources("define", key=key, display_name=key, initial=initial)
 
 
@@ -44,7 +44,7 @@ def test_v0116_schema_and_table(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
-        assert PLUGIN_VERSION == "0.14.0"
+        assert PLUGIN_VERSION == "0.15.0"
         assert _SCHEMA_VERSION >= 29
         assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 29
         tables = {r[0] for r in rt.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

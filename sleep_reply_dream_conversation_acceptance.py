@@ -75,7 +75,7 @@ def _activate_synthetic(rt: Any, owner_id: str) -> None:
     rt.control("module", owner_id=owner_id, key="dream", value="auto")
     rt.control("module", owner_id=owner_id, key="execution", value="auto")
     rt.control("module", owner_id=owner_id, key="autonomy", value="full")
-    for key, initial in [("energy", 220), ("focus", 220), ("mood", 80), ("fatigue", 0), ("sleep_debt_minutes", 0)]:
+    for key, initial in [("energy", 220), ("mood", 80), ("fatigue", 0), ("sleep_debt_minutes", 0)]:
         rt.resources("define", owner_id=owner_id, key=key, display_name=key, initial=initial)
 
 
@@ -90,7 +90,7 @@ def _create_work_event(rt: Any, owner_id: str, *, title: str, importance: int, s
     ev_out = rt.event_tool(
         "create", owner_id=owner_id, title=title, event_type="work", event_category="work",
         activity_domain="conversation_acceptance", source="acceptance", status="planned",
-        importance=importance, priority=importance, resource_costs={"energy": -30, "focus": -30},
+        importance=importance, priority=importance, resource_costs={"energy": -30},
         interruptibility={"level": "soft_interruptible"},
     )
     event_id = _first_fact_evidence(ev_out, "event_id")

@@ -235,7 +235,7 @@ function renderSidebar() {
 
   // 资源条
   const resources = snapshotData.resources || [];
-  const vitals = resources.filter(r => ["energy", "focus", "mood", "fatigue"].includes(r.resource_key));
+  const vitals = resources.filter(r => ["energy", "mood", "fatigue"].includes(r.resource_key));
   const vitalsEl = document.getElementById("vital-bars");
   vitalsEl.innerHTML = vitals.map(r => {
     const pct = r.max_value != null && r.max_value > r.min_value
@@ -249,7 +249,7 @@ function renderSidebar() {
   }).join("") || '<div class="empty-state">无状态资源</div>';
 
   // 货币/物资
-  const currencies = resources.filter(r => !["energy", "focus", "mood", "fatigue"].includes(r.resource_key));
+  const currencies = resources.filter(r => !["energy", "mood", "fatigue"].includes(r.resource_key));
   document.getElementById("currency-stats").innerHTML = currencies.map(r =>
     `<div class="currency-item"><span class="ckey">${r.display_name || r.resource_key}</span><span class="cval">${formatNum(r.current_value)}${r.unit ? " " + r.unit : ""}</span></div>`
   ).join("") || '<div class="empty-state">无财物</div>';
@@ -426,7 +426,7 @@ function renderStage() {
   const orbs = document.getElementById("vital-orbs");
   if (orbs) {
     const resources = snapshotData.resources || [];
-    const want = [["energy", "精"], ["focus", "专"], ["mood", "心"]];
+    const want = [["energy", "精"], ["mood", "心"]];
     orbs.innerHTML = want.map(([key, glyph]) => {
       const r = resources.find(x => x.resource_key === key);
       if (!r) return "";

@@ -55,7 +55,7 @@ def check_required_settings(conn, owner_kind: str, owner_id: str, canon: dict[st
     item("sleep", bool(sleep and (sleep.get("target_minutes") or sleep.get("defaultSleepHours") or sleep.get("core_sleep_required") is not None)),
          "睡眠规则", "需要知道 Agent 是否需要睡觉、目标睡眠多久、是否允许通宵。", "例如：每天目标睡眠 7.5 小时，允许被 call 叫醒。")
     item("resources", bool(resources),
-         "资源定义", "至少需要几个核心资源，才能做资源闭环。", "例如：energy、focus、mood、fatigue、sleep_debt_minutes、money.jpy。")
+         "资源定义", "至少需要几个核心资源，才能做资源闭环。", "例如：energy、mood、fatigue、sleep_debt_minutes、money.jpy。")
     item("autonomy", bool(autonomy) or True,
          "自治规则", "需要确定 Agent 是否可以自己推进生活。", "默认：允许 Agent 自主管理自己的生活和安全 review。")
 
@@ -136,7 +136,7 @@ def required_settings_spec() -> dict[str, Any]:
         "resources": {
             "title": "资源定义",
             "required": True,
-            "suggested_keys": ["energy", "focus", "mood", "fatigue", "sleep_debt_minutes", "money.jpy"],
+            "suggested_keys": ["energy", "mood", "fatigue", "sleep_debt_minutes", "money.jpy"],
             "paths": ["resources.definitions"],
         },
         "sleep": {
@@ -195,7 +195,6 @@ def default_setting_patch(kind: str = "balanced") -> dict[str, Any]:
         "resources": {
             "definitions": {
                 "energy": {"display_name": "精力", "resource_class": "capacity", "unit": "points", "initial": 60, "min": 0, "max": 100},
-                "focus": {"display_name": "专注", "resource_class": "capacity", "unit": "points", "initial": 60, "min": 0, "max": 100},
                 "mood": {"display_name": "心情", "resource_class": "state", "unit": "points", "initial": 50, "min": -100, "max": 100},
                 "fatigue": {"display_name": "疲劳", "resource_class": "state", "unit": "points", "initial": 20, "min": 0, "max": 100},
                 "sleep_debt_minutes": {"display_name": "睡眠债", "resource_class": "state", "unit": "minutes", "initial": 0, "min": 0, "max": 1440},

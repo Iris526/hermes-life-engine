@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 PLUGIN_NAME = "lifeengine"
-PLUGIN_VERSION = "0.14.0"
+PLUGIN_VERSION = "0.15.0"
 DB_FILENAME = "lifeengine.db"
 VECTOR_DIM = 384
 
@@ -81,7 +81,6 @@ DEFAULT_CANON_TEMPLATE = {
     "resources": {
         "definitions": {
             "energy": {"display_name": "Energy", "resource_class": "vital", "unit": "points", "min": 0, "max": 100, "initial": 60, "rules": {"heartbeat_recovery": 3, "metabolism": -0.06}},
-            "focus": {"display_name": "Focus", "resource_class": "vital", "unit": "points", "min": 0, "max": 100, "initial": 60, "rules": {"heartbeat_recovery": 2, "metabolism": -0.04}},
             "mood": {"display_name": "Mood", "resource_class": "vital", "unit": "points", "min": -100, "max": 100, "initial": 0, "rules": {"heartbeat_recovery": 1, "metabolism": -0.01}},
             "fatigue": {"display_name": "Fatigue", "resource_class": "vital", "unit": "points", "min": 0, "max": 100, "initial": 20, "rules": {"heartbeat_recovery": -2, "metabolism": 0.05}},
             "sleep_debt_minutes": {"display_name": "Sleep debt", "resource_class": "vital", "unit": "minutes", "min": 0, "initial": 0},

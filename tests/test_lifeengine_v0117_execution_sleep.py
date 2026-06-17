@@ -56,7 +56,7 @@ def create_scheduled_event(rt: LifeEngineRuntime, *, title: str, importance: int
         status="planned",
         importance=importance,
         priority=importance,
-        resource_costs={"energy": -12, "focus": -10},
+        resource_costs={"energy": -12},
     )
     event_id = event_out["receipt"]["facts"][0]["evidence"]["event_id"]
     schedule_out = rt.event_tool(
@@ -74,7 +74,7 @@ def test_v0117_schema_and_table(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
-        assert PLUGIN_VERSION == "0.14.0"
+        assert PLUGIN_VERSION == "0.15.0"
         assert _SCHEMA_VERSION >= 29
         assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 29
         tables = {r[0] for r in rt.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

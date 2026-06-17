@@ -342,10 +342,9 @@ def plan_autonomy(
 
     accounts = _account_map(conn, owner_kind, owner_id)
     energy = accounts.get("energy")
-    focus = accounts.get("focus")
     mood = accounts.get("mood")
     sleep_ctx = _sleep_context(conn, owner_kind, owner_id, accounts, now=now)
-    score: dict[str, Any] = {"energy": energy, "focus": focus, "mood": mood, "sleep": sleep_ctx}
+    score: dict[str, Any] = {"energy": energy, "mood": mood, "sleep": sleep_ctx}
 
     # Sleep debt and all-nighter pressure are allowed to override goal-pushing.
     # This keeps the agent from behaving like an always-on worker after poor sleep.
@@ -460,8 +459,6 @@ def plan_autonomy(
     costs: dict[str, float] = {}
     if energy is not None:
         costs["energy"] = -8 if base_event_type in {"study", "work", "creative"} else -5
-    if focus is not None and base_event_type in {"study", "work", "creative"}:
-        costs["focus"] = -10
 
     if sleep_ctx.get("should_downshift") and base_event_type in {"study", "work", "creative"}:
         title = f"轻量推进目标：{selected['title']}"
@@ -470,8 +467,6 @@ def plan_autonomy(
         tags.extend(["sleep_adjusted", "low_intensity"])
         if energy is not None:
             costs["energy"] = -3
-        if focus is not None:
-            costs["focus"] = -3
         adjustment = {"type": "goal_step_downshifted", "severity": sleep_ctx.get("severity", "moderate")}
 
     ops = [{"type": "CREATE_EVENT", "payload": {

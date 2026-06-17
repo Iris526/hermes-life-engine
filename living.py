@@ -136,7 +136,6 @@ GUIMINGGUAN_RESOURCES = [
     {"key": "daily_cost.lingzhu", "display_name": "每日基础开销", "resource_class": "currency", "unit": "枚/日", "min_value": 0, "max_value": None, "initial": 8},
     {"key": "commission_income.lingzhu", "display_name": "委托收入累计", "resource_class": "currency", "unit": "枚", "min_value": 0, "max_value": None, "initial": 0},
     {"key": "energy", "display_name": "精力", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 60, "rules": {"heartbeat_recovery": 3, "metabolism": -0.06}},
-    {"key": "focus", "display_name": "专注", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 60, "rules": {"heartbeat_recovery": 2, "metabolism": -0.04}},
     {"key": "mood", "display_name": "心情", "resource_class": "vital", "unit": "points", "min_value": -100, "max_value": 100, "initial": 0, "rules": {"heartbeat_recovery": 1, "metabolism": -0.01}},
     {"key": "fatigue", "display_name": "疲劳", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 20, "rules": {"heartbeat_recovery": -2, "metabolism": 0.05}},
 ]
@@ -177,10 +176,10 @@ def rhythm_templates(date_key: str | None = None, tz: str = "Asia/Tokyo", preset
     return [
         {"title": "归明观晨巡与开观", "start": _time_for(date_key, "07:30", tz), "end": _time_for(date_key, "08:05", tz), "event_type": "routine", "event_category": "maintenance", "activity_domain": "temple_morning", "resource_costs": {"energy": -4, "mood": 2}, "tags": ["晨巡", "开观", "归明观"], "worth_diary": False},
         {"title": "打扫香案并补符纸", "start": _time_for(date_key, "08:20", tz), "end": _time_for(date_key, "08:55", tz), "event_type": "temple_chores", "event_category": "maintenance", "activity_domain": "altar_upkeep", "resource_costs": {"energy": -5, "mood": 1}, "tags": ["香案", "符纸", "日常"], "worth_diary": False},
-        {"title": "检查小型结界工具包", "start": _time_for(date_key, "09:40", tz), "end": _time_for(date_key, "10:15", tz), "event_type": "inspection", "event_category": "work", "activity_domain": "barrier_tools", "resource_costs": {"focus": -5}, "tags": ["结界仪", "工具包"], "worth_diary": False},
-        {"title": "接一个低风险净符委托", "start": _time_for(date_key, "13:30", tz), "end": _time_for(date_key, "15:00", tz), "event_type": "commission", "event_category": "work", "activity_domain": "low_risk_talisman_commission", "resource_costs": {"energy": -12, "focus": -10, "mood": 2}, "tags": ["小委托", "净符", "十二城"], "worth_diary": True, "worth_proactive": True},
-        {"title": "傍晚记账与灵铢收支整理", "start": _time_for(date_key, "17:40", tz), "end": _time_for(date_key, "18:10", tz), "event_type": "bookkeeping", "event_category": "finance", "activity_domain": "temple_accounts", "resource_costs": {"focus": -4}, "tags": ["记账", "灵铢"], "worth_diary": True},
-        {"title": "写一张给 Ringo 的小纸条草稿", "start": _time_for(date_key, "21:30", tz), "end": _time_for(date_key, "21:45", tz), "event_type": "proactive_note", "event_category": "relationship", "activity_domain": "pending_share", "resource_costs": {"mood": 1, "focus": -2}, "tags": ["Ringo", "小纸条", "pending"], "worth_proactive": True},
+        {"title": "检查小型结界工具包", "start": _time_for(date_key, "09:40", tz), "end": _time_for(date_key, "10:15", tz), "event_type": "inspection", "event_category": "work", "activity_domain": "barrier_tools", "resource_costs": {"energy": -5}, "tags": ["结界仪", "工具包"], "worth_diary": False},
+        {"title": "接一个低风险净符委托", "start": _time_for(date_key, "13:30", tz), "end": _time_for(date_key, "15:00", tz), "event_type": "commission", "event_category": "work", "activity_domain": "low_risk_talisman_commission", "resource_costs": {"energy": -18, "mood": 2}, "tags": ["小委托", "净符", "十二城"], "worth_diary": True, "worth_proactive": True},
+        {"title": "傍晚记账与灵铢收支整理", "start": _time_for(date_key, "17:40", tz), "end": _time_for(date_key, "18:10", tz), "event_type": "bookkeeping", "event_category": "finance", "activity_domain": "temple_accounts", "resource_costs": {"energy": -4}, "tags": ["记账", "灵铢"], "worth_diary": True},
+        {"title": "写一张给 Ringo 的小纸条草稿", "start": _time_for(date_key, "21:30", tz), "end": _time_for(date_key, "21:45", tz), "event_type": "proactive_note", "event_category": "relationship", "activity_domain": "pending_share", "resource_costs": {"mood": 1, "energy": -2}, "tags": ["Ringo", "小纸条", "pending"], "worth_proactive": True},
     ]
 
 

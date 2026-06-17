@@ -9,7 +9,7 @@ def test_v01210_schema_and_context_policy(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     rt = LifeEngineRuntime()
     try:
-        assert PLUGIN_VERSION == "0.14.0"
+        assert PLUGIN_VERSION == "0.15.0"
         assert _SCHEMA_VERSION == 51
         assert rt.conn.execute("PRAGMA user_version").fetchone()[0] == 51
         row = rt.conn.execute("SELECT name FROM sqlite_master WHERE name='prompt_context_runs'").fetchone()

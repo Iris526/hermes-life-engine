@@ -1,7 +1,7 @@
 """Sleep day-state effects for LifeEngine v0.11.5.
 
 This module turns completed/interrupted SleepSession rows into a durable day
-state: all-nighter detection, cumulative sleep debt, next-day energy/focus/mood
+state: all-nighter detection, cumulative sleep debt, next-day energy/mood
 penalties, and optional recovery-sleep pressure.  It is intentionally separate
 from SleepSession itself: planned/actual sleep remains the source event, while
 sleep_day_states is the materialized physiological aftermath that Autonomy,
@@ -117,9 +117,10 @@ def record_post_sleep_day_state(conn, owner_kind: str, owner_id: str, *, sleep_s
     if apply_resource_effects:
         event_id = (session or {}).get("event_id") or (plan or {}).get("event_id")
         block_id = (session or {}).get("schedule_block_id") or (plan or {}).get("schedule_block_id")
+        # focus was removed as a resource; its sleep penalty lives on only as the
+        # derived focus_penalty signal in mind_state (drives downshift), not a ledger.
         for key_name, delta, op, reason in [
             ("energy", -effects["energy_penalty"], "consume", "sleep insufficiency next-day energy penalty"),
-            ("focus", -effects["focus_penalty"], "consume", "sleep insufficiency focus penalty"),
             ("mood", -effects["mood_penalty"], "consume", "sleep insufficiency mood penalty"),
             ("fatigue", effects["fatigue_delta"], "adjust", "sleep insufficiency fatigue increase"),
         ]:

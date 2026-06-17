@@ -58,7 +58,7 @@ def _activate_synthetic(rt: Any, owner_id: str) -> None:
     rt.control("module", owner_id=owner_id, key="autonomy", value="full")
     rt.control("module", owner_id=owner_id, key="execution", value="auto")
     rt.control("module", owner_id=owner_id, key="reply_gate", value="auto")
-    for key, initial in [("energy", 70), ("focus", 70), ("mood", 60), ("fatigue", 0)]:
+    for key, initial in [("energy", 70), ("mood", 60), ("fatigue", 0)]:
         rt.resources("define", owner_id=owner_id, key=key, display_name=key, initial=initial)
 
 
@@ -96,7 +96,7 @@ def _create_work_event(rt: Any, owner_id: str, *, title: str, importance: int, s
         status="planned",
         importance=importance,
         priority=importance,
-        resource_costs={"energy": -12, "focus": -10},
+        resource_costs={"energy": -12},
     )
     event_id = _event_id(event_out)
     # Keep the end one hour after the given start; tests use different dates.

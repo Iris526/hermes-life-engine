@@ -166,6 +166,7 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .stage-scene.has-bg .sky-layer,
 .stage-scene.has-bg .backdrop-layer,
 .stage-scene.has-bg .mid-layer,
+.stage-scene.has-bg .prop-layer,
 .stage-scene.has-bg .ground-layer,
 .stage-scene.has-bg .celestial { opacity: 0 !important; }
 .stage-scene.has-bg .phase-tint { opacity: 1; }
@@ -282,7 +283,6 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .v-orb .fill { position:absolute; left:0; right:0; bottom:0; transition:height .6s ease; }
 .v-orb .glyph { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:13px; color:var(--text); text-shadow:0 1px 2px #000; z-index:2; }
 .v-orb.energy .fill { background:linear-gradient(180deg,#ffd24a,#c0392b); }
-.v-orb.focus .fill { background:linear-gradient(180deg,#6fe0ff,#0088aa); }
 .v-orb.mood .fill { background:linear-gradient(180deg,#7dffae,#2a9d6a); }
 
 /* 角色:活动特效 + 头顶表情 */

@@ -15,7 +15,7 @@ def hermes_home(monkeypatch):
 
 
 def test_version_v0123():
-    assert PLUGIN_VERSION == "0.14.0"
+    assert PLUGIN_VERSION == "0.15.0"
 
 
 def test_schedule_semantics_explain_and_unscheduled_event():
