@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 50
+_SCHEMA_VERSION = 51
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -252,6 +252,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 50:
         _create_schema_v50(conn)
         _record_schema_migration(conn, 50, "living_persona_drift")
+    if current < 51:
+        _create_schema_v51(conn)
+        _record_schema_migration(conn, 51, "meal_accountability")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3614,4 +3617,22 @@ def _create_schema_v50(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_persona_drift_owner_time
           ON persona_drift_log(owner_kind, owner_id, created_at DESC);
         """
+    )
+
+
+def _create_schema_v51(conn: sqlite3.Connection) -> None:
+    """meal accountability: every planned meal is accounted for — eaten or
+    skipped-with-reason. Extends meal_records with status/skip_reason and the
+    day/slot it belongs to so the heartbeat can settle missed meals."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(meal_records)")}
+    if "status" not in cols:
+        conn.execute("ALTER TABLE meal_records ADD COLUMN status TEXT NOT NULL DEFAULT 'eaten'")
+    if "skip_reason" not in cols:
+        conn.execute("ALTER TABLE meal_records ADD COLUMN skip_reason TEXT")
+    if "meal_date" not in cols:
+        conn.execute("ALTER TABLE meal_records ADD COLUMN meal_date TEXT")
+    if "planned_for" not in cols:
+        conn.execute("ALTER TABLE meal_records ADD COLUMN planned_for TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_meal_records_owner_day ON meal_records(owner_kind, owner_id, meal_date, meal_type)"
     )

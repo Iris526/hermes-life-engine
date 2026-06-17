@@ -267,6 +267,25 @@ function renderSidebar() {
     `<div class="sleep-item"><span class="label">${l}</span><span class="val">${v}</span></div>`
   ).join("") || '<div class="empty-state">无睡眠数据</div>';
 
+  // 一日三餐
+  const mealsRow = document.getElementById("meals-row");
+  const mealsBlock = document.getElementById("meals-block");
+  const meals = (snapshotData.meals_today || {}).meals || [];
+  if (mealsRow) {
+    if (!meals.length) { if (mealsBlock) mealsBlock.style.display = "none"; }
+    else {
+      if (mealsBlock) mealsBlock.style.display = "";
+      const icon = { eaten: "🍚", skipped: "✕", pending: "·" };
+      const label = { breakfast: "早", lunch: "午", dinner: "晚" };
+      mealsRow.innerHTML = meals.map(m =>
+        `<div class="meal-chip ${m.status}" title="${label[m.meal_type] || m.meal_type} ${m.time || ""}${m.skip_reason ? " — " + m.skip_reason : ""}">
+          <span class="meal-name">${label[m.meal_type] || m.meal_type}</span>
+          <span class="meal-mark">${icon[m.status] || "·"}</span>
+        </div>`
+      ).join("");
+    }
+  }
+
   // 活体人格
   const persona = snapshotData.persona || {};
   const personaBlock = document.getElementById("persona-block");
@@ -293,10 +312,10 @@ function renderSidebar() {
 
 // ── 中央舞台(沉浸式场景) ──────────────────────
 // 全部状态映射到新版明灯三头身像素形象的 4 个姿势,CSS 负责动作。
+// 1:1 — every realtime state has its own 明灯 pose.
 const SPRITE_FOR = {
-  idle: "idle", work: "work", battle: "work", walk: "walk",
-  sleep: "sleep", dream: "sleep", recover: "sleep",
-  eat: "idle", reply: "idle", tired: "idle",
+  idle: "idle", work: "work", walk: "walk", sleep: "sleep", dream: "dream",
+  eat: "eat", reply: "reply", battle: "battle", tired: "tired", recover: "recover",
 };
 const MOVING_STATES = new Set(["walk"]);
 const RESTING_STATES = new Set(["sleep", "tired", "recover", "dream"]);

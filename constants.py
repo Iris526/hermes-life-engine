@@ -65,6 +65,8 @@ DEFAULT_MODULE_GATES = {
     # v0.14.0 living loop
     "passive_metabolism": "auto",
     "personality_drift": "auto",
+    # three-meals-a-day accountability
+    "meals": "auto",
 }
 
 DEFAULT_CANON_TEMPLATE = {
@@ -86,6 +88,14 @@ DEFAULT_CANON_TEMPLATE = {
         }
     },
     "schedule_rules": {"timezone": "Asia/Tokyo"},
+    "meals": {
+        "enabled": True,
+        "needs_food": True,
+        "times": {"breakfast": "07:30", "lunch": "12:30", "dinner": "19:00"},
+        "window_minutes": 150,
+        "skip_penalty": {"energy": -6, "mood": -4},
+        "default_skip_reason": "忙碌中没能按时吃饭",
+    },
     "behavior_rules": {},
     "autonomy": {"enabled": True, "default_mode": "full", "agent_decides_self_life": True},
     "proactive": {"mode": "pending_only"},

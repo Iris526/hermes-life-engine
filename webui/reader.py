@@ -269,6 +269,38 @@ class LifeEngineReader:
         return {"iso": local.isoformat(), "hour": round(hour, 2), "hhmm": local.strftime("%H:%M"),
                 "timezone": tz_name, "phase": phase, "label": label}
 
+    def meals_today(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
+        """Today's three-meal accountability for the HUD: eaten / skipped / pending."""
+        tz_name = "UTC"
+        times = {"breakfast": "07:30", "lunch": "12:30", "dinner": "19:00"}
+        with self._connect() as conn:
+            if not self._table_exists(conn, "meal_records"):
+                return {"meals": []}
+            if self._table_exists(conn, "canon_versions"):
+                row = self._first(conn, "SELECT data_json FROM canon_versions WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY version DESC LIMIT 1", (owner_kind, owner_id))
+                canon = _safe_json((row or {}).get("data_json"), {}) or {}
+                m = canon.get("meals") or {}
+                times = m.get("times") or times
+                tz_name = (m.get("timezone") or (canon.get("schedule_rules") or {}).get("timezone") or tz_name)
+            cols = self._columns(conn, "meal_records")
+            try:
+                from zoneinfo import ZoneInfo
+                date_key = _now().astimezone(ZoneInfo(tz_name)).date().isoformat()
+            except Exception:
+                date_key = _now().date().isoformat()
+            by_type = {}
+            if "meal_date" in cols:
+                rows = self._all(conn, "SELECT meal_type, status, skip_reason FROM meal_records WHERE owner_kind=? AND owner_id=? AND meal_date=?", (owner_kind, owner_id, date_key))
+                by_type = {r["meal_type"]: r for r in rows}
+            order = {"breakfast": 0, "lunch": 1, "dinner": 2}
+            meals = []
+            for mt, hhmm in sorted(times.items(), key=lambda kv: order.get(kv[0], 9)):
+                rec = by_type.get(mt)
+                meals.append({"meal_type": mt, "time": hhmm,
+                              "status": (rec.get("status") if rec else None) or ("pending" if not rec else "eaten"),
+                              "skip_reason": rec.get("skip_reason") if rec else None})
+            return {"date": date_key, "meals": meals}
+
     def persona(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
         """Living-persona traits (v0.14.0) for the HUD — read-only."""
         with self._connect() as conn:
@@ -742,6 +774,7 @@ class LifeEngineReader:
             "workspace": workspace,
             "doctor": self.doctor_latest(owner_kind, owner_id),
             "persona": self.persona(owner_kind, owner_id),
+            "meals_today": self.meals_today(owner_kind, owner_id),
             "clock": self.clock(owner_kind, owner_id),
             "recent_events": self.events(owner_kind, owner_id, limit=30),
             "trace": self.trace_latest(limit=15),

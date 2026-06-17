@@ -191,6 +191,8 @@ from .invariants import run_doctor as run_invariant_doctor
 from .meals import (
     create_meal_record,
     list_meals,
+    plan_meal_settlement,
+    meal_status_for_date,
 )
 from .memory import create_memory, search_memories
 from .migration import create_branch, list_migrations
@@ -419,7 +421,13 @@ class LifeEngineRuntime:
             required = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False) if owner_kind == "agent" else {"ok": True, "missing": []}
             schedule = list_human_schedule(self.conn, owner_kind, owner_id, period="today", tz_name=_tz_from_canon(canon), limit=20) if owner_kind == "agent" else {"items": []}
             persona_summary = persona.persona_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}
-            out = {"control": c, "canon": canon, "realtime_state": realtime_state, "sleep_plans": sleep_plans, "sleep_sessions": sleep_sessions, "dreams": dreams, "persona": persona_summary, "resources": resources, "goals": goals, "life_arcs": arcs, "pending_confirmations": confirmations, "pending_proactive": pending, "proactive_outbox": proactive_outbox if owner_kind == "agent" else [], "proactive_states": proactive_states if owner_kind == "agent" else [], "recent_autonomy": autonomy, "recent_execution": execution, "recent_serendipity": serendipity, "required_settings": required, "today_schedule": schedule.get("summary", {})}
+            try:
+                from zoneinfo import ZoneInfo as _ZI
+                _today_local = datetime.now(timezone.utc).astimezone(_ZI(_tz_from_canon(canon) or "UTC")).date().isoformat()
+            except Exception:
+                _today_local = now_iso()[:10]
+            meals_today = meal_status_for_date(self.conn, owner_kind, owner_id, _today_local, canon) if owner_kind == "agent" else {}
+            out = {"control": c, "canon": canon, "realtime_state": realtime_state, "sleep_plans": sleep_plans, "sleep_sessions": sleep_sessions, "dreams": dreams, "persona": persona_summary, "meals_today": meals_today, "resources": resources, "goals": goals, "life_arcs": arcs, "pending_confirmations": confirmations, "pending_proactive": pending, "proactive_outbox": proactive_outbox if owner_kind == "agent" else [], "proactive_states": proactive_states if owner_kind == "agent" else [], "recent_autonomy": autonomy, "recent_execution": execution, "recent_serendipity": serendipity, "required_settings": required, "today_schedule": schedule.get("summary", {})}
             out["rendered"] = _render_status_page(out)
             return out
 
@@ -1204,6 +1212,7 @@ class LifeEngineRuntime:
                 recovered = self._settle_resources(owner_kind, owner_id, minutes_elapsed, control)
                 autonomy_result = self._run_autonomy_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
                 persona_result = self._run_persona_drift_for_tick(owner_kind, owner_id, control, tick_id, trace, now, minutes_elapsed)
+                meals_result = self._settle_meals_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 proactive_result = self._run_proactive_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 managed_review_result = self._run_managed_review_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
                 delayed_release = {"released_count": 0}
@@ -1213,7 +1222,7 @@ class LifeEngineRuntime:
                         delayed_release = release_delayed_replies(self.conn, owner_kind, owner_id, reason="released by heartbeat after agent became available", source="heartbeat", limit=20)
                 except Exception as exc:
                     delayed_release = {"error": f"{type(exc).__name__}: {exc}"}
-                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
+                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
                 if isinstance(recovered, dict) and recovered.get("gap"):
                     out["gap"] = recovered["gap"]
                 append_journal(self.conn, owner_kind, owner_id, "heartbeat_tick", {"now": now, **out}, "heartbeat", canon_version=control.get("active_canon_version"))
@@ -1360,6 +1369,45 @@ class LifeEngineRuntime:
             return {"status": "ok", "signals": signals, "commit": commit}
         except Exception as exc:
             append_audit(self.conn, owner_kind, owner_id, "persona_drift_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
+            return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+    def _settle_meals_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
+                               tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
+        """Three-meals-a-day accountability: any meal whose window has passed
+        without a record is settled as 'skipped' (with a reason + a small vitals
+        penalty), committed as CREATE_MEAL_RECORD ops. Gated by `meals`.
+        """
+        if owner_kind != "agent":
+            return {"status": "skipped", "reason": "non-agent owner"}
+        gates = control.get("module_gates") or {}
+        mode = str(gates.get("meals", "auto") or "auto").lower()
+        if mode in {"off", "disabled", "false"}:
+            return {"status": "skipped", "reason": f"gate={mode}"}
+        try:
+            canon = get_active_canon(self.conn, owner_kind, owner_id)
+            tz_name = _tz_from_canon(canon) or "UTC"
+            # agent-local now + offset for meal-time math
+            local_iso, offset = now, "+00:00"
+            try:
+                from zoneinfo import ZoneInfo
+                from .time_utils import parse_datetime
+                dt = parse_datetime(now)
+                if dt is not None:
+                    loc = dt.astimezone(ZoneInfo(tz_name))
+                    local_iso = loc.isoformat()
+                    offset = loc.strftime("%z")
+                    offset = offset[:3] + ":" + offset[3:] if offset else "+00:00"
+            except Exception:
+                pass
+            ops = plan_meal_settlement(self.conn, owner_kind, owner_id, now=local_iso, canon=canon, tz_offset=offset)
+            if not ops:
+                return {"status": "ok", "settled": 0}
+            with trace.span("meal_settlement", {"count": len(ops)}):
+                commit = self._commit_ops_locked(ops, owner_kind, owner_id, "heartbeat_meals",
+                                                 session_id=None, turn_id=tick_id, trace=trace, control=control)
+            return {"status": "ok", "settled": len(ops), "meals": [o["payload"]["meal_type"] for o in ops], "commit": commit}
+        except Exception as exc:
+            append_audit(self.conn, owner_kind, owner_id, "meal_settlement_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
     def _run_autonomy_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],

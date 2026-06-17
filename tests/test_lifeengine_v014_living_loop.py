@@ -40,6 +40,7 @@ def test_settlement_scales_with_elapsed_time(tmp_path):
     rt = LifeEngineRuntime()
     try:
         activate(rt)
+        rt.control("module", key="meals", value="off")  # isolate resource settlement from meal penalties
         # First tick: no prior tick -> elapsed 0 -> no settlement.
         t0 = rt.tick(now="2026-06-07T10:00:00+00:00", manual=False)
         assert t0["resource_recovery"]["settled_minutes"] == 0.0
@@ -87,6 +88,7 @@ def test_passive_metabolism_gate_off_skips_drain(tmp_path):
     try:
         activate(rt)
         rt.control("module", key="passive_metabolism", value="off")
+        rt.control("module", key="meals", value="off")  # isolate from meal penalties
         rt.tick(now="2026-06-07T10:00:00+00:00", manual=False)
         rt.tick(now="2026-06-07T10:05:00+00:00", manual=False)
         # With metabolism off, energy gets pure recovery (+3 over 5 min).
@@ -281,6 +283,49 @@ def test_do_now_flags_higher_priority_conflict_for_user(tmp_path):
         # high-priority task still got rescheduled (reality of "now" wins the slot)
         status = rt.conn.execute("SELECT status FROM events WHERE id=?", (high,)).fetchone()["status"]
         assert status == "scheduled"
+    finally:
+        rt.close()
+
+
+def _meal_status(rt, date_key):
+    rows = rt.conn.execute("SELECT meal_type, status FROM meal_records WHERE meal_date=?", (date_key,)).fetchall()
+    return {r["meal_type"]: r["status"] for r in rows}
+
+
+def test_missed_meal_is_settled_as_skipped_with_penalty(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        activate(rt, "明灯，时间 Asia/Tokyo。")
+        rt.living("init_resources")
+        e0 = _energy(rt)
+        # 14:30 Tokyo: breakfast (07:30, window 150m -> ends 10:00) is missed.
+        out = rt.tick(now="2026-06-17T05:30:00+00:00", manual=False)
+        assert out["meals"]["status"] == "ok"
+        assert "breakfast" in out["meals"].get("meals", [])
+        st = _meal_status(rt, "2026-06-17")
+        assert st.get("breakfast") == "skipped"
+        # skipping cost vitals (energy penalty applied) and is reconciled
+        assert _energy(rt) < e0
+        assert reconcile_resources(rt.conn, "agent", "default-agent", record=False)["ok"]
+    finally:
+        rt.close()
+
+
+def test_eaten_meal_is_not_marked_skipped(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        activate(rt, "明灯，时间 Asia/Tokyo。")
+        rt.living("init_resources")
+        rt.commit_ops([{"type": "CREATE_MEAL_RECORD", "payload": {
+            "meal_type": "breakfast", "status": "eaten", "meal_date": "2026-06-17",
+            "food_items": ["粥"], "eaten_at": "2026-06-17T07:40:00+09:00"}}], "agent", "default-agent", "test")
+        rt.tick(now="2026-06-17T05:30:00+00:00", manual=False)  # past breakfast window
+        st = _meal_status(rt, "2026-06-17")
+        assert st.get("breakfast") == "eaten"  # not overwritten/duplicated
+        n = rt.conn.execute("SELECT COUNT(*) FROM meal_records WHERE meal_date='2026-06-17' AND meal_type='breakfast'").fetchone()[0]
+        assert n == 1
     finally:
         rt.close()
 
