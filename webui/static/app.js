@@ -479,20 +479,9 @@ function renderActorEffects(spriteState, resources) {
     else if (mood != null && mood >= 40) filter += " saturate(1.15) brightness(1.06)";
     img.style.filter = filter;
   }
-  if (emoteEl) {
-    let e = "";
-    if (spriteState === "sleep") e = "😴";
-    else if (spriteState === "dream") e = "💭";
-    else if (spriteState === "reply") e = "❕";
-    else if (spriteState === "tired") e = "😮‍💨";
-    else if (spriteState === "eat") e = "😋";
-    else if (spriteState === "battle") e = "❗";
-    else if (mood != null && mood <= -30) e = "😔";
-    else if (mood != null && mood >= 50) e = "😊";
-    else if (spriteState === "work") e = "✍";
-    emoteEl.textContent = e;
-    emoteEl.style.opacity = e ? "1" : "0";
-  }
+  // Head emote removed: it rendered as a stray floating glyph and the dialogue
+  // box + FX already convey state/mood.
+  if (emoteEl) { emoteEl.textContent = ""; emoteEl.style.display = "none"; }
 }
 
 // ── 右栏:日程 ─────────────────────────────────
