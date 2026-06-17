@@ -22,9 +22,23 @@ function bindEvents() {
   document.getElementById("btn-refresh").onclick = () => loadSnapshot();
   document.getElementById("btn-reload").onclick = () => reloadInPage();
   document.getElementById("btn-tick").onclick = () => doEnginePrimaryAction();
-  // hotbar
-  document.querySelectorAll(".hotbar-btn").forEach(btn => {
+  // hotbar — 技能栏:槽位编号 + 1-9 快捷键
+  const hotbarBtns = Array.from(document.querySelectorAll(".hotbar-btn"));
+  hotbarBtns.forEach((btn, i) => {
+    if (i < 9 && !btn.querySelector(".hotbar-key")) {
+      const key = document.createElement("span");
+      key.className = "hotbar-key";
+      key.textContent = String(i + 1);
+      btn.appendChild(key);
+    }
     btn.onclick = () => switchOverlay(btn.dataset.overlay);
+  });
+  document.addEventListener("keydown", (e) => {
+    const tag = (e.target && e.target.tagName) || "";
+    if (tag === "INPUT" || tag === "TEXTAREA" || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "Escape") { switchOverlay("stage"); return; }
+    const n = parseInt(e.key, 10);
+    if (n >= 1 && n <= hotbarBtns.length) { switchOverlay(hotbarBtns[n - 1].dataset.overlay); }
   });
   // 面板关闭
   document.querySelectorAll("[data-close]").forEach(btn => {

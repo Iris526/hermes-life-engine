@@ -63,12 +63,19 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .btn-label { font-size: 12px; opacity: .7; }
 
 .sidebar { grid-area: sidebar; overflow-y: auto; overflow-x: hidden; padding: 8px; display: flex; flex-direction: column; gap: 8px; background: var(--bg-1); }
-.char-portrait { text-align: center; padding: 12px 8px 8px; }
-.portrait-frame { width: 100%; max-width: 210px; aspect-ratio: 9/16; margin: 0 auto 8px; border: 1px solid var(--gold-dim); border-radius: 2px; overflow: hidden; position: relative; box-shadow: inset 0 0 16px var(--bg-0),0 0 8px var(--gold-glow); }
-.portrait-frame::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg,transparent 60%,var(--bg-0)); }
+.char-portrait { text-align: center; padding: 14px 8px 8px; position: relative; }
+.portrait-frame { width: 100%; max-width: 210px; aspect-ratio: 9/16; margin: 0 auto 10px; border: 1px solid var(--gold-dim); border-radius: 3px; overflow: hidden; position: relative;
+  box-shadow: inset 0 0 18px var(--bg-0), 0 0 10px var(--gold-glow); animation: portrait-glow 5s ease-in-out infinite; }
+@keyframes portrait-glow { 0%,100%{ box-shadow: inset 0 0 18px var(--bg-0), 0 0 8px var(--gold-glow); } 50%{ box-shadow: inset 0 0 18px var(--bg-0), 0 0 16px var(--gold-glow); } }
+.portrait-frame::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg,transparent 55%,var(--bg-0)); }
 .portrait-frame img { width: 100%; height: 100%; object-fit: cover; object-position: center top; image-rendering: auto; }
-.char-name { font-size: 16px; color: var(--gold); font-weight: 600; letter-spacing: 1px; }
-.char-title { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+/* 角饰 L 形铜框 */
+.char-portrait::before, .char-portrait::after { content:""; position:absolute; width:18px; height:18px; pointer-events:none; }
+.char-portrait::before { top:10px; left:50%; margin-left:-105px; border-top:2px solid var(--gold); border-left:2px solid var(--gold); }
+.char-portrait::after  { top:10px; left:50%; margin-left:87px; border-top:2px solid var(--gold); border-right:2px solid var(--gold); }
+.char-name { font-size: 17px; color: var(--gold); font-weight: 600; letter-spacing: 2px; text-shadow: 0 0 8px var(--gold-glow); }
+.char-title { display:inline-block; font-size: 11px; color: var(--text); margin-top: 4px; padding: 2px 12px; letter-spacing: 1px;
+  background: linear-gradient(90deg,transparent,rgba(212,175,55,.14),transparent); border-top:1px solid var(--border-dim); border-bottom:1px solid var(--border-dim); }
 .engine-live-card { margin: 8px auto 0; max-width: 210px; padding: 7px 8px; background: rgba(10,6,18,.72); border: 1px solid var(--border-dim); border-radius: 2px; text-align: left; }
 .engine-live-card.running { border-color: var(--cyan-dim); box-shadow: 0 0 8px var(--cyan-glow); }
 .engine-live-card.paused { border-color: var(--warn); }
@@ -184,6 +191,18 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 /* 梦境:浮岛光环 */
 .scene-dream_space .prop-layer::before { left:50%; transform:translateX(-50%); width:240px; height:60px; bottom:20%; background:radial-gradient(ellipse,rgba(0,212,255,.16),transparent 65%); border-radius:50%; }
 .scene-dream_space .ground-layer,.scene-dream_space .backdrop-layer::before { opacity:.2; }
+/* 城市/外出:路灯 + 暖光 */
+.scene-city_walk .prop-layer::before { left:16%; width:6px; height:150px; bottom:26%; background:linear-gradient(180deg,#4a4030,#241a0e); }
+.scene-city_walk .prop-layer::after { left:11%; width:40px; height:40px; bottom:60%; background:radial-gradient(circle,rgba(255,210,120,.5),transparent 60%); border-radius:50%; }
+/* 餐角:盘中暖光 */
+.scene-meal_corner .prop-layer::after { left:50%; transform:translateX(-50%); width:60px; height:18px; bottom:30%; background:radial-gradient(ellipse,rgba(255,200,120,.4),transparent 65%); border-radius:50%; }
+/* 传讯室:悬浮符简光屏 */
+.scene-message_room .prop-layer::before { right:16%; width:80px; height:100px; bottom:32%; background:linear-gradient(180deg,rgba(0,212,255,.16),rgba(0,212,255,.04)); border:1px solid rgba(0,212,255,.3); border-radius:3px; box-shadow:0 0 20px rgba(0,212,255,.2); }
+/* 战斗/不可打断:危险红光脉冲 */
+.scene-combat_alley .prop-layer::after { left:0; right:0; bottom:24%; width:100%; height:50%; background:radial-gradient(ellipse at center,rgba(192,57,43,.22),transparent 60%); animation:danger-pulse 1.6s ease-in-out infinite; }
+@keyframes danger-pulse { 0%,100%{opacity:.4;} 50%{opacity:.85;} }
+/* 恢复室:柔和疗愈光 */
+.scene-recovery_room .prop-layer::after { left:50%; transform:translateX(-50%); width:200px; height:80px; bottom:24%; background:radial-gradient(ellipse,rgba(125,255,174,.14),transparent 65%); border-radius:50%; }
 
 /* —— 角色 —— */
 .actor { position:absolute; left:50%; bottom:26%; z-index:6; transform:translateX(-50%); display:flex; flex-direction:column; align-items:center; }
@@ -367,12 +386,29 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .ev-status.active { color: var(--cyan); }
 .ev-status.planned { color: var(--text-dim); }
 
-.hotbar { grid-area: hotbar; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0 12px; background: linear-gradient(0deg,var(--bg-1),var(--bg-0)); }
-.hotbar-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 64px; height: 52px; background: var(--bg-2); border: 1px solid var(--border-dim); border-radius: 2px; cursor: pointer; transition: all .15s; color: var(--text-dim); }
-.hotbar-btn:hover { border-color: var(--cyan); color: var(--cyan); box-shadow: 0 0 8px var(--cyan-glow); }
-.hotbar-btn.active { background: var(--cinnabar-dim); border-color: var(--cinnabar); color: var(--text); box-shadow: 0 0 8px var(--cinnabar-glow); }
-.hotbar-icon { font-size: 18px; }
+/* ══════════ 技能栏 hotbar ══════════ */
+.hotbar { grid-area: hotbar; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 0 12px;
+  background: linear-gradient(0deg,#0d0818,var(--bg-0)); border-top: 1px solid var(--border-dim);
+  box-shadow: inset 0 2px 8px rgba(0,0,0,.5); }
+.hotbar-btn { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  width: 60px; height: 54px; cursor: pointer; transition: transform .12s ease, box-shadow .15s, border-color .15s; color: var(--text-dim);
+  background: linear-gradient(180deg,var(--bg-3),var(--bg-1)); border: 1px solid var(--border-dim); border-radius: 4px;
+  box-shadow: inset 0 1px 0 rgba(212,175,55,.08), inset 0 -3px 6px rgba(0,0,0,.5); }
+/* 槽位四角点缀 */
+.hotbar-btn::before { content:""; position:absolute; top:2px; left:2px; right:2px; bottom:2px; border-radius:3px; pointer-events:none;
+  box-shadow: inset 0 0 0 1px rgba(212,175,55,.06); }
+.hotbar-btn:hover { transform: translateY(-3px); border-color: var(--cyan); color: var(--cyan); box-shadow: 0 4px 14px var(--cyan-glow), inset 0 0 10px rgba(0,212,255,.12); }
+.hotbar-btn.active { transform: translateY(-2px); background: linear-gradient(180deg,var(--cinnabar-dim),#3a1510); border-color: var(--cinnabar); color: var(--gold);
+  box-shadow: 0 0 14px var(--cinnabar-glow), inset 0 0 10px rgba(192,57,43,.25); }
+/* 选中槽顶部指示灯 */
+.hotbar-btn.active::after { content:""; position:absolute; top:-5px; left:50%; transform:translateX(-50%); width:18px; height:3px; border-radius:2px;
+  background: var(--gold); box-shadow: 0 0 8px var(--gold-glow); }
+.hotbar-icon { font-size: 19px; line-height: 1; filter: drop-shadow(0 1px 1px rgba(0,0,0,.6)); }
 .hotbar-label { font-size: 11px; letter-spacing: 1px; }
+/* 快捷键号角标 */
+.hotbar-key { position: absolute; top: 2px; left: 3px; font-family: var(--font-mono); font-size: 9px; line-height: 1;
+  color: var(--text-faint); background: rgba(10,6,18,.7); padding: 1px 3px; border-radius: 2px; }
+.hotbar-btn.active .hotbar-key, .hotbar-btn:hover .hotbar-key { color: var(--gold); }
 
 .detail-drawer { position: absolute; top: 0; right: 0; bottom: 0; width: 480px; z-index: 100; background: var(--bg-1); border-left: 1px solid var(--border); display: flex; flex-direction: column; box-shadow: -4px 0 24px var(--bg-0); animation: drawer-slide .2s ease; }
 @keyframes drawer-slide { from{transform:translateX(100%);} to{transform:translateX(0);} }
