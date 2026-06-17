@@ -158,6 +158,22 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .stage-scene { position: relative; width: 100%; height: 100%; overflow: hidden; background: #06040c; }
 .stage-scene .layer { position: absolute; inset: 0; pointer-events: none; }
 
+/* 真实地图背景图 */
+.scene-photo { z-index: 1; background-size: cover; background-position: center 35%; background-repeat: no-repeat; opacity: 0; transition: opacity .6s ease; }
+.phase-tint { z-index: 2; opacity: 0; transition: opacity 1s ease; }
+/* 有背景图时:隐藏 CSS 拼的场景/天空/日月,只留背景图 + 轻微时段着色 */
+.stage-scene.has-bg .scene-photo { opacity: 1; }
+.stage-scene.has-bg .sky-layer,
+.stage-scene.has-bg .backdrop-layer,
+.stage-scene.has-bg .mid-layer,
+.stage-scene.has-bg .ground-layer,
+.stage-scene.has-bg .celestial { opacity: 0 !important; }
+.stage-scene.has-bg .phase-tint { opacity: 1; }
+.has-bg.phase-day   .phase-tint { background: linear-gradient(180deg,rgba(180,210,255,.10),transparent 50%); }
+.has-bg.phase-dawn  .phase-tint { background: linear-gradient(180deg,rgba(255,180,140,.14),transparent 55%); }
+.has-bg.phase-dusk  .phase-tint { background: linear-gradient(180deg,rgba(120,60,90,.20),rgba(217,138,85,.10) 60%,transparent); }
+.has-bg.phase-night .phase-tint { background: linear-gradient(180deg,rgba(8,8,28,.45),rgba(20,16,52,.25) 60%,transparent); }
+
 /* —— 天空 / 昼夜 —— */
 .sky-layer { transition: background 1.2s ease; background: linear-gradient(180deg,#1a1530 0%,#241a38 55%,#2a2030 100%); }
 .phase-dawn  .sky-layer { background: linear-gradient(180deg,#2a2350 0%,#7a5a6a 60%,#caa37a 100%); }

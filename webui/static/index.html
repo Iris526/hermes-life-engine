@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>归明观 · 废土观星台</title>
-<link rel="stylesheet" href="/static/styles.css?v=20260617-no-emote">
+<link rel="stylesheet" href="/static/styles.css?v=20260617-maps">
 </head>
 <body>
 <div id="app">
@@ -93,7 +93,10 @@
       <!-- 舞台(默认显示) — 沉浸式场景 -->
       <div id="overlay-stage" class="overlay-panel active">
         <div class="stage-scene scene-observatory phase-day" id="stage-scene">
-          <!-- 分层场景 -->
+          <!-- 真实地图背景(宿主可覆盖;加载失败则回退到下面的 CSS 场景) -->
+          <div class="layer scene-photo" id="scene-photo"></div>
+          <div class="layer phase-tint" id="phase-tint"></div>
+          <!-- 分层场景(无背景图时的回退) -->
           <div class="layer sky-layer"></div>
           <div class="celestial" id="celestial"></div>
           <div class="layer backdrop-layer"></div>
@@ -313,6 +316,6 @@
 
   </div>
 </div>
-<script src="/static/app.js?v=20260617-no-emote"></script>
+<script src="/static/app.js?v=20260617-maps"></script>
 </body>
 </html>

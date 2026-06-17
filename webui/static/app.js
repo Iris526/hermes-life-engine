@@ -324,6 +324,22 @@ const RESTING_STATES = new Set(["sleep", "tired", "recover", "dream"]);
 // every pose now has a 2-frame looping WebP (native animation); PNG is fallback.
 const ANIMATED_POSES = new Set(["idle", "work", "walk", "sleep", "dream", "eat", "reply", "battle", "tired", "recover"]);
 let particlesBuilt = false;
+let _bgScene = null, _bgOk = false;
+
+// Per-scene real background image (host-overridable via /api/avatar). On load it
+// fades in and the CSS-drawn scene hides; if missing it falls back to CSS.
+function setSceneBackground(sceneName) {
+  const stage = document.getElementById("stage-scene");
+  const photo = document.getElementById("scene-photo");
+  if (!stage || !photo) return;
+  if (sceneName === _bgScene) { if (_bgOk) stage.classList.add("has-bg"); return; }
+  _bgScene = sceneName; _bgOk = false;
+  const url = `/api/avatar/bg-${sceneName}.webp?v=${reloadSerial}`;
+  const probe = new Image();
+  probe.onload = () => { if (_bgScene !== sceneName) return; photo.style.backgroundImage = `url(${url})`; _bgOk = true; stage.classList.add("has-bg"); };
+  probe.onerror = () => { if (_bgScene !== sceneName) return; _bgOk = false; stage.classList.remove("has-bg"); photo.style.backgroundImage = "none"; };
+  probe.src = url;
+}
 
 function animateSprite(spriteState) {
   const img = document.getElementById("sprite-img");
@@ -377,6 +393,7 @@ function renderStage() {
 
   const stageEl = document.getElementById("stage-scene");
   if (stageEl) stageEl.className = `stage-scene scene-${sceneName} phase-${phase}`;
+  setSceneBackground(sceneName);
 
   // 角色:落地 + 帧动画 + 动作姿态
   const actor = document.getElementById("actor");

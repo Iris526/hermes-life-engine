@@ -30,3 +30,11 @@ To give the host its own character, drop replacement files with the same names
 into `~/.hermes/lifeengine/avatar/` (or `$HERMES_HOME/lifeengine/avatar/`). No
 rebuild, no code change. Keep the same canvas/head conventions for consistent
 sizing. Allowed types: png/jpg/jpeg/webp/gif.
+
+## Scene backgrounds (maps)
+
+Per-activity map backgrounds are `bg-<scene>.webp` (observatory, workshop,
+night_room, dream_space, message_room, combat_alley, city_walk, meal_corner,
+recovery_room). The stage loads `GET /api/avatar/bg-<scene>.webp` per state, so
+hosts can reskin maps the same way (drop overrides into the avatar dir). If a
+`bg-<scene>` is missing, the stage falls back to the built-in CSS scene.
