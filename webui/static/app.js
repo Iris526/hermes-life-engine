@@ -911,17 +911,65 @@ function switchOverlay(name) {
 }
 
 // ── 操作 ──────────────────────────────────────
+function showToast(msg, kind = "info", ms = 4600) {
+  const host = document.getElementById("toast-host");
+  if (!host) return;
+  const el = document.createElement("div");
+  el.className = `toast toast-${kind}`;
+  el.textContent = msg;
+  host.appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 350); }, ms);
+}
+
+function pulseHeartbeat() {
+  // dedicated overlay so the snapshot re-render (which rebuilds stage-scene's
+  // className) can't wipe the flash mid-animation.
+  const flash = document.getElementById("tick-flash");
+  if (flash) { flash.classList.remove("flash"); void flash.offsetWidth; flash.classList.add("flash"); }
+}
+
+// Summarize what a heartbeat tick actually did, for the feedback toast.
+function tickSummary(d) {
+  d = d || {};
+  const parts = [];
+  const rr = d.resource_recovery || {};
+  if (rr.gap) parts.push(`补算缺口 ${rr.gap.elapsed_min}分`);
+  else if (rr.settled_minutes > 0) parts.push(`结算 ${rr.settled_minutes}分`);
+  const m = d.meals || {};
+  if (m.derived && m.derived.length) parts.push(`加餐:${m.derived.join("/")}`);
+  if (m.skipped && m.skipped.length) parts.push(`漏餐:${m.skipped.join("/")}`);
+  const done = (d.completed || []).filter(c => c && (c.commit || c.execution_decision || c.sleep_wake_commit || c.sleep_start_commit)).length;
+  if (done) parts.push(`处理 ${done} 项到期`);
+  const rel = d.delayed_reply_release || {};
+  if (rel.released_count > 0) parts.push(`释放 ${rel.released_count} 条延迟回复`);
+  if (!parts.length) parts.push("暂无新变化(等下一次心跳)");
+  return "心跳 ✓ " + parts.join(" · ");
+}
+
 async function doAction(action, payload = {}) {
   try {
+    pulseHeartbeat();
     const res = await fetch(`${API}/api/action`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action, payload }),
     });
     const data = await res.json();
-    if (data.ok !== false) { loadSnapshot(); }
-    else { console.warn("Action failed:", data); }
-  } catch (err) { console.error("Action error:", err); }
+    if (data.ok === false) {
+      // read-only DB or error — make it visible instead of failing silently.
+      showToast(data.message || data.error || "操作未生效", "warn", 5200);
+      return;
+    }
+    if (action === "tick") showToast(tickSummary(data), "ok");
+    else if (action === "start") showToast("已开启 LifeEngine · " + tickSummary(data.tick), "ok");
+    else if (action === "call") showToast("已发起 call(唤醒/插话)", "ok");
+    else showToast("✓ 已执行", "ok");
+    loadSnapshot();
+  } catch (err) {
+    console.error("Action error:", err);
+    showToast("网络错误,操作未送达", "warn");
+  }
 }
 
 function doEnginePrimaryAction() {

@@ -530,3 +530,19 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .empty-state { color: var(--text-faint); font-size: 13px; text-align: center; padding: 20px; font-style: italic; }
 .glitch { animation: glitch .3s ease; }
 @keyframes glitch { 0%,100%{transform:translate(0);} 20%{transform:translate(-1px,1px);} 40%{transform:translate(1px,-1px);} 60%{transform:translate(-1px,-1px);} 80%{transform:translate(1px,1px);} }
+
+/* ══════════ 操作反馈 toast + 心跳脉冲 ══════════ */
+.toast-host { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); z-index: 200;
+  display: flex; flex-direction: column; gap: 6px; align-items: center; pointer-events: none; }
+.toast { max-width: 70vw; padding: 8px 16px; border-radius: 4px; font-size: 13px; letter-spacing: .5px;
+  background: linear-gradient(180deg,rgba(18,10,26,.96),rgba(10,6,18,.98)); color: var(--text);
+  border: 1px solid var(--gold-dim); box-shadow: 0 6px 20px rgba(0,0,0,.5);
+  opacity: 0; transform: translateY(-10px); transition: opacity .3s ease, transform .3s ease; white-space: nowrap; }
+.toast.show { opacity: 1; transform: none; }
+.toast-ok { border-color: var(--cyan-dim); box-shadow: 0 6px 20px var(--cyan-glow); }
+.toast-warn { border-color: var(--warn); color: var(--warn); }
+/* 心跳脉冲:点击推进时舞台闪一下(独立元素,不被重渲染清掉) */
+.tick-flash { position: absolute; inset: 0; z-index: 7; pointer-events: none; opacity: 0;
+  background: radial-gradient(ellipse at 50% 58%, rgba(0,212,255,.20), transparent 62%); }
+.tick-flash.flash { animation: tick-flash .6s ease-out; }
+@keyframes tick-flash { 0% { opacity: 0; } 25% { opacity: 1; } 100% { opacity: 0; } }

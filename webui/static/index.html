@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>归明观 · 废土观星台</title>
-<link rel="stylesheet" href="/static/styles.css?v=20260617-no-cursor">
+<link rel="stylesheet" href="/static/styles.css?v=20260617-tick-feedback2">
 </head>
 <body>
 <div id="app">
@@ -14,6 +14,9 @@
     <p class="loading-text">归明观·载入中</p>
     <div class="loading-bar"><div class="loading-bar-fill"></div></div>
   </div>
+
+  <!-- 操作反馈 toast -->
+  <div id="toast-host" class="toast-host"></div>
 
   <!-- 主布局(三栏 grid + 顶栏 + 底栏 hotbar,整屏固定) -->
   <div id="main-layout" class="main-layout hidden">
@@ -106,6 +109,7 @@
           <div class="stage-particles" id="stage-particles"></div>
           <div class="stage-scanlines"></div>
           <div class="stage-vignette"></div>
+          <div class="tick-flash" id="tick-flash"></div>
 
           <!-- 顶部:任务条 + 时钟 -->
           <div class="quest-ribbon hidden" id="quest-ribbon"></div>
@@ -315,6 +319,6 @@
 
   </div>
 </div>
-<script src="/static/app.js?v=20260617-no-cursor"></script>
+<script src="/static/app.js?v=20260617-tick-feedback2"></script>
 </body>
 </html>
