@@ -31,6 +31,12 @@ Typical event flow:
 - Complete it: `life_commit(... COMPLETE_EVENT / RESOURCE_DELTA / CREATE_MEMORY ...)`
 - Explain it: `life_trace(action="explain", event_id="event_...")`
 
+Impromptu / "happening now" activities:
+
+- When the user invites the agent to do something now ("我们去逛街吧") and the agent goes along, or any unplanned activity actually happens during the conversation, record it with `life_event(action="do_now", title="陪Ringo逛街", duration_minutes=90, event_type="social", importance=40, resource_costs={...})`. This creates a real event occupying the current window and (by default) completes it — do NOT just narrate it without recording.
+- `do_now` resolves schedule conflicts automatically: any planned tasks in that window are rescheduled to the next free slot. The agent self-arbitrates — lower-importance tasks are moved silently; if a higher-importance task is displaced, the result's `notices` / `agent_notice` flags it so the agent tells the user it was moved (e.g. "我把原本现在要做的重要净符委托挪到了晚上").
+- Set `complete=false` if the activity is ongoing rather than finished.
+
 Typical long-term goal flow:
 
 - Create a goal: `life_goal(action="create", title="准备七月考试", goal_type="study")`

@@ -225,6 +225,29 @@ function renderSidebar() {
   sleepEl.innerHTML = sleepItems.map(([l, v]) =>
     `<div class="sleep-item"><span class="label">${l}</span><span class="val">${v}</span></div>`
   ).join("") || '<div class="empty-state">无睡眠数据</div>';
+
+  // 活体人格
+  const persona = snapshotData.persona || {};
+  const personaBlock = document.getElementById("persona-block");
+  const traits = persona.traits || [];
+  if (!persona.seeded || !traits.length) {
+    if (personaBlock) personaBlock.style.display = "none";
+  } else {
+    if (personaBlock) personaBlock.style.display = "";
+    document.getElementById("persona-tone").textContent = persona.tone_hint || "性格平稳";
+    // value is -1..1 -> map to 0..100% with a center mark; color by direction/magnitude.
+    document.getElementById("persona-traits").innerHTML = traits.map(t => {
+      const v = Number(t.value) || 0;
+      const pct = Math.max(0, Math.min(100, (v + 1) / 2 * 100));
+      const cls = Math.abs(v) < 0.2 ? "" : (v > 0 ? "high" : "low");
+      const drift = Number(t.drift) || 0;
+      const driftTag = Math.abs(drift) >= 0.3 ? ` <span class="persona-drift">${drift > 0 ? "↑" : "↓"}</span>` : "";
+      return `<div class="persona-trait" title="基线 ${t.baseline}, 经历 ${t.evidence_count} 次">
+        <div class="persona-trait-head"><span class="name">${t.key}${driftTag}</span><span class="num">${v.toFixed(2)}</span></div>
+        <div class="persona-trait-track"><div class="persona-trait-center"></div><div class="persona-trait-fill ${cls}" style="width:${pct}%"></div></div>
+      </div>`;
+    }).join("");
+  }
 }
 
 // ── 中央舞台 ──────────────────────────────────

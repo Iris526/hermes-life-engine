@@ -271,6 +271,23 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
     for o in outbox:
         items.append(_item("proactive_outbox", "action", "主动消息在 outbox 等待处理", (o.get("draft_text") or "")[:220], source_table="proactive_outbox", source_id=o.get("id"), section="proactive", when=o.get("created_at"), action_hint={"tool": "life_proactive", "action": "send/suppress", "outbox_id": o.get("id")}))
 
+    # Living-persona consolidation suggestions (v0.14.0): a trait that has
+    # drifted far from its Canon baseline for long enough is surfaced as a
+    # *suggestion* to fold into Canon. Never auto-applied — user owns Canon.
+    if owner_kind == "agent":
+        try:
+            from . import persona as _persona
+            for prop in _persona.propose_consolidation(conn, owner_kind, owner_id):
+                items.append(_item(
+                    "persona_consolidation", "info",
+                    "人格已随经历变化，是否写进设定？",
+                    f"{prop['trait']} 比初始设定更{('高' if prop['direction']=='higher' else '低')}（{prop['baseline']}→{prop['value']}），已有 {prop['evidence_count']} 次经历支撑。",
+                    section="settings", source_table="persona_traits", source_id=prop["trait"],
+                    action_hint={"command": "/life setup", "trait": prop["trait"], "suggested_value": prop["value"]},
+                ))
+        except Exception:
+            pass
+
     if include_doctor:
         doc = _doctor_summary(conn, owner_kind, owner_id)
         summary["doctor"] = {"ok": doc.get("ok"), "issue_count": doc.get("issue_count")}

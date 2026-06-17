@@ -203,6 +203,11 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
         "tool_map": {d: CANONICAL_TOOL_MAP[d] for d in sorted(set(domains + ["schedule", "config", "event", "trace"])) if d in CANONICAL_TOOL_MAP},
         "domains_injected": domains,
     }
+    persona = data.get("persona") or {}
+    if persona:
+        # Persona is private agent-life: on work-compact platforms expose only
+        # the one-line tone hint, never the full trait vector.
+        capsule["persona"] = {"tone_hint": persona.get("tone_hint")} if work_compact else persona
     feedback = data.get("final_gate_feedback") or []
     if feedback and not work_compact:
         capsule["internal_feedback"] = feedback[:2]
@@ -222,7 +227,7 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
         # Hard cap by removing progressively less critical sections.
         # sleep/reply_gate are excluded — they are always-on state signals
         # the model needs to decide whether to reply at all.
-        for key in ["memory_sample", "goals", "behavior", "collection", "dreams", "resources", "active_or_recent_events"]:
+        for key in ["persona", "memory_sample", "goals", "behavior", "collection", "dreams", "resources", "active_or_recent_events"]:
             if key in capsule and len(text) > policy.budget_chars:
                 capsule.pop(key, None)
                 text = "\n<LIFEENGINE_CONTEXT mode=\"progressive_slim\">\n" + json.dumps(capsule, ensure_ascii=False, indent=2, sort_keys=True) + "\n</LIFEENGINE_CONTEXT>"

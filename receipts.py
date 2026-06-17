@@ -175,6 +175,21 @@ def _fact_text_for(op_type: str, payload: dict[str, Any], result: Any) -> tuple[
         return "proactive", f"proactive intent {payload.get('intent_id')} suppressed reason={payload.get('reason','')}", {"intent_id": payload.get("intent_id") or intent.get("id")}
     if op_type == "EXPIRE_PROACTIVE_INTENTS":
         return "proactive", f"expired proactive intents count={result.get('count', 0) if isinstance(result, dict) else 0}", {"expired": result.get("expired", []) if isinstance(result, dict) else []}
+    if op_type == "PERSONA_DRIFT":
+        res = result if isinstance(result, dict) else {}
+        changes = res.get("changes", []) if isinstance(res, dict) else []
+        keys = ", ".join(c.get("trait") for c in changes) if changes else "no change"
+        return "persona", f"persona drifted: {keys}", {"changes": changes, "source": payload.get("source")}
+    if op_type == "RECORD_IMPROMPTU_ACTIVITY":
+        res = result if isinstance(result, dict) else {}
+        ev = res.get("event", {}) if isinstance(res, dict) else {}
+        n_post = res.get("conflict_count", 0)
+        done = "completed" if res.get("completed") else "in_progress"
+        return "event", f"impromptu activity {payload.get('title')} {done}; postponed {n_post} conflicting task(s)", {
+            "event_id": ev.get("id"),
+            "schedule_block_id": (res.get("schedule_block") or {}).get("id") if isinstance(res.get("schedule_block"), dict) else None,
+            "postponed": res.get("postponed", []),
+        }
     return "op", f"{op_type} {payload}", {}
 
 

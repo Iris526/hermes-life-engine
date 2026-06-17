@@ -219,6 +219,9 @@ def run_doctor(conn, owner_kind: str, owner_id: str, *, write_audit: bool = True
         missing_dreams = _count(conn, """SELECT COUNT(*) FROM sleep_sessions s WHERE s.owner_kind=? AND s.owner_id=? AND s.session_type='core_sleep' AND s.status IN ('completed','interrupted') AND COALESCE(s.actual_duration_minutes,0) >= 90 AND NOT EXISTS (SELECT 1 FROM dream_runs d WHERE d.sleep_session_id=s.id)""", (owner_kind, owner_id))
         stuck_dreams = _count(conn, "SELECT COUNT(*) FROM dream_runs WHERE owner_kind=? AND owner_id=? AND status='running' AND started_at < datetime('now','-30 minutes')", (owner_kind, owner_id))
         checks["dreams"] = _check(missing_dreams == 0 and stuck_dreams == 0, "dream runs ok" if not (missing_dreams or stuck_dreams) else f"missing={missing_dreams}, stuck={stuck_dreams}", "warning", missing_dreams=missing_dreams, stuck_dreams=stuck_dreams)
+    if "persona_traits" in names:
+        out_of_bounds = _count(conn, "SELECT COUNT(*) FROM persona_traits WHERE owner_kind=? AND owner_id=? AND (value < -1.0 OR value > 1.0)", (owner_kind, owner_id))
+        checks["persona"] = _check(out_of_bounds == 0, "persona traits in bounds" if out_of_bounds == 0 else f"{out_of_bounds} persona trait(s) out of [-1,1]", "warning", out_of_bounds=out_of_bounds)
     errors = [c for c in checks.values() if not c.get("ok") and c.get("severity") == "error"]
     warnings = [c for c in checks.values() if not c.get("ok") and c.get("severity") == "warning"]
     result = {

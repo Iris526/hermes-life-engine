@@ -392,9 +392,29 @@ def run_dream_cycle(conn, owner_kind: str, owner_id: str, *, sleep_session_id: s
     else:
         conn.execute("UPDATE dream_runs SET share_status='not_requested' WHERE id=?", (run_id,))
 
+    # Dreams internalize the day: amplify persona drift over a longer window.
+    persona_drift = None
+    if owner_kind == "agent":
+        try:
+            from . import persona as _persona
+            gate_row = conn.execute(
+                "SELECT module_gates_json FROM controls WHERE owner_kind=? AND owner_id=?",
+                (owner_kind, owner_id),
+            ).fetchone()
+            gates = loads(gate_row["module_gates_json"], {}) if gate_row else {}
+            mode = str(gates.get("personality_drift", "auto") or "auto").lower()
+            if mode not in {"off", "disabled", "manual", "false"}:
+                signals = _persona.compute_drift_signals(conn, owner_kind, owner_id, window_minutes=720.0)
+                persona_drift = _persona.apply_persona_drift(
+                    conn, owner_kind, owner_id, signals=signals,
+                    trace_id=trace_id, source="dream", gain=2.0,
+                )
+        except Exception as exc:
+            append_journal(conn, owner_kind, owner_id, "persona_drift_dream_failed", {"error": str(exc)}, source)
+
     conn.execute("UPDATE dream_runs SET status='completed', completed_at=datetime('now'), memory_consolidation_status='completed', updated_at=datetime('now'), narrative_inputs_json=? WHERE id=?", (dumps(ctx), run_id))
     append_journal(conn, owner_kind, owner_id, "dream_run_completed", {"dream_run_id": run_id, "entry_id": entry.get("id"), "finding_count": len(findings), "proactive_intent_id": proactive_intent.get("id") if proactive_intent else None}, source)
-    return {"ok": True, "dream_run": get_dream_run(conn, run_id), "entry": entry, "audit": audit, "proactive_intent": proactive_intent}
+    return {"ok": True, "dream_run": get_dream_run(conn, run_id), "entry": entry, "audit": audit, "proactive_intent": proactive_intent, "persona_drift": persona_drift}
 
 
 def dream_status(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:

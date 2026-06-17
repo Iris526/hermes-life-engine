@@ -181,7 +181,9 @@ LIFE_EVENT = {
         "type": "object",
         "properties": {
             **OWNER_PROPS,
-            "action": {"type": "string", "enum": ["list", "get", "create", "schedule", "transition", "complete", "transitions", "schedule_transitions", "state", "update_state"], "description": "Event action. v0.11 Event V2 adds get/transitions/state/update_state."},
+            "action": {"type": "string", "enum": ["list", "get", "create", "schedule", "transition", "complete", "do_now", "transitions", "schedule_transitions", "state", "update_state"], "description": "Event action. v0.11 adds get/transitions/state/update_state. v0.14 adds do_now: record an activity happening right now (e.g. user invites the agent to do something), auto-rescheduling any conflicting planned tasks."},
+            "duration_minutes": {"type": "integer", "description": "For do_now: how long the impromptu activity lasts (default 60)."},
+            "complete": {"type": "boolean", "description": "For do_now: mark the activity completed immediately (default true) vs in_progress."},
             "status": {"type": "string"},
             "limit": {"type": "integer"},
             "title": {"type": "string"},

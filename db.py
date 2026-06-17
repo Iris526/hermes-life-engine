@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 49
+_SCHEMA_VERSION = 50
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -249,6 +249,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 49:
         _create_schema_v49(conn)
         _record_schema_migration(conn, 49, "agent_loadout_backpack")
+    if current < 50:
+        _create_schema_v50(conn)
+        _record_schema_migration(conn, 50, "living_persona_drift")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3569,5 +3572,46 @@ def _create_schema_v49(conn: sqlite3.Connection) -> None:
           ON agent_loadout(owner_kind, owner_id, status);
         CREATE INDEX IF NOT EXISTS idx_agent_loadout_item
           ON agent_loadout(item_id, owner_kind, owner_id, status);
+        """
+    )
+
+
+def _create_schema_v50(conn: sqlite3.Connection) -> None:
+    """living persona: a separate, auto-drifting personality layer.
+
+    Distinct from Canon identity (which is user-owned and only changes via
+    /life commit). Traits drift gradually from lived experience and relax back
+    toward their Canon-seeded baseline; every drift is recorded for audit.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS persona_traits (
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          trait_key TEXT NOT NULL,
+          value REAL NOT NULL DEFAULT 0,
+          baseline REAL NOT NULL DEFAULT 0,
+          momentum REAL NOT NULL DEFAULT 0,
+          evidence_count INTEGER NOT NULL DEFAULT 0,
+          last_drift_at TEXT,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY(owner_kind, owner_id, trait_key)
+        );
+        CREATE TABLE IF NOT EXISTS persona_drift_log (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          trait_key TEXT NOT NULL,
+          delta REAL NOT NULL,
+          value_after REAL NOT NULL,
+          reason TEXT NOT NULL,
+          evidence_json TEXT,
+          tick_id TEXT,
+          trace_id TEXT,
+          transaction_id TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_persona_drift_owner_time
+          ON persona_drift_log(owner_kind, owner_id, created_at DESC);
         """
     )

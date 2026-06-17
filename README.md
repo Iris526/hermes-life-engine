@@ -1,10 +1,10 @@
-# LifeEngine Hermes Plugin v0.13.0
+# LifeEngine Hermes Plugin v0.14.0
 
 LifeEngine is an embedded, SQLite/sqlite-vec based Agent life runtime for Hermes.
 
-This release focuses on a full WebUI product refactor: the observatory now looks and behaves like a game HUD instead of a developer dashboard.
+This release is the **Living Loop**: life time is now settled against real elapsed wall-clock time (with offline-gap reconciliation), being awake has a passive metabolic cost, and a separate living-persona layer slowly drifts from experience and feeds back into behavior.
 
-- Plugin version: `0.13.0`
+- Plugin version: `0.14.0`
 - sqlite-vec: required by LifeEngine runtime
 - Integration: Hermes directory plugin; no core-loop fork
 
@@ -73,5 +73,5 @@ Complex `life_*` tools remain available to the Agent.
 The current design document is bundled here:
 
 ```text
-docs/lifeengine_total_design_v0_13_0.md
+docs/lifeengine_total_design_v0_14_0.md
 ```

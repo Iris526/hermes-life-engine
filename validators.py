@@ -99,6 +99,10 @@ ALLOWED_OPS = {
     "RELEASE_DELAYED_REPLIES",
     "CALL_OVERRIDE",
     "RUN_DREAM", "CREATE_DREAM_ENTRY",
+    # v0.14.0 living persona
+    "PERSONA_DRIFT",
+    # v0.14.0 impromptu activity capture + conflict resolution
+    "RECORD_IMPROMPTU_ACTIVITY",
 }
 
 USER_WRITE_OPS = {
@@ -457,6 +461,21 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         _require(payload, "content")
     elif op_type == "RECOMPUTE_EVENT_PROGRESS":
         _require(payload, "event_id")
+    elif op_type == "PERSONA_DRIFT":
+        # signals is an optional dict of trait->target; absence means a pure
+        # relaxation-toward-baseline step. Validate type only.
+        signals = payload.get("signals")
+        if signals is not None and not isinstance(signals, dict):
+            raise ValidationError("PERSONA_DRIFT signals must be an object")
+    elif op_type == "RECORD_IMPROMPTU_ACTIVITY":
+        _require(payload, "title")
+        dur = payload.get("duration_minutes")
+        if dur is not None:
+            try:
+                if float(dur) <= 0:
+                    raise ValidationError("duration_minutes must be positive")
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("duration_minutes must be numeric") from exc
     return payload
 
 

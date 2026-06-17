@@ -37,7 +37,10 @@ from .canon import (
     render_canon_summary,
     render_draft_summary,
 )
-from .constants import DEFAULT_AGENT_ID, DEFAULT_USER_ID, MUTATION_BLOCKING_STATES, SETUP_STATES, PLUGIN_VERSION
+from .constants import DEFAULT_AGENT_ID, DEFAULT_USER_ID, MUTATION_BLOCKING_STATES, SETUP_STATES, PLUGIN_VERSION, TICK_BASELINE_MIN, GAP_CAP_MIN, GAP_THRESHOLD_MIN
+from .time_utils import to_epoch as _to_epoch
+from . import persona
+from .impromptu import record_impromptu_activity
 from .behavior_mapping import (
     DEFAULT_BEHAVIOR_MAPPINGS,
     BehaviorMappingError,
@@ -415,7 +418,8 @@ class LifeEngineRuntime:
             dreams = dream_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}
             required = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False) if owner_kind == "agent" else {"ok": True, "missing": []}
             schedule = list_human_schedule(self.conn, owner_kind, owner_id, period="today", tz_name=_tz_from_canon(canon), limit=20) if owner_kind == "agent" else {"items": []}
-            out = {"control": c, "canon": canon, "realtime_state": realtime_state, "sleep_plans": sleep_plans, "sleep_sessions": sleep_sessions, "dreams": dreams, "resources": resources, "goals": goals, "life_arcs": arcs, "pending_confirmations": confirmations, "pending_proactive": pending, "proactive_outbox": proactive_outbox if owner_kind == "agent" else [], "proactive_states": proactive_states if owner_kind == "agent" else [], "recent_autonomy": autonomy, "recent_execution": execution, "recent_serendipity": serendipity, "required_settings": required, "today_schedule": schedule.get("summary", {})}
+            persona_summary = persona.persona_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}
+            out = {"control": c, "canon": canon, "realtime_state": realtime_state, "sleep_plans": sleep_plans, "sleep_sessions": sleep_sessions, "dreams": dreams, "persona": persona_summary, "resources": resources, "goals": goals, "life_arcs": arcs, "pending_confirmations": confirmations, "pending_proactive": pending, "proactive_outbox": proactive_outbox if owner_kind == "agent" else [], "proactive_states": proactive_states if owner_kind == "agent" else [], "recent_autonomy": autonomy, "recent_execution": execution, "recent_serendipity": serendipity, "required_settings": required, "today_schedule": schedule.get("summary", {})}
             out["rendered"] = _render_status_page(out)
             return out
 
@@ -690,6 +694,20 @@ class LifeEngineRuntime:
             return expire_intents(self.conn, owner_id)
         elif op_type == "SKIP_SLEEP_PLAN":
             return skip_sleep_plan(self.conn, owner_kind, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "RECORD_IMPROMPTU_ACTIVITY":
+            return record_impromptu_activity(self.conn, owner_kind, owner_id, canon_version=canon_version,
+                                             source=payload.get("source") or source,
+                                             **{k: v for k, v in payload.items() if k not in {"source"}})
+        elif op_type == "PERSONA_DRIFT":
+            return persona.apply_persona_drift(
+                self.conn, owner_kind, owner_id,
+                signals=payload.get("signals"),
+                canon=get_active_canon(self.conn, owner_kind, owner_id),
+                tick_id=payload.get("tick_id"),
+                trace_id=payload.get("trace_id"),
+                source=payload.get("source") or source,
+                gain=float(payload.get("gain", 1.0)),
+            )
         raise ValueError(f"Unknown LifeOp type: {op_type}")
 
     # ----- query / mutation convenience -----------------------------------
@@ -748,6 +766,11 @@ class LifeEngineRuntime:
             return self.commit_ops([{"type": "UPDATE_EVENT_STATUS", "payload": payload}], owner_kind, owner_id, "life_event_tool", session_id, turn_id)
         if action == "complete":
             return self.commit_ops([{"type": "COMPLETE_EVENT", "payload": payload}], owner_kind, owner_id, "life_event_tool", session_id, turn_id)
+        if action == "do_now":
+            # Impromptu conversational activity happening right now: record it as
+            # a real (optionally completed) event occupying the current window,
+            # auto-rescheduling any conflicting planned tasks.
+            return self.commit_ops([{"type": "RECORD_IMPROMPTU_ACTIVITY", "payload": payload}], owner_kind, owner_id, "life_event_tool", session_id, turn_id)
         raise ValueError(f"Unknown event action: {action}")
 
 
@@ -1177,8 +1200,10 @@ class LifeEngineRuntime:
                         completed.append({"block_id": block["id"], "execution_decision": decision, "commit": commit, "fallback_sweep": True})
                     except Exception as sweep_exc:
                         append_audit(self.conn, owner_kind, owner_id, "heartbeat_schedule_sweep_failed", "warning", str(sweep_exc), {"block_id": block["id"]}, trace.id)
-                recovered = self._apply_resource_recovery(owner_kind, owner_id)
+                minutes_elapsed = self._minutes_since_last_tick(owner_kind, owner_id, now)
+                recovered = self._settle_resources(owner_kind, owner_id, minutes_elapsed, control)
                 autonomy_result = self._run_autonomy_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
+                persona_result = self._run_persona_drift_for_tick(owner_kind, owner_id, control, tick_id, trace, now, minutes_elapsed)
                 proactive_result = self._run_proactive_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 managed_review_result = self._run_managed_review_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
                 delayed_release = {"released_count": 0}
@@ -1188,7 +1213,9 @@ class LifeEngineRuntime:
                         delayed_release = release_delayed_replies(self.conn, owner_kind, owner_id, reason="released by heartbeat after agent became available", source="heartbeat", limit=20)
                 except Exception as exc:
                     delayed_release = {"error": f"{type(exc).__name__}: {exc}"}
-                out = {"completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
+                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
+                if isinstance(recovered, dict) and recovered.get("gap"):
+                    out["gap"] = recovered["gap"]
                 append_journal(self.conn, owner_kind, owner_id, "heartbeat_tick", {"now": now, **out}, "heartbeat", canon_version=control.get("active_canon_version"))
                 trace.end(output_obj=out)
                 self.conn.execute("UPDATE heartbeat_runs SET status='done', ended_at=datetime('now'), output_json=? WHERE tick_id=?", (dumps(out), tick_id))
@@ -1226,23 +1253,114 @@ class LifeEngineRuntime:
                 out.append({"domain": domain, "status": "error", "error": str(exc)})
         return out
 
-    def _apply_resource_recovery(self, owner_kind: str, owner_id: str) -> list[dict[str, Any]]:
+    def _minutes_since_last_tick(self, owner_kind: str, owner_id: str, now: str) -> float:
+        """Minutes of LOGICAL time since the previous completed tick.
+
+        Uses the previous done heartbeat_run's logical ``now`` (recorded in its
+        output_json) so tests and replays advance time deterministically; falls
+        back to its wall-clock ``started_at``. First-ever tick returns 0 so we
+        never settle a huge amount on initialization.
+        """
+        # rowid tiebreak: in tests/replays many ticks can share the same
+        # wall-clock started_at, so order by insertion order as well to pick the
+        # genuinely most-recent completed tick.
+        row = self.conn.execute(
+            "SELECT output_json, started_at FROM heartbeat_runs WHERE owner_kind=? AND owner_id=? AND status='done' ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            (owner_kind, owner_id),
+        ).fetchone()
+        if not row:
+            return 0.0
+        prev_now = None
+        try:
+            prev_now = (loads(row["output_json"], {}) or {}).get("now")
+        except Exception:
+            prev_now = None
+        prev = _to_epoch(prev_now) if prev_now else _to_epoch(row["started_at"])
+        cur = _to_epoch(now)
+        if prev is None or cur is None:
+            return 0.0
+        return max(0.0, (cur - prev) / 60.0)
+
+    def _settle_resources(self, owner_kind: str, owner_id: str, minutes_elapsed: float,
+                          control: dict[str, Any]) -> dict[str, Any]:
+        """Settle vital resources against REAL elapsed time (v0.14.0).
+
+        Replaces the old flat per-tick recovery. ``heartbeat_recovery`` is
+        reinterpreted as a per-``TICK_BASELINE_MIN`` amount; ``metabolism`` is a
+        per-minute passive drain. A long offline gap is capped to ``GAP_CAP_MIN``
+        and marked with a ``life_gap`` journal entry (resume_policy
+        ``mark_gap_only``). All mutations go through ``apply_delta`` so account
+        and ledger always reconcile.
+        """
+        effective = min(float(minutes_elapsed), float(GAP_CAP_MIN))
+        out: dict[str, Any] = {"minutes_elapsed": round(float(minutes_elapsed), 2), "settled_minutes": round(effective, 2)}
+        gap = None
+        if minutes_elapsed > GAP_THRESHOLD_MIN:
+            gap = {
+                "elapsed_min": round(float(minutes_elapsed), 1),
+                "settled_min": round(effective, 1),
+                "capped": minutes_elapsed > GAP_CAP_MIN,
+            }
+            append_journal(self.conn, owner_kind, owner_id, "life_gap", gap, "heartbeat",
+                           canon_version=control.get("active_canon_version"))
+            out["gap"] = gap
+        if effective <= 0:
+            out["applied"] = []
+            return out
+        gates = control.get("module_gates") or {}
+        metabolism_on = str(gates.get("passive_metabolism", "auto") or "auto").lower() not in {"off", "disabled", "false"}
         rows = self.conn.execute(
             "SELECT * FROM resource_definitions WHERE owner_kind=? AND owner_id=?",
             (owner_kind, owner_id),
         ).fetchall()
-        out = []
+        applied: list[dict[str, Any]] = []
         for r in rows:
             rules = loads(r["rules_json"], {}) or {}
-            delta = rules.get("heartbeat_recovery")
-            if delta is None:
-                continue
-            try:
-                applied = apply_delta(self.conn, owner_kind, owner_id, r["key"], float(delta), "recover", "heartbeat recovery", "heartbeat")
-                out.append(applied)
-            except Exception as exc:
-                out.append({"resource_key": r["key"], "error": str(exc)})
+            recovery = rules.get("heartbeat_recovery")
+            if recovery is not None:
+                amount = float(recovery) * (effective / float(TICK_BASELINE_MIN))
+                try:
+                    applied.append(apply_delta(self.conn, owner_kind, owner_id, r["key"], amount, "settle", f"time_settle {effective:.1f}min", "heartbeat"))
+                except Exception as exc:
+                    applied.append({"resource_key": r["key"], "error": str(exc)})
+            metabolism = rules.get("metabolism")
+            if metabolism_on and metabolism is not None:
+                amount = float(metabolism) * effective
+                if abs(amount) > 1e-9:
+                    try:
+                        applied.append(apply_delta(self.conn, owner_kind, owner_id, r["key"], amount, "metabolism", f"passive_metabolism {effective:.1f}min", "heartbeat"))
+                    except Exception as exc:
+                        applied.append({"resource_key": r["key"], "error": str(exc)})
+        out["applied"] = applied
         return out
+
+    def _run_persona_drift_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
+                                    tick_id: str, trace: Trace, now: str, minutes_elapsed: float) -> dict[str, Any]:
+        """Nudge the living persona from recent experience (v0.14.0).
+
+        Gated by ``personality_drift``. Drift is committed as a PERSONA_DRIFT
+        LifeOp so it lands in the transaction / receipt / journal / trace chain.
+        """
+        if owner_kind != "agent":
+            return {"status": "skipped", "reason": "non-agent owner"}
+        gates = control.get("module_gates") or {}
+        mode = str(gates.get("personality_drift", "auto") or "auto").lower()
+        if mode in {"off", "disabled", "manual", "false"}:
+            return {"status": "skipped", "reason": f"gate={mode}"}
+        try:
+            with trace.span("persona_drift", {"tick_id": tick_id}):
+                signals = persona.compute_drift_signals(
+                    self.conn, owner_kind, owner_id,
+                    window_minutes=max(float(minutes_elapsed), float(TICK_BASELINE_MIN)), now=now,
+                )
+                commit = self._commit_ops_locked(
+                    [{"type": "PERSONA_DRIFT", "payload": {"signals": signals, "tick_id": tick_id, "trace_id": trace.id, "source": "heartbeat"}}],
+                    owner_kind, owner_id, "persona_drift", session_id=None, turn_id=tick_id, trace=trace, control=control,
+                )
+            return {"status": "ok", "signals": signals, "commit": commit}
+        except Exception as exc:
+            append_audit(self.conn, owner_kind, owner_id, "persona_drift_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
+            return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
     def _run_autonomy_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
                                tick_id: str, trace: Trace, now: str, manual: bool) -> dict[str, Any]:
@@ -2369,6 +2487,15 @@ class LifeEngineRuntime:
                     mismatches=mismatches if include_samples or mismatches else [],
                 )
 
+                if "persona_traits" in existing:
+                    persona_oob = self.conn.execute(
+                        "SELECT COUNT(*) FROM persona_traits WHERE owner_kind=? AND owner_id=? AND (value < -1.0 OR value > 1.0)",
+                        (owner_kind, owner_id),
+                    ).fetchone()[0]
+                    add("persona", "ok" if persona_oob == 0 else "warn",
+                        "persona traits in bounds" if persona_oob == 0 else f"{persona_oob} persona trait(s) out of [-1,1]",
+                        out_of_bounds=persona_oob)
+
                 running_jobs = self.conn.execute(
                     "SELECT id,reason,wake_at,status,running_at FROM wake_jobs WHERE owner_kind=? AND owner_id=? AND status='running' ORDER BY running_at LIMIT 5",
                     (owner_kind, owner_id),
@@ -3300,11 +3427,13 @@ class LifeEngineRuntime:
                 required = _safe(lambda: check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False) if owner_kind == "agent" else {"ok": True}, {"ok": True})
                 today_schedule = _safe(lambda: list_human_schedule(self.conn, owner_kind, owner_id, period="today", tz_name=_tz_from_canon(canon), limit=20) if owner_kind == "agent" else {"items": []}, {"items": []})
                 resolved_behavior = self._resolve_behavior_for_context(owner_kind, owner_id, user_message)
+                persona_capsule = _safe(lambda: persona.render_persona_capsule(persona.ensure_persona(self.conn, owner_kind, owner_id, canon)) if owner_kind == "agent" else {}, {})
                 context_data = {
                     "owner_scope": scope.__dict__,
                     "engine_state": control["engine_state"],
                     "canon_version": control.get("active_canon_version"),
                     "module_gates": control.get("module_gates"),
+                    "persona": persona_capsule,
                     "canon_brief": {"identity": (canon or {}).get("identity"), "worldview": (canon or {}).get("worldview"), "truth_sources": (canon or {}).get("truth_sources")},
                     "realtime": get_realtime_state(self.conn, owner_kind, owner_id),
                     "resources": [{"resource_key": a["resource_key"], "current_value": a["current_value"], "unit": a.get("unit"), "state": a.get("state")} for a in (resources.get("accounts", [])[:20])],
@@ -3327,7 +3456,15 @@ class LifeEngineRuntime:
                     "dreams": dreams or {},
                     "srd_policy": srd_policy or {},
                     "final_gate_feedback": final_gate_feedback or [],
-                    "required_settings": required or {},
+                    # Compact summary only: the full items/missing lists (with
+                    # titles/messages/suggestions) can run >1.5k chars and would
+                    # blow the slim budget, collapsing the whole capsule to the
+                    # minimal fallback. The model fetches details via life_config.
+                    "required_settings": {
+                        "ok": (required or {}).get("ok", True),
+                        "missing_count": (required or {}).get("missing_count", 0),
+                        "missing_keys": [m.get("key") for m in ((required or {}).get("missing") or [])][:8],
+                    },
                     "today_schedule": today_schedule or {},
                 }
                 out, context_meta = render_progressive_context(context_data, user_message, control)

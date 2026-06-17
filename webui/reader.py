@@ -239,6 +239,28 @@ class LifeEngineReader:
                 rows = self._all(conn, "SELECT * FROM events WHERE owner_kind=? AND owner_id=? ORDER BY updated_at DESC LIMIT ?", (owner_kind, owner_id, limit))
             return [self._decode_event(r) for r in rows]
 
+    def persona(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
+        """Living-persona traits (v0.14.0) for the HUD — read-only."""
+        with self._connect() as conn:
+            if not self._table_exists(conn, "persona_traits"):
+                return {"seeded": False, "traits": []}
+            rows = self._all(conn, "SELECT trait_key, value, baseline, evidence_count FROM persona_traits WHERE owner_kind=? AND owner_id=? ORDER BY trait_key", (owner_kind, owner_id))
+            if not rows:
+                return {"seeded": False, "traits": []}
+            traits = []
+            notable = []
+            for r in rows:
+                value = float(r.get("value") or 0.0)
+                baseline = float(r.get("baseline") or 0.0)
+                t = {"key": r["trait_key"], "value": round(value, 3), "baseline": round(baseline, 3),
+                     "evidence_count": int(r.get("evidence_count") or 0), "drift": round(value - baseline, 3)}
+                traits.append(t)
+                if abs(value) >= 0.33:
+                    notable.append((r["trait_key"], value))
+            notable.sort(key=lambda x: -abs(x[1]))
+            tone = "、".join(f"{k}{'偏高' if v >= 0.33 else '偏低'}" for k, v in notable[:4]) or "性格平稳"
+            return {"seeded": True, "traits": traits, "tone_hint": tone}
+
     def review_items(self, owner_kind: str, owner_id: str, limit: int = 100) -> list[dict[str, Any]]:
         with self._connect() as conn:
             if not self._table_exists(conn, "human_review_items"):
@@ -689,6 +711,7 @@ class LifeEngineReader:
             "collections": collections,
             "workspace": workspace,
             "doctor": self.doctor_latest(owner_kind, owner_id),
+            "persona": self.persona(owner_kind, owner_id),
             "recent_events": self.events(owner_kind, owner_id, limit=30),
             "trace": self.trace_latest(limit=15),
             "avatar": sprite,
