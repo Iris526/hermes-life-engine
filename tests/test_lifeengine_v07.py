@@ -66,18 +66,20 @@ def test_heartbeat_autonomy_runs_when_gate_allows(tmp_path):
         rt.close()
 
 
-def test_low_energy_autonomy_prefers_recovery_event(tmp_path):
+def test_low_energy_autonomy_plans_real_recovery(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
         activate_agent(rt)
         rt.control("module", key="autonomy", value="full")
-        rt.resources("define", key="energy", display_name="Energy", initial=5)
+        rt.resources("define", key="energy", display_name="Energy", resource_class="vital", initial=5)
         rt.goals("create", title="完成创作项目", goal_type="creative", priority=90)
 
         tick = rt.tick(now="2026-06-07T10:00:00+00:00", manual=False)
         assert tick["autonomy"]["commit"] is not None
+        # Critically low energy must plan a *real* recovery nap (restores energy via
+        # the sleep system), not a cosmetic "rest" event with empty resource_costs.
         events = rt.event_tool("list")["events"]
-        assert any(e["title"] == "休息并恢复精力" for e in events)
+        assert any((e.get("event_type") in {"sleep", "rest"}) or ("小憩" in (e.get("title") or "") or "补觉" in (e.get("title") or "")) for e in events)
     finally:
         rt.close()

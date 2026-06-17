@@ -380,22 +380,17 @@ def plan_autonomy(
             score=score, proposed_ops=ops,
         )
 
-    if energy is not None and energy < 15:
-        ops = [{"type": "CREATE_EVENT", "payload": {
-            "title": "休息并恢复精力",
-            "description": "Autonomy Planner detected low energy and chose recovery instead of pushing a demanding goal.",
-            "event_type": "rest",
-            "event_category": "health",
-            "activity_domain": "recovery",
-            "source": "autonomy",
-            "status": "planned",
-            "priority": 70,
-            "importance": 60,
-            "resource_costs": {},
-        }}]
-        if sleep_ctx.get("severity") in {"mild", "moderate", "severe"}:
-            adjustment = {"type": "low_energy_sleep_aware_recovery", "severity": sleep_ctx.get("severity", "mild")}
-        return finish(tick_id=tick_id, trace_id=trace_id, mode=mode, status="proposed", reason="low energy recovery", score=score, proposed_ops=ops)
+    # Critically low energy with no sleep debt: take a short, *real* recovery nap
+    # that actually restores energy through the sleep system — not a cosmetic
+    # "rest" event with empty resource_costs.  Deduped against any pending
+    # recovery plan so it never spams one rest event per heartbeat.  The
+    # threshold is deliberately low (8) so she keeps pursuing goals/schedule and
+    # only stops to recover when genuinely depleted; her committed schedule is
+    # never blocked by low energy (execution pushes through vital shortages).
+    if energy is not None and energy < 8 and not sleep_ctx.get("existing_recovery_plan_id"):
+        ops = [_recovery_sleep_op(now, sleep_ctx, duration_minutes=30)]
+        adjustment = {"type": "low_energy_recovery_nap", "severity": sleep_ctx.get("severity", "mild")}
+        return finish(tick_id=tick_id, trace_id=trace_id, mode=mode, status="proposed", reason="critically low energy: short recovery nap", score=score, proposed_ops=ops)
 
     goals = conn.execute(
         """SELECT * FROM goals WHERE owner_kind=? AND owner_id=? AND status='active'

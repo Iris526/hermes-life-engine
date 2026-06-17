@@ -247,19 +247,19 @@ def _resource_shortages(conn, owner_kind: str, owner_id: str, resource_costs: di
         if delta >= 0:
             continue
         row = conn.execute(
-            """SELECT a.current_value, d.min_value FROM resource_accounts a
+            """SELECT a.current_value, d.min_value, d.resource_class FROM resource_accounts a
                    LEFT JOIN resource_definitions d ON d.owner_kind=a.owner_kind AND d.owner_id=a.owner_id AND d.key=a.resource_key
                  WHERE a.owner_kind=? AND a.owner_id=? AND a.resource_key=?""",
             (owner_kind, owner_id, key),
         ).fetchone()
         if not row:
-            shortages.append({"resource_key": key, "reason": "missing_account", "required_delta": delta})
+            shortages.append({"resource_key": key, "reason": "missing_account", "required_delta": delta, "resource_class": None})
             continue
         current = float(row["current_value"] or 0)
         min_value = float(row["min_value"] if row["min_value"] is not None else 0)
         after = current + delta
         if after < min_value:
-            shortages.append({"resource_key": key, "current": current, "delta": delta, "min_value": min_value, "after": after})
+            shortages.append({"resource_key": key, "current": current, "delta": delta, "min_value": min_value, "after": after, "resource_class": row["resource_class"]})
     return shortages
 
 
@@ -565,13 +565,20 @@ def simulate_schedule_block_execution(
         ops = postpone_ops("天气不适合执行原计划", days=2, proactive=True)
         return record_execution_decision(conn, owner_kind, owner_id, tick_id=tick_id, trace_id=trace_id, wake_job_id=wake_job_id, schedule_block_id=block.get("id"), event_id=event_id, decision_type="postponed", status="proposed", reason="bad weather", score=score, proposed_ops=ops)
 
-    if shortages:
+    # Split shortages: "vital" (energy/focus/fatigue/mood — the body) vs "hard"
+    # (money/materials — real external constraints).  A committed scheduled event
+    # is never blocked merely because she is low on energy: she pushes through and
+    # completes it, with energy clamped at its floor by apply_delta.  Only a hard
+    # resource shortage (you cannot buy with money you don't have) still gates.
+    hard_shortages = [s for s in shortages if (s.get("resource_class") or "") != "vital"]
+    pushed_through_vital = bool(shortages) and not hard_shortages
+    if hard_shortages:
         if importance >= 75:
             ops = [
                 {"type": "UPDATE_SCHEDULE_BLOCK_STATUS", "payload": {"schedule_block_id": block["id"], "status": "completed", "reason": "time block elapsed but resources were insufficient"}},
                 {"type": "UPDATE_EVENT_STATUS", "payload": {"event_id": event_id, "status": "in_progress", "reason": "attempted despite resource shortage"}},
                 {"type": "UPDATE_EVENT_STATUS", "payload": {"event_id": event_id, "status": "partial", "reason": "resource shortage prevented completion"}},
-                {"type": "CREATE_REFLECTION", "payload": {"target_kind": "event", "target_id": event_id, "reflection_type": "execution_review", "content": f"『{event.get('title')}』没有完全完成，因为资源不足：{shortages}。", "source": "execution_simulator"}},
+                {"type": "CREATE_REFLECTION", "payload": {"target_kind": "event", "target_id": event_id, "reflection_type": "execution_review", "content": f"『{event.get('title')}』没有完全完成，因为资源不足：{hard_shortages}。", "source": "execution_simulator"}},
             ]
             if owner_kind == "agent":
                 ops.append({"type": "CREATE_PROACTIVE_INTENT", "payload": {"target_type": "self_journal", "intent_type": "ask_for_help", "summary": f"『{event.get('title')}』遇到资源不足，想重新规划。", "importance": 80, "urgency": 55, "novelty": 40, "relationship_relevance": 50, "privacy_level": "agent_private", "status": "generated", "source": "execution_simulator"}})
@@ -588,6 +595,8 @@ def simulate_schedule_block_execution(
     ser = _serendipity_for(event, "completed")
     if ser:
         ops.append(ser)
+    if pushed_through_vital:
+        ops.append({"type": "CREATE_REFLECTION", "payload": {"target_kind": "event", "target_id": event_id, "reflection_type": "execution_review", "content": f"完成『{event.get('title')}』时精力快见底了，但还是硬撑着把它做完了。", "source": "execution_simulator"}})
     if importance >= 75 and owner_kind == "agent":
         ops.append({"type": "CREATE_PROACTIVE_INTENT", "payload": {"target_type": "self_journal", "intent_type": "report_progress", "summary": f"『{event.get('title')}』已经完成，值得记录一下进展。", "importance": min(95, importance), "urgency": 35, "novelty": 45, "relationship_relevance": 45, "privacy_level": "agent_private", "status": "generated", "source": "execution_simulator"}})
-    return record_execution_decision(conn, owner_kind, owner_id, tick_id=tick_id, trace_id=trace_id, wake_job_id=wake_job_id, schedule_block_id=block.get("id"), event_id=event_id, decision_type="completed", status="proposed", reason="resources and conditions ok", score=score, proposed_ops=ops)
+    return record_execution_decision(conn, owner_kind, owner_id, tick_id=tick_id, trace_id=trace_id, wake_job_id=wake_job_id, schedule_block_id=block.get("id"), event_id=event_id, decision_type="completed", status="proposed", reason=("pushed through low energy" if pushed_through_vital else "resources and conditions ok"), score=score, proposed_ops=ops)
