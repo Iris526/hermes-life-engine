@@ -277,6 +277,29 @@ def create_app(life_dir: str | None = None) -> FastAPI:
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    @app.get("/api/avatar/{name}")
+    def serve_avatar(name: str):
+        """Resolve a pluggable avatar/skin asset.
+
+        LifeEngine does not depend on any specific character — the bundled
+        sprites/portrait are just the DEFAULT skin. A host can reskin its agent
+        by dropping replacement files (same names) into
+        ``$HERMES_HOME/lifeengine/avatar/`` with no code change; we serve the
+        host override if present, else fall back to the bundled default.
+        """
+        safe = os.path.basename(name or "")
+        if not safe or "/" in name or "\\" in name or Path(safe).suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+            raise HTTPException(status_code=404, detail="bad avatar asset")
+        hermes_home = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))).resolve()
+        override = (hermes_home / "lifeengine" / "avatar" / safe).resolve()
+        avatar_root = (hermes_home / "lifeengine" / "avatar").resolve()
+        if avatar_root in override.parents and override.is_file():
+            return FileResponse(str(override), media_type=_asset_media_type(override))
+        bundled = (_STATIC_DIR / "assets" / safe).resolve()
+        if (_STATIC_DIR / "assets").resolve() in bundled.parents and bundled.is_file():
+            return FileResponse(str(bundled), media_type=_asset_media_type(bundled))
+        raise HTTPException(status_code=404, detail="avatar asset not found")
+
     @app.get("/api/asset")
     def serve_asset(path: str = Query(...)):
         """Serve image files from allowed directories (image_cache, assets, webui static).

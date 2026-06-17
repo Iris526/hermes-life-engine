@@ -993,8 +993,11 @@ function assetPreviewUrl(path) {
   return `/api/asset/preview?path=${encodeURIComponent(path)}&max_width=360&max_height=480&v=${reloadSerial}`;
 }
 
+// Avatar/skin assets resolve through /api/avatar so a host can override the
+// bundled default character (明灯) without touching code. Non-avatar static
+// files should use /static/assets directly.
 function staticAssetUrl(name) {
-  return `/static/assets/${name}?v=${reloadSerial}`;
+  return `/api/avatar/${name}?v=${reloadSerial}`;
 }
 
 function reloadStylesheets() {
