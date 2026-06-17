@@ -596,11 +596,20 @@ function renderRecentEvents() {
     el.innerHTML = '<div class="empty-state">无近期事件</div>';
     return;
   }
-  el.innerHTML = events.slice(0, 12).map(e => {
+  // 合并重复事项(同标题+状态+类别),用 ×N 角标代替重复刷屏
+  const groups = []; const idx = {};
+  for (const e of events) {
+    const key = `${e.title}|${e.status}|${e.event_category || ""}`;
+    if (idx[key] == null) { idx[key] = groups.length; groups.push({ e, count: 1 }); }
+    else groups[idx[key]].count++;
+  }
+  el.innerHTML = groups.slice(0, 14).map(g => {
+    const e = g.e;
     const cls = e.status === "completed" ? "completed" : "";
+    const badge = g.count > 1 ? `<span class="re-badge">×${g.count}</span>` : "";
     return `<div class="recent-event ${cls}" onclick="showEventDetail('${e.id}')">
-      <div class="re-title">${e.title}</div>
-      <div class="re-meta"><span class="ev-status ${e.status}">${e.status}</span>${e.event_category ? " · " + e.event_category : ""}</div>
+      <div class="re-title">${escapeHtml(e.title)}${badge}</div>
+      <div class="re-meta"><span class="ev-status ${e.status}">${escapeHtml(e.status)}</span>${e.event_category ? " · " + escapeHtml(e.event_category) : ""}</div>
     </div>`;
   }).join("");
 }
