@@ -165,23 +165,29 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .phase-dusk  .sky-layer { background: linear-gradient(180deg,#2a2150 0%,#8a4a55 58%,#d98a55 100%); }
 .phase-night .sky-layer { background: linear-gradient(180deg,#0a0820 0%,#141033 55%,#1c1840 100%); }
 /* 星点(夜/拂晓显现) */
-.sky-layer::after { content:""; position:absolute; inset:0; opacity:0; transition:opacity 1.2s ease;
-  background-image: radial-gradient(1px 1px at 12% 18%,#fff,transparent),radial-gradient(1px 1px at 32% 9%,#cfe,transparent),radial-gradient(1px 1px at 58% 22%,#fff,transparent),radial-gradient(1px 1px at 73% 11%,#fff,transparent),radial-gradient(1px 1px at 86% 27%,#def,transparent),radial-gradient(1px 1px at 45% 32%,#fff,transparent),radial-gradient(1px 1px at 22% 38%,#fff,transparent),radial-gradient(1px 1px at 92% 15%,#fff,transparent);
+.sky-layer::after { content:""; position:absolute; inset:0; opacity:.25; transition:opacity 1.2s ease;
+  background-image: radial-gradient(1.5px 1.5px at 12% 14%,#fff,transparent),radial-gradient(1px 1px at 32% 8%,#cfe,transparent),radial-gradient(1.5px 1.5px at 58% 18%,#fff,transparent),radial-gradient(1px 1px at 73% 9%,#fff,transparent),radial-gradient(1.5px 1.5px at 86% 22%,#def,transparent),radial-gradient(1px 1px at 45% 26%,#fff,transparent),radial-gradient(1px 1px at 22% 30%,#fff,transparent),radial-gradient(1.5px 1.5px at 92% 12%,#fff,transparent),radial-gradient(1px 1px at 5% 26%,#fff,transparent),radial-gradient(1px 1px at 38% 16%,#fff,transparent),radial-gradient(1.5px 1.5px at 66% 30%,#fff,transparent),radial-gradient(1px 1px at 80% 34%,#cfe,transparent),radial-gradient(1px 1px at 50% 6%,#fff,transparent),radial-gradient(1px 1px at 28% 22%,#fff,transparent);
   background-repeat:no-repeat; }
-.phase-night .sky-layer::after, .phase-dawn .sky-layer::after { opacity:.9; animation: twinkle 4s ease-in-out infinite; }
+.phase-night .sky-layer::after, .phase-dawn .sky-layer::after { opacity:.95; animation: twinkle 4s ease-in-out infinite; }
+.phase-dusk .sky-layer::after { opacity:.6; animation: twinkle 5s ease-in-out infinite; }
 @keyframes twinkle { 0%,100%{opacity:.5;} 50%{opacity:.95;} }
 
 /* 日月(JS 沿弧线定位 left/top) */
-.celestial { position:absolute; z-index:2; width:46px; height:46px; border-radius:50%; transition: all 1.2s ease; transform: translate(-50%,-50%); }
+.celestial { position:absolute; z-index:2; width:66px; height:66px; border-radius:50%; transition: all 1.2s ease; transform: translate(-50%,-50%); }
 .phase-day .celestial,.phase-dawn .celestial,.phase-dusk .celestial { background: radial-gradient(circle,#fff6d8,#f5c451 60%,transparent 72%); box-shadow:0 0 40px 10px rgba(245,196,81,.45); }
 .phase-night .celestial { background: radial-gradient(circle,#eef4ff,#aab8d8 58%,transparent 70%); box-shadow:0 0 28px 6px rgba(160,180,220,.4); }
 
 /* —— 远景 / 中景 剪影(按场景) —— */
-.backdrop-layer { z-index:2; opacity:.5; }
+.backdrop-layer { z-index:2; opacity:.6; }
 .mid-layer { z-index:3; opacity:.8; }
-/* 默认:观星台 — 远山 + 立柱 */
-.backdrop-layer::before { content:""; position:absolute; left:0; right:0; bottom:28%; height:24%;
-  background: linear-gradient(180deg,transparent,rgba(0,0,0,.55)); clip-path: polygon(0 100%,0 60%,14% 35%,26% 62%,40% 28%,55% 58%,70% 22%,84% 55%,100% 40%,100% 100%); }
+/* 默认:观星台 — 近山(抬高加大,填中部) */
+.backdrop-layer::before { content:""; position:absolute; left:0; right:0; bottom:26%; height:46%;
+  background: linear-gradient(180deg,transparent,rgba(0,0,0,.6)); clip-path: polygon(0 100%,0 62%,14% 30%,26% 60%,40% 20%,55% 55%,70% 16%,84% 52%,100% 34%,100% 100%); }
+/* 远景天际线剪影(更高更淡,填上半部空白) */
+.backdrop-layer::after { content:""; position:absolute; left:0; right:0; bottom:46%; height:34%; opacity:.45;
+  background: linear-gradient(180deg,transparent,rgba(0,0,0,.4));
+  clip-path: polygon(0 100%,0 70%,6% 70%,6% 48%,12% 48%,12% 66%,19% 66%,19% 38%,25% 38%,25% 64%,33% 64%,33% 30%,39% 30%,39% 60%,48% 60%,48% 44%,55% 44%,55% 26%,61% 26%,61% 58%,69% 58%,69% 40%,77% 40%,77% 62%,85% 62%,85% 34%,92% 34%,92% 56%,100% 56%,100% 100%); }
+.scene-dream_space .backdrop-layer::after, .scene-night_room .backdrop-layer::after { opacity:.2; }
 .scene-city_walk .backdrop-layer::before,.scene-message_room .backdrop-layer::before { bottom:28%; height:34%;
   background: linear-gradient(180deg,rgba(0,0,0,.2),rgba(0,0,0,.7));
   clip-path: polygon(0 100%,0 55%,8% 55%,8% 30%,16% 30%,16% 60%,24% 60%,24% 18%,33% 18%,33% 62%,44% 62%,44% 40%,53% 40%,53% 22%,62% 22%,62% 64%,72% 64%,72% 34%,82% 34%,82% 58%,92% 58%,92% 26%,100% 26%,100% 100%); }
@@ -243,8 +249,8 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 @keyframes dream-float { 0%,100%{transform:translateX(-50%) translateY(0);} 50%{transform:translateX(-50%) translateY(-10px);} }
 
 /* —— 角色 —— */
-.actor { position:absolute; left:50%; bottom:26%; z-index:6; transform:translateX(-50%); display:flex; flex-direction:column; align-items:center; }
-.sprite-img { position:relative; z-index:2; height:36vh; max-height:340px; width:auto; object-fit:contain; image-rendering:pixelated;
+.actor { position:absolute; left:50%; bottom:22%; z-index:6; transform:translateX(-50%); display:flex; flex-direction:column; align-items:center; }
+.sprite-img { position:relative; z-index:2; height:56vh; max-height:560px; width:auto; object-fit:contain; image-rendering:pixelated;
   filter: drop-shadow(0 6px 10px rgba(0,0,0,.55)); animation: actor-bob 3.2s ease-in-out infinite; }
 .actor.moving .sprite-img { animation: actor-bob 0.9s ease-in-out infinite; }
 .actor.resting .sprite-img { animation: actor-breathe 5s ease-in-out infinite; }
