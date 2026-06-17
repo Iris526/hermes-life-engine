@@ -321,8 +321,8 @@ const SPRITE_FOR = {
 };
 const MOVING_STATES = new Set(["walk"]);
 const RESTING_STATES = new Set(["sleep", "tired", "recover", "dream"]);
-// poses with a 2-frame looping WebP (native animation); others are static PNG + CSS motion.
-const ANIMATED_POSES = new Set(["idle", "walk", "work"]);
+// every pose now has a 2-frame looping WebP (native animation); PNG is fallback.
+const ANIMATED_POSES = new Set(["idle", "work", "walk", "sleep", "dream", "eat", "reply", "battle", "tired", "recover"]);
 let particlesBuilt = false;
 
 function animateSprite(spriteState) {
