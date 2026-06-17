@@ -208,6 +208,11 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
         # Persona is private agent-life: on work-compact platforms expose only
         # the one-line tone hint, never the full trait vector.
         capsule["persona"] = {"tone_hint": persona.get("tone_hint")} if work_compact else persona
+    mood = data.get("mood") or {}
+    if mood and mood.get("value") is not None:
+        # Mood is private agent-life: on work-compact platforms show only the
+        # coarse band, never the exact value or the behavioral note.
+        capsule["mood"] = {"band": mood.get("band")} if work_compact else mood
     feedback = data.get("final_gate_feedback") or []
     if feedback and not work_compact:
         capsule["internal_feedback"] = feedback[:2]

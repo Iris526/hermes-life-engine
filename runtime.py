@@ -40,6 +40,7 @@ from .canon import (
 from .constants import DEFAULT_AGENT_ID, DEFAULT_USER_ID, MUTATION_BLOCKING_STATES, SETUP_STATES, PLUGIN_VERSION, TICK_BASELINE_MIN, GAP_CAP_MIN, GAP_THRESHOLD_MIN
 from .time_utils import to_epoch as _to_epoch
 from . import persona
+from . import emotion
 from .impromptu import record_impromptu_activity
 from .behavior_mapping import (
     DEFAULT_BEHAVIOR_MAPPINGS,
@@ -422,13 +423,14 @@ class LifeEngineRuntime:
             required = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False) if owner_kind == "agent" else {"ok": True, "missing": []}
             schedule = list_human_schedule(self.conn, owner_kind, owner_id, period="today", tz_name=_tz_from_canon(canon), limit=20) if owner_kind == "agent" else {"items": []}
             persona_summary = persona.persona_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}
+            mood_summary = self.mood("status", owner_kind, owner_id) if owner_kind == "agent" else {}
             try:
                 from zoneinfo import ZoneInfo as _ZI
                 _today_local = datetime.now(timezone.utc).astimezone(_ZI(_tz_from_canon(canon) or "UTC")).date().isoformat()
             except Exception:
                 _today_local = now_iso()[:10]
             meals_today = meal_status_for_date(self.conn, owner_kind, owner_id, _today_local, canon) if owner_kind == "agent" else {}
-            out = {"control": c, "canon": canon, "realtime_state": realtime_state, "sleep_plans": sleep_plans, "sleep_sessions": sleep_sessions, "dreams": dreams, "persona": persona_summary, "meals_today": meals_today, "resources": resources, "goals": goals, "life_arcs": arcs, "pending_confirmations": confirmations, "pending_proactive": pending, "proactive_outbox": proactive_outbox if owner_kind == "agent" else [], "proactive_states": proactive_states if owner_kind == "agent" else [], "recent_autonomy": autonomy, "recent_execution": execution, "recent_serendipity": serendipity, "required_settings": required, "today_schedule": schedule.get("summary", {})}
+            out = {"control": c, "canon": canon, "realtime_state": realtime_state, "sleep_plans": sleep_plans, "sleep_sessions": sleep_sessions, "dreams": dreams, "persona": persona_summary, "mood": mood_summary, "meals_today": meals_today, "resources": resources, "goals": goals, "life_arcs": arcs, "pending_confirmations": confirmations, "pending_proactive": pending, "proactive_outbox": proactive_outbox if owner_kind == "agent" else [], "proactive_states": proactive_states if owner_kind == "agent" else [], "recent_autonomy": autonomy, "recent_execution": execution, "recent_serendipity": serendipity, "required_settings": required, "today_schedule": schedule.get("summary", {})}
             out["rendered"] = _render_status_page(out)
             return out
 
@@ -717,6 +719,11 @@ class LifeEngineRuntime:
                 source=payload.get("source") or source,
                 gain=float(payload.get("gain", 1.0)),
             )
+        elif op_type == "MOOD_REACTION":
+            return emotion.record_mood_reaction(
+                self.conn, owner_kind, owner_id, canon_version=canon_version,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
         raise ValueError(f"Unknown LifeOp type: {op_type}")
 
     # ----- query / mutation convenience -----------------------------------
@@ -1655,6 +1662,30 @@ class LifeEngineRuntime:
         if action == "meal":
             return self.commit_ops([{"type": "CREATE_MEAL_RECORD", "payload": payload}], owner_kind, owner_id, "life_meals_tool", session_id, turn_id)
         raise ValueError(f"Unknown meal action: {action}")
+
+    # ----- mood ------------------------------------------------------------
+    def mood(self, action: str = "status", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+             session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """The agent's own emotional reactions on the mood gauge.
+
+        ``react`` records a bounded mood change the agent attributes to
+        something it felt (delta + reason); ``status`` reports the current mood,
+        its band, the behavioral bias it implies, and recent reactions.
+        """
+        action_l = str(action or "status").strip().lower()
+        if action_l in {"react", "feel", "情绪", "心情"}:
+            op_payload = {k: v for k, v in payload.items() if k in {"delta", "reason", "trigger", "source"}}
+            return self.commit_ops([{"type": "MOOD_REACTION", "payload": op_payload}], owner_kind, owner_id, "life_mood_tool", session_id, turn_id)
+        if action_l in {"status", "state", "现状"}:
+            mood = emotion.current_mood(self.conn, owner_kind, owner_id)
+            return {
+                "ok": True,
+                "mood": mood,
+                "band": emotion.mood_band(mood),
+                "bias": emotion.mood_bias(mood),
+                "recent": emotion.recent_mood_reactions(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 5))),
+            }
+        raise ValueError(f"Unknown mood action: {action}")
 
     # ----- goals / life arcs / decomposition -------------------------------
     def goals(self, action: str, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
@@ -3493,12 +3524,14 @@ class LifeEngineRuntime:
                 today_schedule = _safe(lambda: list_human_schedule(self.conn, owner_kind, owner_id, period="today", tz_name=_tz_from_canon(canon), limit=20) if owner_kind == "agent" else {"items": []}, {"items": []})
                 resolved_behavior = self._resolve_behavior_for_context(owner_kind, owner_id, user_message)
                 persona_capsule = _safe(lambda: persona.render_persona_capsule(persona.ensure_persona(self.conn, owner_kind, owner_id, canon)) if owner_kind == "agent" else {}, {})
+                mood_capsule = _safe(lambda: (lambda m: {"value": m, "band": emotion.mood_band(m), "note": emotion.mood_bias(m).get("note")})(emotion.current_mood(self.conn, owner_kind, owner_id)) if owner_kind == "agent" else {}, {})
                 context_data = {
                     "owner_scope": scope.__dict__,
                     "engine_state": control["engine_state"],
                     "canon_version": control.get("active_canon_version"),
                     "module_gates": control.get("module_gates"),
                     "persona": persona_capsule,
+                    "mood": mood_capsule,
                     "canon_brief": {"identity": (canon or {}).get("identity"), "worldview": (canon or {}).get("worldview"), "truth_sources": (canon or {}).get("truth_sources")},
                     "realtime": get_realtime_state(self.conn, owner_kind, owner_id),
                     "resources": [{"resource_key": a["resource_key"], "current_value": a["current_value"], "unit": a.get("unit"), "state": a.get("state")} for a in (resources.get("accounts", [])[:20])],

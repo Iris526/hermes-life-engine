@@ -190,6 +190,13 @@ def _fact_text_for(op_type: str, payload: dict[str, Any], result: Any) -> tuple[
             "schedule_block_id": (res.get("schedule_block") or {}).get("id") if isinstance(res.get("schedule_block"), dict) else None,
             "postponed": res.get("postponed", []),
         }
+    if op_type == "MOOD_REACTION":
+        res = result if isinstance(result, dict) else {}
+        d = res.get("delta", payload.get("delta"))
+        sign = "+" if isinstance(d, (int, float)) and d > 0 else ""
+        return "mood", f"心情 {sign}{d}: {payload.get('reason') or ''}".strip(), {
+            "delta": d, "value_after": res.get("value_after"), "trigger": payload.get("trigger"), "source": payload.get("source"),
+        }
     return "op", f"{op_type} {payload}", {}
 
 

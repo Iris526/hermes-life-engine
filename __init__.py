@@ -50,6 +50,7 @@ def register(ctx):
         ("life_truth", schemas.LIFE_TRUTH, tools.life_truth, "Canon truth-source resolver", "🧭"),
         ("life_confirmation", schemas.LIFE_CONFIRMATION, tools.life_confirmation, "User Life confirmation flow", "📝"),
         ("life_meals", schemas.LIFE_MEALS, tools.life_meals, "Meal records (breakfast/lunch/dinner)", "🍱"),
+        ("life_mood", schemas.LIFE_MOOD, tools.life_mood, "Emotional reactions: nudge the mood gauge with a reason", "🎭"),
         ("life_goal", schemas.LIFE_GOAL, tools.life_goal, "Goals, life arcs, decomposition, and reflection", "🎯"),
         ("life_autonomy", schemas.LIFE_AUTONOMY, tools.life_autonomy, "Autonomy planner decisions and runs", "🧭"),
         ("life_proactive", schemas.LIFE_PROACTIVE, tools.life_proactive, "Proactive intent and outbox state", "📣"),

@@ -364,6 +364,24 @@ LIFE_MEALS = {
     },
 }
 
+LIFE_MOOD = {
+    "name": "life_mood",
+    "description": "The agent's own emotional reactions on the mood gauge (mood is a vital resource in [-100, 100]). react=register how something made you feel (bounded delta + reason); status=read current mood, its band, the behavioral bias it implies, and recent reactions. Use react whenever something genuinely lifts or dampens your mood — a warm message, a setback, a small win — so the gauge reflects lived experience instead of sitting flat.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            **OWNER_PROPS,
+            "action": {"type": "string", "enum": ["react", "status"], "description": "react=apply a mood change; status=read mood + bias + recent reactions."},
+            "delta": {"type": "number", "description": "Mood change for react (clamped to ±20 per reaction). Positive=happier, negative=lower."},
+            "reason": {"type": "string", "description": "Short reason for the mood change, in the agent's voice (e.g. '收到 Ringo 的消息很开心')."},
+            "trigger": {"type": "string", "description": "Optional identifier of what triggered it (event id, message, etc.)."},
+            "source": {"type": "string"},
+            "limit": {"type": "integer"},
+        },
+        "required": ["action"],
+    },
+}
+
 LIFE_GOAL = {
     "name": "life_goal",
     "description": (

@@ -223,6 +223,14 @@ def life_meals(args: dict, **kwargs) -> str:
     return _run(lambda rt: rt.meals(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
 
 
+def life_mood(args: dict, **kwargs) -> str:
+    """Emotional reactions on the mood gauge: react (nudge + reason) / status."""
+    owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
+    action = args.get("action", "status")
+    payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action"}}
+    return _run(lambda rt: rt.mood(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
+
+
 def life_goal(args: dict, **kwargs) -> str:
     owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
     action = args.get("action", "list")

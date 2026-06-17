@@ -103,6 +103,8 @@ ALLOWED_OPS = {
     "PERSONA_DRIFT",
     # v0.14.0 impromptu activity capture + conflict resolution
     "RECORD_IMPROMPTU_ACTIVITY",
+    # agent-triggerable emotional reaction on the mood resource
+    "MOOD_REACTION",
 }
 
 USER_WRITE_OPS = {
@@ -467,6 +469,15 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         signals = payload.get("signals")
         if signals is not None and not isinstance(signals, dict):
             raise ValidationError("PERSONA_DRIFT signals must be an object")
+    elif op_type == "MOOD_REACTION":
+        delta = payload.get("delta")
+        if delta is None:
+            raise ValidationError("MOOD_REACTION requires a delta")
+        try:
+            if float(delta) == 0:
+                raise ValidationError("MOOD_REACTION delta must be non-zero")
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("MOOD_REACTION delta must be numeric") from exc
     elif op_type == "RECORD_IMPROMPTU_ACTIVITY":
         _require(payload, "title")
         dur = payload.get("duration_minutes")
