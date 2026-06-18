@@ -216,6 +216,22 @@ class LifeEngineReader:
                 row[key.replace("_json", "")] = _safe_json(row.get(key), [] if key.endswith("ids_json") or key == "tags_json" else {})
         return row
 
+    def identity(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
+        """The agent's Canon identity (display name/role) — the user-owned name,
+        not the internal owner_id. Empty if Canon has no identity set."""
+        with self._connect() as conn:
+            if not self._table_exists(conn, "canon_versions"):
+                return {}
+            row = self._first(conn, "SELECT data_json FROM canon_versions WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY version DESC LIMIT 1", (owner_kind, owner_id))
+            data = _safe_json((row or {}).get("data_json"), {}) or {}
+            ident = data.get("identity") or {}
+            return {
+                "name": ident.get("name") or ident.get("display_name"),
+                "role": ident.get("role") or ident.get("title") or ident.get("occupation"),
+                "gender": ident.get("gender"),
+                "age": ident.get("age"),
+            }
+
     def schedule(self, owner_kind: str, owner_id: str, period: str = "today", date: str | None = None, include_completed: bool = True, limit: int = 500) -> dict[str, Any]:
         start, end, label = period_range(period, date)
         with self._connect() as conn:
@@ -785,6 +801,7 @@ class LifeEngineReader:
             "meta": self.meta(),
             "owners": self.owners(),
             "owner": {"owner_kind": owner_kind, "owner_id": owner_id},
+            "identity": self.identity(owner_kind, owner_id),
             "control": self.control(owner_kind, owner_id),
             "state": state,
             "current_event": current,

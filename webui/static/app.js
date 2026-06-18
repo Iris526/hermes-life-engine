@@ -204,9 +204,11 @@ function renderSidebar() {
   const avatar = snapshotData.avatar || {};
   // 立绘信息
   const owner = snapshotData.owner || {};
+  const identity = snapshotData.identity || {};
+  const displayName = identity.name || owner.owner_id || "—";
   document.getElementById("agent-portrait").src = staticAssetUrl("default-agent-reference.jpg");
-  document.getElementById("char-name").textContent = owner.owner_id || "—";
-  document.getElementById("char-title").textContent = avatar.label || avatar.scene || state.mode || "—";
+  document.getElementById("char-name").textContent = displayName;
+  document.getElementById("char-title").textContent = identity.role || avatar.label || avatar.scene || state.mode || "—";
   const engine = engineDisplayState(control, state, snapshotData.current_event);
   const eventTitle = snapshotData.current_event?.title || "暂无当前事项";
   const engineCard = document.getElementById("engine-live-card");
@@ -445,7 +447,7 @@ function renderStage() {
   }
 
   // JRPG 对话框
-  document.getElementById("dlg-name").textContent = owner.owner_id || "—";
+  document.getElementById("dlg-name").textContent = (snapshotData.identity || {}).name || owner.owner_id || "—";
   const dlgText = document.getElementById("dlg-text");
   const line = avatar.bubble || (currentEvent ? currentEvent.title : null) || avatar.label || "观察生活流……";
   dlgText.textContent = line;
