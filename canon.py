@@ -171,6 +171,42 @@ def commit_draft(conn, owner_kind: str, owner_id: str, draft_id: str | None = No
     return {"canon_id": canon_id, "version": version, "status": status, "data": data, "migration": migration}
 
 
+def rename_identity(conn, owner_kind: str, owner_id: str, name: str, *, source: str = "rename") -> dict[str, Any]:
+    """Change only the agent's Canon display name (identity.name).
+
+    This is a focused, non-disruptive edit: it commits a new Canon version (so
+    the change is versioned + audited) but, unlike a full reconfigure, does NOT
+    pause the engine, run a migration, or re-seed persona/resources. The
+    internal owner_id is never touched.
+    """
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("name is required")
+    control = ensure_control(conn, owner_kind, owner_id)
+    base = get_active_canon(conn, owner_kind, owner_id) or {}
+    from_version = control.get("active_canon_version")
+    data = deepcopy(base)
+    data.setdefault("identity", {})["name"] = name
+    version = int((conn.execute(
+        "SELECT COALESCE(MAX(version), 0) FROM canon_versions WHERE owner_kind=? AND owner_id=?",
+        (owner_kind, owner_id),
+    ).fetchone() or [0])[0]) + 1
+    conn.execute(
+        "UPDATE canon_versions SET status='superseded' WHERE owner_kind=? AND owner_id=? AND status='active'",
+        (owner_kind, owner_id),
+    )
+    canon_id = new_id("canon")
+    conn.execute(
+        """INSERT INTO canon_versions(id, owner_kind, owner_id, version, status, data_json, activated_at)
+               VALUES(?,?,?,?,'active',?,datetime('now'))""",
+        (canon_id, owner_kind, owner_id, version, dumps(data)),
+    )
+    update_control(conn, owner_kind, owner_id, active_canon_version=version)  # engine_state unchanged
+    append_journal(conn, owner_kind, owner_id, "canon_identity_renamed",
+                   {"name": name, "from_version": from_version, "version": version}, source)
+    return {"ok": True, "name": name, "version": version, "canon_id": canon_id}
+
+
 def set_engine_state(conn, owner_kind: str, owner_id: str, state: str, reason: str | None = None) -> dict[str, Any]:
     from .constants import ENGINE_STATES
     if state not in ENGINE_STATES:

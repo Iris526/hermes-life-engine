@@ -277,6 +277,8 @@ def create_app(life_dir: str | None = None) -> FastAPI:
                 if req.action == "proactive_send":
                     return rt.proactive("send", state.owner_kind, state.owner_id, None, None,
                                         outbox_id=req.payload.get("outbox_id"), manual=True)
+                if req.action == "rename":
+                    return rt.rename(req.payload.get("name") or "", state.owner_kind, state.owner_id)
                 return {"ok": False, "error": f"Unknown action: {req.action}"}
             finally:
                 rt.close()

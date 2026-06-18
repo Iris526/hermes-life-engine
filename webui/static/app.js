@@ -207,7 +207,14 @@ function renderSidebar() {
   const identity = snapshotData.identity || {};
   const displayName = identity.name || owner.owner_id || "—";
   document.getElementById("agent-portrait").src = staticAssetUrl("default-agent-reference.jpg");
-  document.getElementById("char-name").textContent = displayName;
+  const nameEl = document.getElementById("char-name");
+  nameEl.textContent = displayName;
+  nameEl.title = "点击改名(改 Canon 身份名,不动内部 owner_id)";
+  nameEl.style.cursor = "pointer";
+  nameEl.onclick = () => {
+    const next = (window.prompt("给她起个名字(Canon 身份名):", identity.name || "") || "").trim();
+    if (next && next !== identity.name) doAction("rename", { name: next });
+  };
   document.getElementById("char-title").textContent = identity.role || avatar.label || avatar.scene || state.mode || "—";
   const engine = engineDisplayState(control, state, snapshotData.current_event);
   const eventTitle = snapshotData.current_event?.title || "暂无当前事项";

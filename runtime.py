@@ -30,6 +30,7 @@ from .canon import (
     ensure_control,
     get_active_canon,
     get_draft,
+    rename_identity,
     set_engine_state,
     set_module_gate,
     update_control,
@@ -507,6 +508,11 @@ class LifeEngineRuntime:
             except Exception as exc:
                 trace.end(status="error", error=f"{type(exc).__name__}: {exc}")
                 raise
+
+    def rename(self, name: str, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID) -> dict[str, Any]:
+        """Change only the Canon display name (identity.name); owner_id is untouched."""
+        with transaction(self.conn):
+            return rename_identity(self.conn, owner_kind, owner_id, name, source="webui_rename")
 
     def branch(self, name: str, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID) -> dict[str, Any]:
         with transaction(self.conn):
