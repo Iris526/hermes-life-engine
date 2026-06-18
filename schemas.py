@@ -364,6 +364,37 @@ LIFE_MEALS = {
     },
 }
 
+LIFE_ACTIVITY = {
+    "name": "life_activity",
+    "description": "Register / list / pause / resume / cancel a recurring activity (营生) — an engine-enforced occupation like running a stall to earn money. Once registered, the heartbeat materializes one scheduled event per due day automatically (not via prompt or memory), and income/cost settles when that event completes. register: give title, cadence_kind (daily|weekly, with weekdays for weekly), start_time/end_time (HH:MM local) + timezone, and resource_costs you judge for each occurrence (e.g. {\"money.lingzhu\": 30, \"energy\": -14}). cancel/pause stop future occurrences; past records are kept.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            **OWNER_PROPS,
+            "action": {"type": "string", "enum": ["register", "list", "get", "pause", "resume", "cancel", "update"], "description": "register=create; list/get=read; pause/resume/cancel=change status; update=edit fields."},
+            "activity_id": {"type": "string", "description": "Target activity (get/pause/resume/cancel/update)."},
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "activity_type": {"type": "string", "description": "event_type for materialized events (e.g. work)."},
+            "event_category": {"type": "string"},
+            "activity_domain": {"type": "string"},
+            "cadence_kind": {"type": "string", "enum": ["daily", "weekly"]},
+            "weekdays": {"type": "array", "items": {"type": "integer"}, "description": "For weekly cadence: weekday numbers, Mon=0 .. Sun=6."},
+            "start_time": {"type": "string", "description": "HH:MM local start of the daily window."},
+            "end_time": {"type": "string", "description": "HH:MM local end of the daily window."},
+            "timezone": {"type": "string"},
+            "resource_costs": {"type": "object", "description": "Per-occurrence signed deltas incl. income; you judge these (negative drains, positive earns)."},
+            "importance": {"type": "integer"},
+            "priority": {"type": "integer"},
+            "start_date": {"type": "string"},
+            "end_date": {"type": "string"},
+            "status": {"type": "string", "enum": ["active", "paused", "cancelled"]},
+            "limit": {"type": "integer"},
+        },
+        "required": ["action"],
+    },
+}
+
 LIFE_MOOD = {
     "name": "life_mood",
     "description": "The agent's own emotional reactions on the mood gauge (mood is a vital resource in [-100, 100]). react=register how something made you feel (bounded delta + reason); status=read current mood, its band, the behavioral bias it implies, and recent reactions. Use react whenever something genuinely lifts or dampens your mood — a warm message, a setback, a small win — so the gauge reflects lived experience instead of sitting flat.",

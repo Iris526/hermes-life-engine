@@ -105,6 +105,9 @@ ALLOWED_OPS = {
     "RECORD_IMPROMPTU_ACTIVITY",
     # agent-triggerable emotional reaction on the mood resource
     "MOOD_REACTION",
+    # v0.16.0 recurring activities (营生): register / update / cancel an occupation
+    "CREATE_RECURRING_ACTIVITY",
+    "UPDATE_RECURRING_ACTIVITY",
 }
 
 USER_WRITE_OPS = {
@@ -478,6 +481,18 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
                 raise ValidationError("MOOD_REACTION delta must be non-zero")
         except (TypeError, ValueError) as exc:
             raise ValidationError("MOOD_REACTION delta must be numeric") from exc
+    elif op_type == "CREATE_RECURRING_ACTIVITY":
+        _require(payload, "title")
+        cadence = payload.get("cadence_kind", "daily")
+        if cadence not in {"daily", "weekly"}:
+            raise ValidationError("cadence_kind must be 'daily' or 'weekly'")
+        if cadence == "weekly" and not payload.get("weekdays"):
+            raise ValidationError("weekly cadence requires weekdays (e.g. [0,2,4])")
+    elif op_type == "UPDATE_RECURRING_ACTIVITY":
+        _require(payload, "activity_id")
+        st = payload.get("status")
+        if st is not None and st not in {"active", "paused", "cancelled"}:
+            raise ValidationError("status must be active/paused/cancelled")
     elif op_type == "RECORD_IMPROMPTU_ACTIVITY":
         _require(payload, "title")
         dur = payload.get("duration_minutes")

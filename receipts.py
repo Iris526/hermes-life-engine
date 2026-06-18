@@ -190,6 +190,16 @@ def _fact_text_for(op_type: str, payload: dict[str, Any], result: Any) -> tuple[
             "schedule_block_id": (res.get("schedule_block") or {}).get("id") if isinstance(res.get("schedule_block"), dict) else None,
             "postponed": res.get("postponed", []),
         }
+    if op_type == "CREATE_RECURRING_ACTIVITY":
+        res = result if isinstance(result, dict) else {}
+        return "recurring_activity", f"注册营生：{payload.get('title')}（{payload.get('cadence_kind', 'daily')}）", {
+            "activity_id": res.get("id"), "cadence": payload.get("cadence_kind", "daily"), "source": payload.get("source"),
+        }
+    if op_type == "UPDATE_RECURRING_ACTIVITY":
+        res = result if isinstance(result, dict) else {}
+        return "recurring_activity", f"营生更新：{res.get('title') or payload.get('activity_id')} → {payload.get('status') or '改动'}", {
+            "activity_id": payload.get("activity_id"), "status": payload.get("status"),
+        }
     if op_type == "MOOD_REACTION":
         res = result if isinstance(result, dict) else {}
         d = res.get("delta", payload.get("delta"))

@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 51
+_SCHEMA_VERSION = 52
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -255,6 +255,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 51:
         _create_schema_v51(conn)
         _record_schema_migration(conn, 51, "meal_accountability")
+    if current < 52:
+        _create_schema_v52(conn)
+        _record_schema_migration(conn, 52, "recurring_activities")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3635,4 +3638,65 @@ def _create_schema_v51(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE meal_records ADD COLUMN planned_for TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_meal_records_owner_day ON meal_records(owner_kind, owner_id, meal_date, meal_type)"
+    )
+
+
+def _create_schema_v52(conn: sqlite3.Connection) -> None:
+    """Recurring activities (营生): an engine-level, registerable/cancellable
+    occupation — e.g. running a stall to earn money. The heartbeat materializes
+    each due, active activity into a concrete event + schedule block once per
+    day (idempotent via the occurrences table); income/cost settles through the
+    normal event-completion path. Cancelling sets status='cancelled' so no
+    further occurrences are materialized. Character-agnostic: the activity is
+    just data the agent registers, not anything hardcoded in the engine."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recurring_activities (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          activity_type TEXT NOT NULL DEFAULT 'work',
+          event_category TEXT,
+          activity_domain TEXT,
+          cadence_kind TEXT NOT NULL DEFAULT 'daily',   -- 'daily' | 'weekly'
+          weekdays_json TEXT,                           -- weekly: [0..6], Mon=0
+          start_time TEXT,                              -- 'HH:MM' local
+          end_time TEXT,                                -- 'HH:MM' local
+          timezone TEXT NOT NULL DEFAULT 'UTC',
+          resource_costs_json TEXT,                     -- per-occurrence deltas (incl. income), agent-judged
+          importance INTEGER NOT NULL DEFAULT 55,
+          priority INTEGER NOT NULL DEFAULT 55,
+          status TEXT NOT NULL DEFAULT 'active',        -- active | paused | cancelled
+          start_date TEXT,
+          end_date TEXT,
+          last_materialized_date TEXT,
+          tags_json TEXT,
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recurring_owner_status ON recurring_activities(owner_kind, owner_id, status)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recurring_activity_occurrences (
+          id TEXT PRIMARY KEY,
+          activity_id TEXT NOT NULL,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          date_key TEXT NOT NULL,
+          event_id TEXT,
+          schedule_block_id TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(activity_id, date_key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recurring_occ_owner ON recurring_activity_occurrences(owner_kind, owner_id, date_key)"
     )

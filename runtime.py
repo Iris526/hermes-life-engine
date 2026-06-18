@@ -42,6 +42,7 @@ from .time_utils import to_epoch as _to_epoch
 from . import persona
 from . import emotion
 from . import event_costs
+from . import recurring
 from .impromptu import record_impromptu_activity
 from .behavior_mapping import (
     DEFAULT_BEHAVIOR_MAPPINGS,
@@ -725,6 +726,16 @@ class LifeEngineRuntime:
                 self.conn, owner_kind, owner_id, canon_version=canon_version,
                 source=payload.get("source") or source,
                 **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "CREATE_RECURRING_ACTIVITY":
+            return recurring.create_recurring_activity(
+                self.conn, owner_kind, owner_id, canon_version=canon_version,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "UPDATE_RECURRING_ACTIVITY":
+            return recurring.update_recurring_activity(
+                self.conn, owner_kind, owner_id, payload["activity_id"], canon_version=canon_version,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k not in {"source", "activity_id"}})
         raise ValueError(f"Unknown LifeOp type: {op_type}")
 
     # ----- query / mutation convenience -----------------------------------
@@ -1224,6 +1235,7 @@ class LifeEngineRuntime:
                 autonomy_result = self._run_autonomy_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
                 persona_result = self._run_persona_drift_for_tick(owner_kind, owner_id, control, tick_id, trace, now, minutes_elapsed)
                 meals_result = self._settle_meals_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
+                recurring_result = self._materialize_recurring_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 proactive_result = self._run_proactive_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 managed_review_result = self._run_managed_review_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
                 delayed_release = {"released_count": 0}
@@ -1233,7 +1245,7 @@ class LifeEngineRuntime:
                         delayed_release = release_delayed_replies(self.conn, owner_kind, owner_id, reason="released by heartbeat after agent became available", source="heartbeat", limit=20)
                 except Exception as exc:
                     delayed_release = {"error": f"{type(exc).__name__}: {exc}"}
-                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
+                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "recurring_activities": recurring_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
                 if isinstance(recovered, dict) and recovered.get("gap"):
                     out["gap"] = recovered["gap"]
                 append_journal(self.conn, owner_kind, owner_id, "heartbeat_tick", {"now": now, **out}, "heartbeat", canon_version=control.get("active_canon_version"))
@@ -1435,6 +1447,84 @@ class LifeEngineRuntime:
             return {"status": "ok", "derived": derived, "settled_count": len(settled), "skipped": settled, "meals": settled}
         except Exception as exc:
             append_audit(self.conn, owner_kind, owner_id, "meal_settlement_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
+            return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+    @staticmethod
+    def _activity_window(date_key: str, start_time: str | None, end_time: str | None, tz_name: str) -> tuple[str | None, str | None]:
+        """Build today's start/end ISO for an activity's HH:MM window in its tz."""
+        if not start_time or not end_time:
+            return None, None
+        try:
+            from zoneinfo import ZoneInfo
+            from datetime import datetime as _dt
+            sh, sm = (int(x) for x in str(start_time).split(":")[:2])
+            eh, em = (int(x) for x in str(end_time).split(":")[:2])
+            y, mo, d = (int(x) for x in date_key.split("-"))
+            tz = ZoneInfo(tz_name or "UTC")
+            start = _dt(y, mo, d, sh, sm, tzinfo=tz)
+            end = _dt(y, mo, d, eh, em, tzinfo=tz)
+            return start.isoformat(), end.isoformat()
+        except Exception:
+            return None, None
+
+    def _materialize_recurring_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
+                                        tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
+        """Materialize each active recurring activity (营生) due today into a
+        concrete scheduled event, once per day (idempotent). Income/cost settles
+        through normal event completion. Gated by `recurring_activities`."""
+        if owner_kind != "agent":
+            return {"status": "skipped", "reason": "non-agent owner"}
+        gates = control.get("module_gates") or {}
+        mode = str(gates.get("recurring_activities", "auto") or "auto").lower()
+        if mode in {"off", "disabled", "false"}:
+            return {"status": "skipped", "reason": f"gate={mode}"}
+        try:
+            canon = get_active_canon(self.conn, owner_kind, owner_id)
+            tz_name = _tz_from_canon(canon) or "UTC"
+            from .time_utils import parse_datetime
+            dt = parse_datetime(now)
+            local = dt
+            try:
+                from zoneinfo import ZoneInfo
+                if dt is not None:
+                    local = dt.astimezone(ZoneInfo(tz_name))
+            except Exception:
+                local = dt
+            if local is None:
+                return {"status": "skipped", "reason": "unparseable now"}
+            date_key = local.date().isoformat()
+            weekday = local.weekday()
+            due = recurring.due_activities(self.conn, owner_kind, owner_id, date_key, weekday)
+            materialized = []
+            for act in due:
+                atz = act.get("timezone") or tz_name
+                start_iso, end_iso = self._activity_window(date_key, act.get("start_time"), act.get("end_time"), atz)
+                ev_payload = {
+                    "title": act["title"],
+                    "description": act.get("description") or "由营生(周期活动)自动铺出的当日事项。",
+                    "event_type": act.get("activity_type") or "work",
+                    "event_category": act.get("event_category") or "work",
+                    "activity_domain": act.get("activity_domain"),
+                    "status": "planned",
+                    "importance": int(act.get("importance") or 55),
+                    "priority": int(act.get("priority") or 55),
+                    "resource_costs": act.get("resource_costs") or {},
+                    "source": "recurring_activity",
+                    "tags": (act.get("tags") or []) + ["营生", "recurring", act["id"]],
+                    "attributes": {"recurring_activity_id": act["id"], "generated_by": "recurring_activity"},
+                }
+                with trace.span("recurring_materialize", {"activity_id": act["id"]}):
+                    c1 = self._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "recurring_activity", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
+                bid = None
+                if ev_id and start_iso and end_iso:
+                    c2 = self._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": ev_id, "start": start_iso, "end": end_iso, "block_type": "recurring_activity", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 30}}}], owner_kind, owner_id, "recurring_activity", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                    bid = (((c2.get("results") or [{}])[0].get("result") or {}).get("id"))
+                recurring.record_occurrence(self.conn, owner_kind, owner_id, act["id"], date_key, ev_id, bid)
+                materialized.append({"activity_id": act["id"], "title": act["title"], "event_id": ev_id, "schedule_block_id": bid})
+            return {"status": "ok", "date_key": date_key, "count": len(materialized), "materialized": materialized}
+        except Exception as exc:
+            append_audit(self.conn, owner_kind, owner_id, "recurring_materialize_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
     def _run_autonomy_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
@@ -1689,6 +1779,32 @@ class LifeEngineRuntime:
                 "recent": emotion.recent_mood_reactions(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 5))),
             }
         raise ValueError(f"Unknown mood action: {action}")
+
+    # ----- recurring activities (营生) -------------------------------------
+    def activity(self, action: str = "list", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+                 session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """Register / list / pause / resume / cancel a recurring activity (营生).
+
+        A registered activity is materialized by the heartbeat into one scheduled
+        event per due day (engine-enforced, not prompt/memory); income and cost
+        settle when that event completes. cancel/pause stop future occurrences.
+        """
+        action_l = str(action or "list").strip().lower()
+        if action_l in {"register", "create", "add", "注册", "开张"}:
+            return self.commit_ops([{"type": "CREATE_RECURRING_ACTIVITY", "payload": payload}], owner_kind, owner_id, "life_activity_tool", session_id, turn_id)
+        if action_l in {"list", "ls", "列表"}:
+            with transaction(self.conn):
+                return {"ok": True, "activities": recurring.list_recurring_activities(self.conn, owner_kind, owner_id, status=payload.get("status"), limit=int(payload.get("limit", 50)))}
+        if action_l in {"get", "show"}:
+            with transaction(self.conn):
+                return {"ok": True, "activity": recurring.get_recurring_activity(self.conn, owner_kind, owner_id, payload["activity_id"])}
+        if action_l in {"pause", "暂停", "resume", "恢复", "cancel", "取消", "update", "更新"}:
+            status_map = {"pause": "paused", "暂停": "paused", "resume": "active", "恢复": "active", "cancel": "cancelled", "取消": "cancelled"}
+            op_payload = dict(payload)
+            if action_l in status_map:
+                op_payload["status"] = status_map[action_l]
+            return self.commit_ops([{"type": "UPDATE_RECURRING_ACTIVITY", "payload": op_payload}], owner_kind, owner_id, "life_activity_tool", session_id, turn_id)
+        raise ValueError(f"Unknown activity action: {action}")
 
     # ----- goals / life arcs / decomposition -------------------------------
     def goals(self, action: str, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,

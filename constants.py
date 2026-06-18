@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 PLUGIN_NAME = "lifeengine"
-PLUGIN_VERSION = "0.15.0"
+PLUGIN_VERSION = "0.16.0"
 DB_FILENAME = "lifeengine.db"
 VECTOR_DIM = 384
 
@@ -67,6 +67,8 @@ DEFAULT_MODULE_GATES = {
     "personality_drift": "auto",
     # three-meals-a-day accountability
     "meals": "auto",
+    # v0.16.0 recurring activities (营生): heartbeat materializes due occupations
+    "recurring_activities": "auto",
 }
 
 DEFAULT_CANON_TEMPLATE = {
