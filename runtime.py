@@ -1238,6 +1238,7 @@ class LifeEngineRuntime:
                 recurring_result = self._materialize_recurring_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 supply_result = self._settle_supply_chain_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 opportunity_result = self._roll_opportunities_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
+                realtime_sync = self._sync_realtime_to_schedule_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 proactive_result = self._run_proactive_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 managed_review_result = self._run_managed_review_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
                 delayed_release = {"released_count": 0}
@@ -1247,7 +1248,7 @@ class LifeEngineRuntime:
                         delayed_release = release_delayed_replies(self.conn, owner_kind, owner_id, reason="released by heartbeat after agent became available", source="heartbeat", limit=20)
                 except Exception as exc:
                     delayed_release = {"error": f"{type(exc).__name__}: {exc}"}
-                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "recurring_activities": recurring_result, "venture_supply": supply_result, "venture_opportunities": opportunity_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
+                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "recurring_activities": recurring_result, "venture_supply": supply_result, "venture_opportunities": opportunity_result, "realtime_sync": realtime_sync, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
                 if isinstance(recovered, dict) and recovered.get("gap"):
                     out["gap"] = recovered["gap"]
                 append_journal(self.conn, owner_kind, owner_id, "heartbeat_tick", {"now": now, **out}, "heartbeat", canon_version=control.get("active_canon_version"))
@@ -1869,6 +1870,62 @@ class LifeEngineRuntime:
             return {"status": "ok", "date_key": date_key, "count": len(landed), "landed": landed}
         except Exception as exc:
             append_audit(self.conn, owner_kind, owner_id, "venture_opportunity_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
+            return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+    def _sync_realtime_to_schedule_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
+                                            tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
+        """Reflect what the agent is *currently* doing: if a schedule block's
+        window covers now, mark it in_progress and put realtime state into a busy
+        (or uninterruptible) mode pointing at that event — so the WebUI sprite and
+        the agent's own context show "I'm doing X" instead of idle. When no block
+        is active, fall back to idle. Sleep/reply/conversation states are left to
+        their own owners."""
+        if owner_kind != "agent":
+            return {"status": "skipped", "reason": "non-agent owner"}
+        try:
+            from .time_utils import to_epoch as _to_epoch
+            state = get_realtime_state(self.conn, owner_kind, owner_id) or {}
+            mode = state.get("mode")
+            # don't fight states owned elsewhere (sleep, pending reply, live chat)
+            if mode in {"asleep", "napping", "dreaming", "waiting_to_reply", "in_conversation"} or state.get("active_sleep_session_id"):
+                return {"status": "skipped", "reason": f"mode={mode}"}
+            now_ts = int(_to_epoch(now))
+            row = self.conn.execute(
+                """SELECT sb.id AS block_id, sb.event_id, sb.interruptibility_json,
+                          e.title, e.status AS event_status
+                     FROM schedule_blocks sb JOIN events e ON e.id=sb.event_id
+                    WHERE sb.owner_kind=? AND sb.owner_id=? AND sb.status IN ('planned','locked','ready','scheduled','in_progress')
+                      AND sb.start_ts IS NOT NULL AND sb.end_ts IS NOT NULL
+                      AND sb.start_ts <= ? AND sb.end_ts > ?
+                      AND e.status NOT IN ('completed','partial','done','cancelled','rescheduled','skipped')
+                    ORDER BY sb.start_ts DESC LIMIT 1""",
+                (owner_kind, owner_id, now_ts, now_ts),
+            ).fetchone()
+            if row:
+                interro = loads(row["interruptibility_json"] or "{}", {}) if isinstance(row["interruptibility_json"], str) else (row["interruptibility_json"] or {})
+                level = (interro or {}).get("level") or "soft_interruptible"
+                new_mode = "uninterruptible_event" if level == "uninterruptible" else "busy"
+                if state.get("active_event_id") == row["event_id"] and mode == new_mode:
+                    return {"status": "ok", "active_event_id": row["event_id"], "changed": False}
+                ops = [{"type": "UPDATE_REALTIME_STATE", "payload": {
+                    "mode": new_mode, "active_event_id": row["event_id"], "active_schedule_block_id": row["block_id"],
+                    "interruptibility_level": level,
+                    "reply_mode": "defer_until_event_end" if new_mode == "uninterruptible_event" else "immediate",
+                    "source": "schedule_sync", "reason": f"进行中：{row['title']}"}}]
+                if row["event_status"] in {"planned", "scheduled"}:
+                    ops.append({"type": "UPDATE_EVENT_STATUS", "payload": {"event_id": row["event_id"], "status": "in_progress", "reason": "事件窗口开始，进入进行中"}})
+                with trace.span("schedule_realtime_sync", {"event_id": row["event_id"]}):
+                    self._commit_ops_locked(ops, owner_kind, owner_id, "schedule_sync", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                return {"status": "ok", "active_event_id": row["event_id"], "mode": new_mode}
+            # no active block — clear a stale schedule-driven busy state back to idle
+            if mode in {"busy", "uninterruptible_event", "event_work"} or state.get("active_event_id"):
+                self._commit_ops_locked([{"type": "UPDATE_REALTIME_STATE", "payload": {
+                    "mode": "idle", "reply_mode": "immediate", "source": "schedule_sync",
+                    "reason": "无进行中日程，回到待机"}}], owner_kind, owner_id, "schedule_sync", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                return {"status": "ok", "mode": "idle", "cleared": True}
+            return {"status": "ok", "mode": mode, "changed": False}
+        except Exception as exc:
+            append_audit(self.conn, owner_kind, owner_id, "schedule_realtime_sync_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
     def _run_autonomy_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],

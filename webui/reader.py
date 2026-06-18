@@ -190,6 +190,17 @@ class LifeEngineReader:
             if not event_id and state.get("active_schedule_block_id") and self._table_exists(conn, "schedule_blocks"):
                 block = self._first(conn, "SELECT event_id FROM schedule_blocks WHERE id=?", (state.get("active_schedule_block_id"),))
                 event_id = (block or {}).get("event_id")
+            # read-only fallback: if realtime state hasn't been synced yet (e.g. no
+            # tick since the window opened), show whatever block covers right now,
+            # unless she's asleep/replying (those modes own the avatar).
+            if not event_id and (state.get("mode") not in {"asleep", "napping", "dreaming", "waiting_to_reply"}) and self._table_exists(conn, "schedule_blocks"):
+                import time as _time
+                now_ts = int(_time.time())
+                blk = self._first(conn, """SELECT event_id FROM schedule_blocks
+                       WHERE owner_kind=? AND owner_id=? AND status IN ('planned','locked','ready','scheduled','in_progress')
+                         AND start_ts IS NOT NULL AND end_ts IS NOT NULL AND start_ts <= ? AND end_ts > ?
+                       ORDER BY start_ts DESC LIMIT 1""", (owner_kind, owner_id, now_ts, now_ts))
+                event_id = (blk or {}).get("event_id")
             if not event_id:
                 return None
             if not self._table_exists(conn, "events"):
