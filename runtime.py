@@ -1674,18 +1674,40 @@ class LifeEngineRuntime:
                     ev = get_event(self.conn, order["event_id"]) if order["event_id"] else None
                     if ev and ev.get("status") in terminal:
                         self.conn.execute("UPDATE venture_restock_orders SET status='received', received_at=datetime('now') WHERE id=?", (order["id"],))
-                # 3) low stock → auto-create a 进货 event (cost money, adds stock on completion), deduped
+                # 3) low stock → replenish, deduped. recipe(制作: 材料→成品) takes
+                #    precedence over restock(进货: 花钱买成品). Either way it's an
+                #    event that adds goods on completion; materials/money are its cost.
+                recipe = sc.get("recipe") if has_supply and isinstance(sc.get("recipe"), dict) else None
                 restock = sc.get("restock") if has_supply and isinstance(sc.get("restock"), dict) else None
-                if restock:
-                    threshold = float(restock.get("threshold") or 0)
-                    qty = float(restock.get("quantity") or 0)
-                    unit_cost = float(restock.get("unit_cost") or 0)
+                plan = recipe or restock
+                if plan:
+                    threshold = float(plan.get("threshold") or 0)
                     stock = self._account_value(owner_kind, owner_id, goods)
                     pending = self.conn.execute(
                         "SELECT 1 FROM venture_restock_orders WHERE owner_kind=? AND owner_id=? AND activity_id=? AND status='pending'",
                         (owner_kind, owner_id, act["id"]),
                     ).fetchone()
-                    if stock < threshold and qty > 0 and not pending:
+                    if recipe:
+                        order_qty = float(recipe.get("batch_output") or 0)
+                        costs: dict[str, Any] = {goods: order_qty}
+                        for mk, mq in (recipe.get("materials") or {}).items():
+                            costs[mk] = -float(mq)
+                        for ek, ev_ in (recipe.get("effort") or {}).items():
+                            costs[ek] = float(ev_)
+                        dur = int(recipe.get("duration_minutes") or 120)
+                        title = f"制作：{sc.get('goods_name') or goods}"
+                        desc = f"为「{act['title']}」制作补货（库存 {stock:g} 低于 {threshold:g}）。"
+                        unit_cost = 0.0
+                        tag = "制作"
+                    else:
+                        order_qty = float(restock.get("quantity") or 0)
+                        unit_cost = float(restock.get("unit_cost") or 0)
+                        costs = {goods: order_qty, money: -round(order_qty * unit_cost, 2)}
+                        dur = 60
+                        title = f"进货：{sc.get('goods_name') or goods}"
+                        desc = f"为「{act['title']}」补货（库存 {stock:g} 低于 {threshold:g}）。"
+                        tag = "进货"
+                    if stock < threshold and order_qty > 0 and not pending:
                         base = parse_datetime(now)
                         atz = act.get("timezone") or "UTC"
                         try:
@@ -1694,20 +1716,19 @@ class LifeEngineRuntime:
                         except Exception:
                             pass
                         r_start = (base + _td(minutes=30)).isoformat()
-                        r_end = (base + _td(minutes=90)).isoformat()
+                        r_end = (base + _td(minutes=30 + dur)).isoformat()
                         ev_payload = {
-                            "title": f"进货：{sc.get('goods_name') or goods}",
-                            "description": f"为「{act['title']}」补货（库存 {stock:g} 低于 {threshold:g}）。",
-                            "event_type": "errand", "event_category": "work",
+                            "title": title, "description": desc,
+                            "event_type": "work", "event_category": "work",
                             "status": "planned", "importance": 60, "priority": 60,
-                            "resource_costs": {goods: qty, money: -round(qty * unit_cost, 2)},
+                            "resource_costs": costs,
                             "source": "venture_restock",
-                            "tags": ["营生", "进货", act["id"]],
-                            "attributes": {"recurring_activity_id": act["id"], "venture_restock": True},
+                            "tags": ["营生", tag, act["id"]],
+                            "attributes": {"recurring_activity_id": act["id"], "venture_restock": True, "mode": ("make" if recipe else "buy")},
                         }
                         if act.get("location"):
                             ev_payload["location"] = {"name": act.get("location"), "kind": "flexible"}
-                        with trace.span("venture_restock", {"activity_id": act["id"], "qty": qty}):
+                        with trace.span("venture_replenish", {"activity_id": act["id"], "qty": order_qty, "mode": ("make" if recipe else "buy")}):
                             c1 = self._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "venture_restock", session_id=None, turn_id=tick_id, trace=trace, control=control)
                         rev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
                         if rev_id:
@@ -1717,7 +1738,7 @@ class LifeEngineRuntime:
                                 pass
                         self.conn.execute(
                             "INSERT INTO venture_restock_orders(id, owner_kind, owner_id, activity_id, event_id, goods_name, quantity, unit_cost, status) VALUES(?,?,?,?,?,?,?,?, 'pending')",
-                            (new_id("restock"), owner_kind, owner_id, act["id"], rev_id, sc.get("goods_name") or goods, qty, unit_cost),
+                            (new_id("restock"), owner_kind, owner_id, act["id"], rev_id, sc.get("goods_name") or goods, order_qty, unit_cost),
                         )
                         restocks += 1
             return {"status": "ok", "sold": sold_total, "income": income_total, "restocks_ordered": restocks}
@@ -2071,14 +2092,24 @@ class LifeEngineRuntime:
             # static resource_costs, so the goods resource is the source of truth.
             sc = payload.get("supply_chain") or {}
             goods = sc.get("goods_resource") if isinstance(sc, dict) else None
-            if goods and not self.conn.execute(
-                "SELECT 1 FROM resource_definitions WHERE owner_kind=? AND owner_id=? AND key=?",
-                (owner_kind, owner_id, goods),
-            ).fetchone():
-                ops.append({"type": "RESOURCE_DEFINE", "payload": {
-                    "key": goods, "display_name": sc.get("goods_name") or goods,
-                    "resource_class": "goods", "unit": sc.get("unit") or "件",
-                    "min": 0, "initial": float(sc.get("initial_stock", 0) or 0)}})
+            def _ensure_resource(key, display, rclass, unit, initial):
+                if key and not self.conn.execute(
+                    "SELECT 1 FROM resource_definitions WHERE owner_kind=? AND owner_id=? AND key=?",
+                    (owner_kind, owner_id, key),
+                ).fetchone():
+                    ops.append({"type": "RESOURCE_DEFINE", "payload": {
+                        "key": key, "display_name": display or key, "resource_class": rclass,
+                        "unit": unit or "件", "min": 0, "initial": float(initial or 0)}})
+            if goods:
+                _ensure_resource(goods, sc.get("goods_name") or goods, "goods", sc.get("unit"), sc.get("initial_stock", 0))
+            # If the venture makes its goods from materials (recipe mode), make
+            # sure each material is a defined 'material' stock account too, so
+            # manufacturing has materials to consume (initial stock optional).
+            recipe = sc.get("recipe") if isinstance(sc, dict) and isinstance(sc.get("recipe"), dict) else None
+            if recipe and isinstance(recipe.get("materials"), dict):
+                mat_initial = recipe.get("materials_initial") if isinstance(recipe.get("materials_initial"), dict) else {}
+                for mkey in recipe["materials"]:
+                    _ensure_resource(mkey, mkey, "material", None, mat_initial.get(mkey, 0))
             return self.commit_ops(ops, owner_kind, owner_id, "life_activity_tool", session_id, turn_id)
         if action_l in {"list", "ls", "列表"}:
             with transaction(self.conn):
