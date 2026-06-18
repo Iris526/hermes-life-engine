@@ -64,6 +64,36 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
         conn.execute("COMMIT")
 
 
+def _safe_savepoint_name(name: str) -> str:
+    """把业务传入的局部事务名收敛成 SQLite 可安全使用的标识符。
+
+    作用域只在本模块的 savepoint helper 内；调用方可以传入带业务含义的名称，
+    这里负责移除非字母数字/下划线字符，避免局部回滚边界被非法标识符打断。
+    """
+    safe = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in str(name or ""))
+    return safe or "lifeengine_sp"
+
+
+@contextlib.contextmanager
+def savepoint(conn: sqlite3.Connection, name: str) -> Iterator[sqlite3.Connection]:
+    """在已打开的 SQLite 事务中创建局部原子回滚边界。
+
+    用于 heartbeat、review 等会捕获子任务异常的流程：子 LifeOps 失败时只回滚
+    这一段写入，外层事务仍可记录失败审计并继续处理其它工作。调用方必须已经处在
+    transaction() 或等价事务中；失败会重新抛出，成功会释放 savepoint。
+    """
+    safe = _safe_savepoint_name(name)
+    conn.execute(f"SAVEPOINT {safe}")
+    try:
+        yield conn
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {safe}")
+        conn.execute(f"RELEASE SAVEPOINT {safe}")
+        raise
+    else:
+        conn.execute(f"RELEASE SAVEPOINT {safe}")
+
+
 def _ensure_schema_migration_table(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """

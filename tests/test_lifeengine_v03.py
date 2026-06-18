@@ -84,3 +84,52 @@ def test_schedule_creates_wake_job_and_heartbeat_completes_event(tmp_path):
         assert any(e["id"] == event_id for e in events)
     finally:
         rt.close()
+
+
+def test_heartbeat_failed_lifeops_roll_back_partial_event_completion(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        activate(rt)
+        rt.control("module", key="autonomy", value="off")
+        rt.control("module", key="managed_review_loop", value="off")
+        ev = rt.event_tool(
+            "create",
+            title="带未定义收益资源的事件",
+            event_type="work",
+            source="agent_prediction",
+            resource_costs={"stock.undefined": 1},
+        )
+        event_id = ev["results"][0]["result"]["id"]
+        sch = rt.event_tool(
+            "schedule",
+            event_id=event_id,
+            start="2026-06-07T10:00:00+00:00",
+            end="2026-06-07T11:00:00+00:00",
+            timezone_name="UTC",
+        )
+        block_id = sch["results"][0]["result"]["id"]
+
+        tick = rt.tick(now="2026-06-07T11:01:00+00:00")
+
+        assert tick["ok"] is False
+        assert tick["status"] == "partial"
+        assert any(j.get("status") == "failed" for j in tick["wake_jobs"])
+        tx_count = rt.conn.execute(
+            "SELECT COUNT(*) FROM life_transactions WHERE source='execution_simulator'",
+        ).fetchone()[0]
+        op_count = rt.conn.execute(
+            "SELECT COUNT(*) FROM life_ops WHERE transaction_id IN (SELECT id FROM life_transactions WHERE source='execution_simulator')",
+        ).fetchone()[0]
+        event = rt.conn.execute("SELECT status FROM events WHERE id=?", (event_id,)).fetchone()
+        block = rt.conn.execute("SELECT status FROM schedule_blocks WHERE id=?", (block_id,)).fetchone()
+        actions = rt.conn.execute("SELECT COUNT(*) FROM actions WHERE event_id=?", (event_id,)).fetchone()[0]
+        results = rt.conn.execute("SELECT COUNT(*) FROM results WHERE event_id=?", (event_id,)).fetchone()[0]
+        assert tx_count == 0
+        assert op_count == 0
+        assert event["status"] == "scheduled"
+        assert block["status"] == "planned"
+        assert actions == 0
+        assert results == 0
+    finally:
+        rt.close()

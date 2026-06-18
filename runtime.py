@@ -64,7 +64,7 @@ from .behavior_mapping import (
     update_behavior_mapping,
     update_behavior_source,
 )
-from .db import connect, transaction, _SCHEMA_VERSION
+from .db import connect, transaction, savepoint, _SCHEMA_VERSION
 from .doctor import run_doctor
 from .dream import (
     collect_open_dream_repair_ops,
@@ -572,47 +572,50 @@ class LifeEngineRuntime:
     def _commit_ops_locked(self, ops: list[dict[str, Any]], owner_kind: str, owner_id: str,
                            source: str, session_id: str | None = None, turn_id: str | None = None,
                            trace: Trace | None = None, control: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Commit LifeOps inside an already-open SQLite transaction.
+        """在已打开的 SQLite 事务里原子提交一组 LifeOps。
 
-        This is used by both public tools and heartbeat/autonomy.  It preserves
-        the invariant that background life mutations also produce LifeOps,
-        receipts, journal entries, and trace evidence.
+        输入是一组已经由工具、heartbeat、autonomy 或 review 生成的 LifeOps；
+        输出是 transaction、receipt 和逐 op 结果。函数会写 life_transactions、
+        life_ops、领域表、journal、receipt 和 turn_commits。关键不变量是：即使
+        外层 heartbeat/review 捕获异常并继续，单次 LifeOps transaction 也必须
+        全成或全不成，不能留下 pending transaction、半截 op 或半截生活事实。
         """
         control = control or ensure_control(self.conn, owner_kind, owner_id)
         normalized_ops = validate_life_ops(self.conn, owner_kind, owner_id, control, ops, source)
         tx_id = new_id("tx")
         trace_id = trace.id if trace is not None else None
-        self.conn.execute(
-            """INSERT INTO life_transactions(id, owner_kind, owner_id, source, session_id, turn_id,
-                   trace_id, canon_version, status) VALUES(?,?,?,?,?,?,?,?,?)""",
-            (tx_id, owner_kind, owner_id, source, session_id, turn_id, trace_id, control.get("active_canon_version"), "pending"),
-        )
-        results: list[dict[str, Any]] = []
-        for op in normalized_ops:
-            op_id = new_id("op")
-            op_type = op["type"]
-            payload = op["payload"]
-            validator_report = op.get("validator_report") or {"ok": True}
+        with savepoint(self.conn, f"lifeops_{tx_id}"):
             self.conn.execute(
-                """INSERT INTO life_ops(id, transaction_id, owner_kind, owner_id, op_type, payload_json, status, validator_report_json)
-                       VALUES(?,?,?,?,?,?,?,?)""",
-                (op_id, tx_id, owner_kind, owner_id, op_type, dumps(payload), "pending", dumps(validator_report)),
+                """INSERT INTO life_transactions(id, owner_kind, owner_id, source, session_id, turn_id,
+                       trace_id, canon_version, status) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (tx_id, owner_kind, owner_id, source, session_id, turn_id, trace_id, control.get("active_canon_version"), "pending"),
             )
-            if trace is not None:
-                with trace.span(f"op:{op_type}", payload):
+            results: list[dict[str, Any]] = []
+            for op in normalized_ops:
+                op_id = new_id("op")
+                op_type = op["type"]
+                payload = op["payload"]
+                validator_report = op.get("validator_report") or {"ok": True}
+                self.conn.execute(
+                    """INSERT INTO life_ops(id, transaction_id, owner_kind, owner_id, op_type, payload_json, status, validator_report_json)
+                           VALUES(?,?,?,?,?,?,?,?)""",
+                    (op_id, tx_id, owner_kind, owner_id, op_type, dumps(payload), "pending", dumps(validator_report)),
+                )
+                if trace is not None:
+                    with trace.span(f"op:{op_type}", payload):
+                        result = self._apply_op(owner_kind, owner_id, op_type, payload, source, control.get("active_canon_version"))
+                else:
                     result = self._apply_op(owner_kind, owner_id, op_type, payload, source, control.get("active_canon_version"))
-            else:
-                result = self._apply_op(owner_kind, owner_id, op_type, payload, source, control.get("active_canon_version"))
-            self.conn.execute("UPDATE life_ops SET status='committed', result_json=? WHERE id=?", (dumps(result), op_id))
-            append_journal(self.conn, owner_kind, owner_id, op_type.lower(), {"op_id": op_id, "payload": payload, "result": result}, source, transaction_id=tx_id, op_id=op_id, canon_version=control.get("active_canon_version"))
-            results.append({"op_id": op_id, "type": op_type, "payload": payload, "result": result})
-        receipt = create_commit_receipt(self.conn, owner_kind, owner_id, tx_id, trace_id, session_id, turn_id, results)
-        self.conn.execute("UPDATE life_transactions SET status='committed', committed_at=datetime('now'), receipt_id=?, receipt_json=? WHERE id=?", (receipt["receipt_id"], dumps(receipt), tx_id))
-        if session_id and turn_id:
-            self.conn.execute(
-                "INSERT OR IGNORE INTO turn_commits(id, owner_kind, owner_id, session_id, turn_id, transaction_id, receipt_id) VALUES(?,?,?,?,?,?,?)",
-                (new_id("turncommit"), owner_kind, owner_id, session_id, turn_id, tx_id, receipt["receipt_id"]),
-            )
+                self.conn.execute("UPDATE life_ops SET status='committed', result_json=? WHERE id=?", (dumps(result), op_id))
+                append_journal(self.conn, owner_kind, owner_id, op_type.lower(), {"op_id": op_id, "payload": payload, "result": result}, source, transaction_id=tx_id, op_id=op_id, canon_version=control.get("active_canon_version"))
+                results.append({"op_id": op_id, "type": op_type, "payload": payload, "result": result})
+            receipt = create_commit_receipt(self.conn, owner_kind, owner_id, tx_id, trace_id, session_id, turn_id, results)
+            self.conn.execute("UPDATE life_transactions SET status='committed', committed_at=datetime('now'), receipt_id=?, receipt_json=? WHERE id=?", (receipt["receipt_id"], dumps(receipt), tx_id))
+            if session_id and turn_id:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO turn_commits(id, owner_kind, owner_id, session_id, turn_id, transaction_id, receipt_id) VALUES(?,?,?,?,?,?,?)",
+                    (new_id("turncommit"), owner_kind, owner_id, session_id, turn_id, tx_id, receipt["receipt_id"]),
+                )
         return {"ok": True, "transaction_id": tx_id, "receipt": receipt, "results": results, "trace_id": trace_id}
 
     def _apply_op(self, owner_kind: str, owner_id: str, op_type: str, payload: dict[str, Any], source: str, canon_version: int | None) -> Any:
@@ -1102,6 +1105,47 @@ class LifeEngineRuntime:
                 raise
 
     # ----- heartbeat -------------------------------------------------------
+    def _heartbeat_partial_reasons(self, out: dict[str, Any]) -> list[str]:
+        """汇总一次 heartbeat 内部已经降级处理的失败原因。
+
+        heartbeat 会处理多个相互独立的子流程，部分子流程失败时仍需要提交审计、
+        释放其它可完成工作。这个 helper 只读取本轮输出对象，供 tick 决定对外
+        暴露 done 还是 partial；它不写数据库，也不改变子流程自身的错误处理。
+        """
+        reasons: list[str] = []
+        for job in out.get("wake_jobs") or []:
+            if isinstance(job, dict) and job.get("status") == "failed":
+                reasons.append(f"wake_job:{job.get('wake_job_id') or job.get('id') or 'unknown'}")
+
+        for name in [
+            "resource_recovery",
+            "autonomy",
+            "persona_drift",
+            "meals",
+            "recurring_activities",
+            "venture_supply",
+            "venture_opportunities",
+            "realtime_sync",
+            "proactive",
+            "managed_review",
+            "delayed_reply_release",
+        ]:
+            section = out.get(name)
+            if not isinstance(section, dict):
+                continue
+            status = str(section.get("status") or "").lower()
+            if status in {"error", "failed"}:
+                reasons.append(f"{name}:{status}")
+            elif section.get("ok") is False:
+                reasons.append(f"{name}:ok_false")
+            elif section.get("error"):
+                reasons.append(f"{name}:error")
+            if name == "resource_recovery":
+                for item in section.get("applied") or []:
+                    if isinstance(item, dict) and item.get("error"):
+                        reasons.append(f"{name}:{item.get('resource_key') or 'resource'}")
+        return reasons
+
     def tick(self, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
              now: str | None = None, manual: bool = True) -> dict[str, Any]:
         now = now or now_iso()
@@ -1255,12 +1299,16 @@ class LifeEngineRuntime:
                 except Exception as exc:
                     delayed_release = {"error": f"{type(exc).__name__}: {exc}"}
                 out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "recurring_activities": recurring_result, "venture_supply": supply_result, "venture_opportunities": opportunity_result, "realtime_sync": realtime_sync, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
+                partial_reasons = self._heartbeat_partial_reasons(out)
+                tick_status = "partial" if partial_reasons else "done"
+                if partial_reasons:
+                    out["partial_reasons"] = partial_reasons
                 if isinstance(recovered, dict) and recovered.get("gap"):
                     out["gap"] = recovered["gap"]
                 append_journal(self.conn, owner_kind, owner_id, "heartbeat_tick", {"now": now, **out}, "heartbeat", canon_version=control.get("active_canon_version"))
-                trace.end(output_obj=out)
-                self.conn.execute("UPDATE heartbeat_runs SET status='done', ended_at=datetime('now'), output_json=? WHERE tick_id=?", (dumps(out), tick_id))
-                return {"ok": True, "status": "done", **out}
+                trace.end(status=tick_status, output_obj=out)
+                self.conn.execute("UPDATE heartbeat_runs SET status=?, ended_at=datetime('now'), output_json=? WHERE tick_id=?", (tick_status, dumps(out), tick_id))
+                return {"ok": not partial_reasons, "status": tick_status, **out}
         except Exception as exc:
             # Diagnostics written here are OUTSIDE the business-logic
             # transaction, so they persist even when the inner `with
