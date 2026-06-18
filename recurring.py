@@ -21,6 +21,9 @@ from .trace import append_journal, new_id
 
 VALID_STATUSES = {"active", "paused", "cancelled"}
 VALID_CADENCES = {"daily", "weekly"}
+VALID_OPERATION_MODELS = {"active", "self_service", "staffed"}
+VALID_TRIGGERS = {"scheduled", "opportunity", "manual"}
+VALID_LOCATION_KINDS = {"fixed", "flexible"}
 
 
 def _row(conn, owner_kind: str, owner_id: str, activity_id: str) -> dict[str, Any] | None:
@@ -47,24 +50,29 @@ def create_recurring_activity(
     start_time: str | None = None, end_time: str | None = None, timezone: str = "UTC",
     resource_costs: dict[str, Any] | None = None, importance: int = 55, priority: int = 55,
     start_date: str | None = None, end_date: str | None = None,
+    operation_model: str = "active", trigger_kind: str = "scheduled",
+    location_kind: str = "fixed", location: str | None = None,
     tags: list[Any] | None = None, source: str = "life_activity",
     canon_version: int | None = None, **_ignored: Any,
 ) -> dict[str, Any]:
     if not title or not title.strip():
         raise ValueError("recurring activity title is required")
     cadence_kind = cadence_kind if cadence_kind in VALID_CADENCES else "daily"
+    operation_model = operation_model if operation_model in VALID_OPERATION_MODELS else "active"
+    trigger_kind = trigger_kind if trigger_kind in VALID_TRIGGERS else "scheduled"
+    location_kind = location_kind if location_kind in VALID_LOCATION_KINDS else "fixed"
     aid = new_id("recact")
     conn.execute(
         """INSERT INTO recurring_activities(
              id, owner_kind, owner_id, title, description, activity_type, event_category,
              activity_domain, cadence_kind, weekdays_json, start_time, end_time, timezone,
              resource_costs_json, importance, priority, status, start_date, end_date,
-             tags_json, source)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             operation_model, trigger_kind, location_kind, location, tags_json, source)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (aid, owner_kind, owner_id, title.strip(), description, activity_type, event_category,
          activity_domain, cadence_kind, dumps(weekdays or []), start_time, end_time, timezone,
          dumps(resource_costs or {}), int(importance), int(priority), "active", start_date, end_date,
-         dumps(tags or []), source),
+         operation_model, trigger_kind, location_kind, location, dumps(tags or []), source),
     )
     append_journal(conn, owner_kind, owner_id, "recurring_activity_created",
                    {"activity_id": aid, "title": title, "cadence": cadence_kind}, source, canon_version=canon_version)
@@ -91,6 +99,8 @@ def update_recurring_activity(
         "cadence_kind": "cadence_kind", "start_time": "start_time", "end_time": "end_time",
         "timezone": "timezone", "importance": "importance", "priority": "priority",
         "start_date": "start_date", "end_date": "end_date",
+        "operation_model": "operation_model", "trigger_kind": "trigger_kind",
+        "location_kind": "location_kind", "location": "location",
     }
     for k, col in _COL.items():
         if k in fields and fields[k] is not None:

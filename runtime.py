@@ -1499,6 +1499,27 @@ class LifeEngineRuntime:
             for act in due:
                 atz = act.get("timezone") or tz_name
                 start_iso, end_iso = self._activity_window(date_key, act.get("start_time"), act.get("end_time"), atz)
+                op_model = act.get("operation_model") or "active"
+                # 一人不能分身: a venture's materialized block must not overlap an
+                # existing one — shift to the next free slot if the preferred
+                # window is taken. (P1 arbitrates every venture so nothing
+                # double-books; self_service/staffed gaining true no-time-cost,
+                # passive settlement is P4.)
+                if start_iso and end_iso:
+                    try:
+                        from .impromptu import _next_free_slot
+                        from .time_utils import to_epoch as _to_epoch
+                        from datetime import datetime as _dt
+                        from zoneinfo import ZoneInfo
+                        s_ts, e_ts = _to_epoch(start_iso), _to_epoch(end_iso)
+                        dur = max(60, int(e_ts) - int(s_ts))
+                        fs, fe = _next_free_slot(self.conn, owner_kind, owner_id, after_ts=int(s_ts), duration_s=dur, exclude_ids=set())
+                        if fs != int(s_ts):
+                            tzinfo = ZoneInfo(atz)
+                            start_iso = _dt.fromtimestamp(fs, tz=tzinfo).isoformat()
+                            end_iso = _dt.fromtimestamp(fe, tz=tzinfo).isoformat()
+                    except Exception:
+                        pass
                 ev_payload = {
                     "title": act["title"],
                     "description": act.get("description") or "由营生(周期活动)自动铺出的当日事项。",
@@ -1511,8 +1532,10 @@ class LifeEngineRuntime:
                     "resource_costs": act.get("resource_costs") or {},
                     "source": "recurring_activity",
                     "tags": (act.get("tags") or []) + ["营生", "recurring", act["id"]],
-                    "attributes": {"recurring_activity_id": act["id"], "generated_by": "recurring_activity"},
+                    "attributes": {"recurring_activity_id": act["id"], "generated_by": "recurring_activity", "operation_model": op_model},
                 }
+                if act.get("location"):
+                    ev_payload["location"] = {"name": act.get("location"), "kind": act.get("location_kind") or "fixed"}
                 with trace.span("recurring_materialize", {"activity_id": act["id"]}):
                     c1 = self._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "recurring_activity", session_id=None, turn_id=tick_id, trace=trace, control=control)
                 ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))

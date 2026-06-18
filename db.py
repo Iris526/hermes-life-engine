@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 52
+_SCHEMA_VERSION = 53
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -258,6 +258,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 52:
         _create_schema_v52(conn)
         _record_schema_migration(conn, 52, "recurring_activities")
+    if current < 53:
+        _create_schema_v53(conn)
+        _record_schema_migration(conn, 53, "venture_operation_model_location")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3700,3 +3703,21 @@ def _create_schema_v52(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_recurring_occ_owner ON recurring_activity_occurrences(owner_kind, owner_id, date_key)"
     )
+
+
+def _create_schema_v53(conn: sqlite3.Connection) -> None:
+    """Turn a recurring activity into a fuller venture (经营体): how it is
+    operated (active occupies the agent's time; self_service is passive; staffed
+    runs on hired labour), where it operates (fixed spot vs flexible), and how it
+    is triggered (scheduled cadence now; 'opportunity' arrivals come later). The
+    behavioural differences of operation_model/trigger land in later phases; this
+    migration just adds the columns so the data model is in place."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(recurring_activities)")}
+    if "operation_model" not in cols:
+        conn.execute("ALTER TABLE recurring_activities ADD COLUMN operation_model TEXT NOT NULL DEFAULT 'active'")
+    if "trigger_kind" not in cols:
+        conn.execute("ALTER TABLE recurring_activities ADD COLUMN trigger_kind TEXT NOT NULL DEFAULT 'scheduled'")
+    if "location_kind" not in cols:
+        conn.execute("ALTER TABLE recurring_activities ADD COLUMN location_kind TEXT NOT NULL DEFAULT 'fixed'")
+    if "location" not in cols:
+        conn.execute("ALTER TABLE recurring_activities ADD COLUMN location TEXT")
