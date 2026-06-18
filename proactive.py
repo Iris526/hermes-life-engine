@@ -24,6 +24,28 @@ ACTIVE_INTENT_STATUSES = {"generated", "queued"}
 TERMINAL_INTENT_STATUSES = {"sent", "suppressed", "expired", "cancelled", "merged"}
 PROACTIVE_MODES = {"off", "pending_only", "manual_send", "auto_send"}
 
+# Default time-to-live (hours) per intent kind — so a proactive thought goes
+# stale on its own instead of waiting forever to be said. A dream loses its
+# point within a day; a request for help is more patient. The agent (the host
+# is the agent itself) decides whether to actually say a still-fresh one; the
+# engine just stops offering ones that have gone stale. An explicit expires_at
+# always wins. _STALE_MAX_HOURS is a backstop that retires anything (even
+# TTL-less legacy intents) left undelivered too long.
+_DEFAULT_TTL_HOURS: dict[str, float] = {
+    "dream_share": 24, "wake_share": 24, "self_reflection_share": 24, "dream": 24,
+    "share_interesting": 36, "share": 36, "suggestion": 36,
+    "report_progress": 48, "report_failure": 48,
+    "ask_for_help": 72,
+}
+_DEFAULT_TTL_FALLBACK_HOURS = 36.0
+_STALE_MAX_HOURS = 168.0  # 7 days: hard backstop for undelivered intents
+
+
+def _default_expiry_iso(intent_type: str | None) -> str:
+    from datetime import timedelta
+    hours = _DEFAULT_TTL_HOURS.get(str(intent_type or ""), _DEFAULT_TTL_FALLBACK_HOURS)
+    return (_now() + timedelta(hours=hours)).isoformat()
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -167,7 +189,8 @@ def list_proactive_intents(conn, agent_id: str, status: str | None = None, limit
 
 def create_proactive_intent(conn, agent_id: str, **payload: Any) -> dict[str, Any]:
     intent_id = new_id("proactive")
-    expires_at = payload.get("expires_at")
+    # Default a per-type TTL so the thought expires on its own if never said.
+    expires_at = payload.get("expires_at") or _default_expiry_iso(payload.get("intent_type"))
     expires_at_ts = None
     if expires_at:
         expires_at_ts = to_epoch(expires_at)
@@ -419,9 +442,16 @@ def suppress_intent(conn, agent_id: str, intent_id: str, reason: str = "manual s
 
 
 def expire_intents(conn, agent_id: str) -> dict[str, Any]:
+    # Expire anything past its TTL, plus a by-age backstop: any undelivered
+    # intent older than _STALE_MAX_HOURS is retired even if it never got a TTL
+    # (cleans legacy/TTL-less piles so the agent is only ever offered fresh ones).
+    now_ts = int(_now().timestamp())
     rows = conn.execute(
-        "SELECT id FROM proactive_intents WHERE agent_id=? AND status IN ('generated','queued') AND expires_at_ts IS NOT NULL AND expires_at_ts <= ?",
-        (agent_id, int(_now().timestamp())),
+        """SELECT id FROM proactive_intents
+              WHERE agent_id=? AND status IN ('generated','queued')
+                AND ( (expires_at_ts IS NOT NULL AND expires_at_ts <= ?)
+                      OR created_at <= datetime('now', ?) )""",
+        (agent_id, now_ts, f"-{_STALE_MAX_HOURS:g} hours"),
     ).fetchall()
     expired = []
     for r in rows:
