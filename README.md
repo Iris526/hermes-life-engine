@@ -1,10 +1,10 @@
-# LifeEngine Hermes Plugin v0.16.0
+# LifeEngine Hermes Plugin v0.17.0
 
 LifeEngine is an embedded, SQLite/sqlite-vec based Agent life runtime for Hermes.
 
-This release adds **recurring activities (营生)**: a registerable, cancellable occupation (e.g. running a stall to earn money) that the heartbeat materializes into one scheduled event per due day — engine-enforced, not prompt or memory — with income/cost settled on completion. Builds on v0.15.0's resource-model reshape (focus removed, agent-triggerable mood, agent-judged event costs).
+This release builds the **经营 (venture) system** on top of v0.16.0's recurring activities — an engine-enforced way to run businesses to earn a living: supply chain (进销存) so goods don't appear from nowhere (sell consumes stock, low stock auto-orders a 进货 event), opportunity triggers (委托/客人 arrive on their own per an arrival rate), no double-booking (一人不能分身), and operation models (active occupies her time; self_service is passive; staffed pays wages) with fixed/flexible location. Builds on v0.15.0's resource-model reshape and v0.16.0's recurring activities.
 
-- Plugin version: `0.16.0`
+- Plugin version: `0.17.0`
 - sqlite-vec: required by LifeEngine runtime
 - Integration: Hermes directory plugin; no core-loop fork
 

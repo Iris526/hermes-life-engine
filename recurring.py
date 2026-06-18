@@ -56,6 +56,7 @@ def create_recurring_activity(
     location_kind: str = "fixed", location: str | None = None,
     supply_chain: dict[str, Any] | None = None,
     arrival: dict[str, Any] | None = None,
+    wage_per_occurrence: float = 0,
     tags: list[Any] | None = None, source: str = "life_activity",
     canon_version: int | None = None, **_ignored: Any,
 ) -> dict[str, Any]:
@@ -71,14 +72,14 @@ def create_recurring_activity(
              id, owner_kind, owner_id, title, description, activity_type, event_category,
              activity_domain, cadence_kind, weekdays_json, start_time, end_time, timezone,
              resource_costs_json, importance, priority, status, start_date, end_date,
-             operation_model, trigger_kind, location_kind, location, supply_chain_json, arrival_json, tags_json, source)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             operation_model, trigger_kind, location_kind, location, supply_chain_json, arrival_json, wage_per_occurrence, tags_json, source)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (aid, owner_kind, owner_id, title.strip(), description, activity_type, event_category,
          activity_domain, cadence_kind, dumps(weekdays or []), start_time, end_time, timezone,
          dumps(resource_costs or {}), int(importance), int(priority), "active", start_date, end_date,
          operation_model, trigger_kind, location_kind, location,
          dumps(supply_chain) if supply_chain else None, dumps(arrival) if arrival else None,
-         dumps(tags or []), source),
+         float(wage_per_occurrence or 0), dumps(tags or []), source),
     )
     append_journal(conn, owner_kind, owner_id, "recurring_activity_created",
                    {"activity_id": aid, "title": title, "cadence": cadence_kind}, source, canon_version=canon_version)
@@ -107,6 +108,7 @@ def update_recurring_activity(
         "start_date": "start_date", "end_date": "end_date",
         "operation_model": "operation_model", "trigger_kind": "trigger_kind",
         "location_kind": "location_kind", "location": "location",
+        "wage_per_occurrence": "wage_per_occurrence",
     }
     for k, col in _COL.items():
         if k in fields and fields[k] is not None:

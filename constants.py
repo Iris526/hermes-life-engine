@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 PLUGIN_NAME = "lifeengine"
-PLUGIN_VERSION = "0.16.0"
+PLUGIN_VERSION = "0.17.0"
 DB_FILENAME = "lifeengine.db"
 VECTOR_DIM = 384
 

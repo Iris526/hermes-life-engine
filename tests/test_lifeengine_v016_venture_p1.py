@@ -91,9 +91,8 @@ def test_self_service_venture_materializes(tmp_path):
     rt = LifeEngineRuntime()
     try:
         activate(rt)
-        # self_service operation_model is stored and the venture still materializes
-        # an event (its true no-agent-time, passive settlement behaviour is P4; in
-        # P1 it is conflict-arbitrated like any other so nothing double-books).
+        # self_service operation_model is stored; it materializes an event but —
+        # being passive (P4) — occupies no agent schedule block.
         rt.activity("register", title="自助货架", cadence_kind="daily",
                     start_time="10:00", end_time="12:00", timezone="UTC",
                     operation_model="self_service", resource_costs={"money.lingzhu": 10})
@@ -102,6 +101,6 @@ def test_self_service_venture_materializes(tmp_path):
         rt.tick(now="2026-06-15T13:00:00+00:00", manual=False)
         ev = _event_by_title(rt, "自助货架")
         assert ev is not None
-        assert _block_for_event(rt, ev["id"]) is not None
+        assert _block_for_event(rt, ev["id"]) is None   # passive → no occupying block
     finally:
         rt.close()

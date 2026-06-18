@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 55
+_SCHEMA_VERSION = 56
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -267,6 +267,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 55:
         _create_schema_v55(conn)
         _record_schema_migration(conn, 55, "venture_opportunity_triggers")
+    if current < 56:
+        _create_schema_v56(conn)
+        _record_schema_migration(conn, 56, "venture_operation_behaviour")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3796,3 +3799,14 @@ def _create_schema_v55(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_opp_arrivals_owner ON venture_opportunity_arrivals(owner_kind, owner_id, activity_id, date_key)"
     )
+
+
+def _create_schema_v56(conn: sqlite3.Connection) -> None:
+    """Operation-model behaviour for ventures. active ones occupy the agent's
+    time (a scheduled, conflict-arbitrated block); self_service / staffed run
+    without her (no block, no effort cost) and settle passively at the window's
+    end. staffed additionally pays a per-occurrence wage. wage_per_occurrence
+    holds that labour cost."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(recurring_activities)")}
+    if "wage_per_occurrence" not in cols:
+        conn.execute("ALTER TABLE recurring_activities ADD COLUMN wage_per_occurrence REAL NOT NULL DEFAULT 0")

@@ -1469,6 +1469,21 @@ class LifeEngineRuntime:
         except Exception:
             return None, None
 
+    @staticmethod
+    def _window_end_ts(date_key: str, end_time: str | None, tz_name: str) -> int | None:
+        """Epoch ts of a venture's window end on date_key (for passive settlement).
+        None when there's no window — then passive settlement fires promptly."""
+        if not end_time:
+            return None
+        try:
+            from zoneinfo import ZoneInfo
+            from datetime import datetime as _dt
+            eh, em = (int(x) for x in str(end_time).split(":")[:2])
+            y, mo, d = (int(x) for x in date_key.split("-"))
+            return int(_dt(y, mo, d, eh, em, tzinfo=ZoneInfo(tz_name or "UTC")).timestamp())
+        except Exception:
+            return None
+
     def _materialize_recurring_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
                                         tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
         """Materialize each active recurring activity (营生) due today into a
@@ -1506,12 +1521,12 @@ class LifeEngineRuntime:
                 atz = act.get("timezone") or tz_name
                 start_iso, end_iso = self._activity_window(date_key, act.get("start_time"), act.get("end_time"), atz)
                 op_model = act.get("operation_model") or "active"
-                # 一人不能分身: a venture's materialized block must not overlap an
-                # existing one — shift to the next free slot if the preferred
-                # window is taken. (P1 arbitrates every venture so nothing
-                # double-books; self_service/staffed gaining true no-time-cost,
-                # passive settlement is P4.)
-                if start_iso and end_iso:
+                passive = op_model in {"self_service", "staffed"}
+                # active occupies the agent's time → its block must not overlap an
+                # existing one (一人不能分身), so shift to the next free slot if the
+                # preferred window is taken. passive ventures (self_service /
+                # staffed) run without her, so they get NO occupying block.
+                if start_iso and end_iso and not passive:
                     try:
                         from .impromptu import _next_free_slot
                         from .time_utils import to_epoch as _to_epoch
@@ -1527,11 +1542,14 @@ class LifeEngineRuntime:
                     except Exception:
                         pass
                 costs = dict(act.get("resource_costs") or {})
-                # For a supply-chain venture, income is settled from sales (stock
-                # × price), so drop any money keys from the static event costs to
-                # avoid double-counting — keep only effort costs (energy, etc.).
+                # Supply-chain income is settled from sales, so drop money keys to
+                # avoid double-counting (non-supply keeps money as the pay).
                 if act.get("supply_chain"):
                     costs = {k: v for k, v in costs.items() if not str(k).startswith("money")}
+                # Passive ventures run without the agent present, so they cost her
+                # no effort (vitals); only money/stock effects remain.
+                if passive:
+                    costs = {k: v for k, v in costs.items() if str(k) not in {"energy", "focus", "mood", "fatigue", "stamina"}}
                 ev_payload = {
                     "title": act["title"],
                     "description": act.get("description") or "由营生(周期活动)自动铺出的当日事项。",
@@ -1552,7 +1570,7 @@ class LifeEngineRuntime:
                     c1 = self._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "recurring_activity", session_id=None, turn_id=tick_id, trace=trace, control=control)
                 ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
                 bid = None
-                if ev_id and start_iso and end_iso:
+                if ev_id and start_iso and end_iso and not passive:
                     c2 = self._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": ev_id, "start": start_iso, "end": end_iso, "block_type": "recurring_activity", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 30}}}], owner_kind, owner_id, "recurring_activity", session_id=None, turn_id=tick_id, trace=trace, control=control)
                     bid = (((c2.get("results") or [{}])[0].get("result") or {}).get("id"))
                 recurring.record_occurrence(self.conn, owner_kind, owner_id, act["id"], date_key, ev_id, bid)
@@ -1581,37 +1599,67 @@ class LifeEngineRuntime:
         if str(gates.get("recurring_activities", "auto") or "auto").lower() in {"off", "disabled", "false"}:
             return {"status": "skipped", "reason": "gate off"}
         try:
-            from .time_utils import parse_datetime
+            from .time_utils import parse_datetime, to_epoch as _to_epoch
             from datetime import timedelta as _td
+            canon = get_active_canon(self.conn, owner_kind, owner_id)
+            tz_name = _tz_from_canon(canon) or "UTC"
+            now_ts = int(_to_epoch(now))
+            terminal = {"completed", "partial", "done"}
             sold_total = 0.0
             income_total = 0.0
             restocks = 0
             for act in recurring.list_recurring_activities(self.conn, owner_kind, owner_id, status="active"):
-                sc = act.get("supply_chain")
-                if not isinstance(sc, dict) or not sc.get("goods_resource"):
+                op = act.get("operation_model") or "active"
+                passive = op in {"self_service", "staffed"}
+                sc = act.get("supply_chain") if isinstance(act.get("supply_chain"), dict) else None
+                has_supply = bool(sc and sc.get("goods_resource"))
+                # active non-supply ventures settle via the normal event-completion
+                # path (their block runs through the execution simulator) — nothing
+                # to do here.
+                if not (has_supply or passive):
                     continue
-                goods = sc["goods_resource"]
-                money = sc.get("money_resource") or "money.lingzhu"
-                unit_price = float(sc.get("unit_price") or 0)
-                demand = float(sc.get("demand_per_occurrence") or 0)
-                # 1) settle sales for this venture's completed, unsettled occurrences
+                goods = sc["goods_resource"] if has_supply else None
+                money = (sc or {}).get("money_resource") or "money.lingzhu"
+                unit_price = float((sc or {}).get("unit_price") or 0)
+                demand = float((sc or {}).get("demand_per_occurrence") or 0)
+                wage = float(act.get("wage_per_occurrence") or 0)
+                # 1) settle each unsettled occurrence
                 occs = self.conn.execute(
-                    "SELECT id, event_id FROM recurring_activity_occurrences WHERE owner_kind=? AND owner_id=? AND activity_id=? AND sale_settled=0",
+                    "SELECT id, event_id, date_key FROM recurring_activity_occurrences WHERE owner_kind=? AND owner_id=? AND activity_id=? AND sale_settled=0",
                     (owner_kind, owner_id, act["id"]),
                 ).fetchall()
                 for occ in occs:
                     ev = get_event(self.conn, occ["event_id"]) if occ["event_id"] else None
-                    if not ev or ev.get("status") not in {"completed", "partial", "done"}:
-                        continue
-                    stock = self._account_value(owner_kind, owner_id, goods)
-                    sold = max(0.0, min(demand, stock))
-                    income = round(sold * unit_price, 2)
-                    if sold > 0:
-                        sale_ops = [{"type": "RESOURCE_DELTA", "payload": {"resource_key": goods, "delta": -sold, "operation": "consume", "reason": f"售出 @{act['title']}", "source": "venture_sale", "event_id": occ["event_id"]}}]
-                        if income:
-                            sale_ops.append({"type": "RESOURCE_DELTA", "payload": {"resource_key": money, "delta": income, "operation": "produce", "reason": f"营业收入 @{act['title']}", "source": "venture_sale", "event_id": occ["event_id"]}})
-                        with trace.span("venture_sale", {"activity_id": act["id"], "sold": sold}):
-                            self._commit_ops_locked(sale_ops, owner_kind, owner_id, "venture_sale", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                    if not passive:
+                        # active: she ran it — settle once the event completed
+                        if not ev or ev.get("status") not in terminal:
+                            continue
+                    else:
+                        # passive (self_service/staffed): no occupying block; settle
+                        # once the day's window has passed, agent not required.
+                        wend = self._window_end_ts(occ["date_key"], act.get("end_time"), act.get("timezone") or tz_name)
+                        if wend is not None and now_ts < wend:
+                            continue
+                        if ev and ev.get("status") not in terminal:
+                            with trace.span("venture_passive_complete", {"activity_id": act["id"]}):
+                                self._commit_ops_locked([{"type": "COMPLETE_EVENT", "payload": {"event_id": occ["event_id"], "summary": f"{op} 经营结算：{act['title']}", "source": "venture_passive"}}], owner_kind, owner_id, "venture_passive", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                    sold = 0.0
+                    income = 0.0
+                    settle_ops: list[dict[str, Any]] = []
+                    if has_supply:
+                        stock = self._account_value(owner_kind, owner_id, goods)
+                        sold = max(0.0, min(demand, stock))
+                        income = round(sold * unit_price, 2)
+                        if sold > 0:
+                            settle_ops.append({"type": "RESOURCE_DELTA", "payload": {"resource_key": goods, "delta": -sold, "operation": "consume", "reason": f"售出 @{act['title']}", "source": "venture_sale", "event_id": occ["event_id"]}})
+                            if income:
+                                settle_ops.append({"type": "RESOURCE_DELTA", "payload": {"resource_key": money, "delta": income, "operation": "produce", "reason": f"营业收入 @{act['title']}", "source": "venture_sale", "event_id": occ["event_id"]}})
+                    # staffed ventures pay a per-occurrence wage (hired labour)
+                    if op == "staffed" and wage > 0:
+                        settle_ops.append({"type": "RESOURCE_DELTA", "payload": {"resource_key": money, "delta": -wage, "operation": "consume", "reason": f"雇员工资 @{act['title']}", "source": "venture_wage", "event_id": occ["event_id"]}})
+                    if settle_ops:
+                        with trace.span("venture_settle", {"activity_id": act["id"], "sold": sold}):
+                            self._commit_ops_locked(settle_ops, owner_kind, owner_id, "venture_sale", session_id=None, turn_id=tick_id, trace=trace, control=control)
                     self.conn.execute(
                         "UPDATE recurring_activity_occurrences SET sale_settled=1, sold_quantity=?, income=? WHERE id=?",
                         (sold, income, occ["id"]),
@@ -1624,10 +1672,10 @@ class LifeEngineRuntime:
                     (owner_kind, owner_id, act["id"]),
                 ).fetchall():
                     ev = get_event(self.conn, order["event_id"]) if order["event_id"] else None
-                    if ev and ev.get("status") in {"completed", "partial", "done"}:
+                    if ev and ev.get("status") in terminal:
                         self.conn.execute("UPDATE venture_restock_orders SET status='received', received_at=datetime('now') WHERE id=?", (order["id"],))
                 # 3) low stock → auto-create a 进货 event (cost money, adds stock on completion), deduped
-                restock = sc.get("restock") if isinstance(sc.get("restock"), dict) else None
+                restock = sc.get("restock") if has_supply and isinstance(sc.get("restock"), dict) else None
                 if restock:
                     threshold = float(restock.get("threshold") or 0)
                     qty = float(restock.get("quantity") or 0)
