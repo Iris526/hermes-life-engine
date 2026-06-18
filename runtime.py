@@ -1237,6 +1237,7 @@ class LifeEngineRuntime:
                 meals_result = self._settle_meals_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 recurring_result = self._materialize_recurring_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 supply_result = self._settle_supply_chain_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
+                opportunity_result = self._roll_opportunities_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 proactive_result = self._run_proactive_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 managed_review_result = self._run_managed_review_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
                 delayed_release = {"released_count": 0}
@@ -1246,7 +1247,7 @@ class LifeEngineRuntime:
                         delayed_release = release_delayed_replies(self.conn, owner_kind, owner_id, reason="released by heartbeat after agent became available", source="heartbeat", limit=20)
                 except Exception as exc:
                     delayed_release = {"error": f"{type(exc).__name__}: {exc}"}
-                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "recurring_activities": recurring_result, "venture_supply": supply_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
+                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "recurring_activities": recurring_result, "venture_supply": supply_result, "venture_opportunities": opportunity_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
                 if isinstance(recovered, dict) and recovered.get("gap"):
                     out["gap"] = recovered["gap"]
                 append_journal(self.conn, owner_kind, owner_id, "heartbeat_tick", {"now": now, **out}, "heartbeat", canon_version=control.get("active_canon_version"))
@@ -1498,6 +1499,10 @@ class LifeEngineRuntime:
             due = recurring.due_activities(self.conn, owner_kind, owner_id, date_key, weekday)
             materialized = []
             for act in due:
+                # opportunity-triggered ventures don't run on a fixed cadence —
+                # they arrive stochastically (see _roll_opportunities_for_tick).
+                if (act.get("trigger_kind") or "scheduled") == "opportunity":
+                    continue
                 atz = act.get("timezone") or tz_name
                 start_iso, end_iso = self._activity_window(date_key, act.get("start_time"), act.get("end_time"), atz)
                 op_model = act.get("operation_model") or "active"
@@ -1670,6 +1675,81 @@ class LifeEngineRuntime:
             return {"status": "ok", "sold": sold_total, "income": income_total, "restocks_ordered": restocks}
         except Exception as exc:
             append_audit(self.conn, owner_kind, owner_id, "venture_supply_settle_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
+            return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+    def _roll_opportunities_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
+                                     tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
+        """接委托/客人找上门: for opportunity-triggered ventures, roll the day's
+        arrivals (deterministic per venture+day) and land any not-yet-arrived
+        ones as conflict-arbitrated events from now — so work shows up on its own
+        instead of being improvised when asked. Gated by `recurring_activities`."""
+        if owner_kind != "agent":
+            return {"status": "skipped", "reason": "non-agent owner"}
+        gates = control.get("module_gates") or {}
+        if str(gates.get("recurring_activities", "auto") or "auto").lower() in {"off", "disabled", "false"}:
+            return {"status": "skipped", "reason": "gate off"}
+        try:
+            from .time_utils import parse_datetime, to_epoch as _to_epoch
+            from datetime import datetime as _dt
+            from zoneinfo import ZoneInfo
+            from .impromptu import _next_free_slot
+            canon = get_active_canon(self.conn, owner_kind, owner_id)
+            tz_name = _tz_from_canon(canon) or "UTC"
+            dt = parse_datetime(now)
+            local = dt
+            try:
+                local = dt.astimezone(ZoneInfo(tz_name)) if dt else dt
+            except Exception:
+                local = dt
+            if local is None:
+                return {"status": "skipped", "reason": "unparseable now"}
+            date_key = local.date().isoformat()
+            landed = []
+            for act in recurring.list_recurring_activities(self.conn, owner_kind, owner_id, status="active"):
+                if (act.get("trigger_kind") or "scheduled") != "opportunity":
+                    continue
+                target = recurring.opportunity_target(act, date_key)
+                have = recurring.count_arrivals(self.conn, owner_kind, owner_id, act["id"], date_key)
+                if have >= target:
+                    continue
+                arrival = act.get("arrival") if isinstance(act.get("arrival"), dict) else {}
+                dur_s = max(60, int(arrival.get("duration_minutes") or 90) * 60)
+                atz = act.get("timezone") or tz_name
+                for _ in range(target - have):
+                    base_ts = int(_to_epoch(now))
+                    fs, fe = _next_free_slot(self.conn, owner_kind, owner_id, after_ts=base_ts, duration_s=dur_s, exclude_ids=set())
+                    tzinfo = ZoneInfo(atz)
+                    s_iso = _dt.fromtimestamp(fs, tz=tzinfo).isoformat()
+                    e_iso = _dt.fromtimestamp(fe, tz=tzinfo).isoformat()
+                    ev_payload = {
+                        "title": act["title"],
+                        "description": "有委托/客人找上门，需要出外勤处理。",
+                        "event_type": act.get("activity_type") or "work",
+                        "event_category": act.get("event_category") or "work",
+                        "activity_domain": act.get("activity_domain"),
+                        "status": "planned",
+                        "importance": int(act.get("importance") or 55),
+                        "priority": int(act.get("priority") or 55),
+                        "resource_costs": act.get("resource_costs") or {},
+                        "source": "venture_opportunity",
+                        "tags": (act.get("tags") or []) + ["营生", "委托", "opportunity", act["id"]],
+                        "attributes": {"recurring_activity_id": act["id"], "generated_by": "venture_opportunity", "opportunity": True},
+                    }
+                    if act.get("location"):
+                        ev_payload["location"] = {"name": act.get("location"), "kind": act.get("location_kind") or "flexible"}
+                    with trace.span("venture_opportunity", {"activity_id": act["id"]}):
+                        c1 = self._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "venture_opportunity", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                    ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
+                    if ev_id:
+                        try:
+                            self._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": ev_id, "start": s_iso, "end": e_iso, "block_type": "venture_opportunity", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 30}}}], owner_kind, owner_id, "venture_opportunity", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                        except Exception:
+                            pass
+                    recurring.record_arrival(self.conn, owner_kind, owner_id, act["id"], date_key, ev_id)
+                    landed.append({"activity_id": act["id"], "title": act["title"], "event_id": ev_id, "start": s_iso})
+            return {"status": "ok", "date_key": date_key, "count": len(landed), "landed": landed}
+        except Exception as exc:
+            append_audit(self.conn, owner_kind, owner_id, "venture_opportunity_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
     def _run_autonomy_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],

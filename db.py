@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 54
+_SCHEMA_VERSION = 55
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -264,6 +264,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 54:
         _create_schema_v54(conn)
         _record_schema_migration(conn, 54, "venture_supply_chain")
+    if current < 55:
+        _create_schema_v55(conn)
+        _record_schema_migration(conn, 55, "venture_opportunity_triggers")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3764,4 +3767,32 @@ def _create_schema_v54(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_restock_owner_status ON venture_restock_orders(owner_kind, owner_id, activity_id, status)"
+    )
+
+
+def _create_schema_v55(conn: sqlite3.Connection) -> None:
+    """Opportunity-triggered ventures (接委托/客人找上门). Such a venture is NOT
+    materialized on a fixed cadence; instead the heartbeat rolls arrivals from
+    an arrival rate (deterministic per venture+day so it is reproducible) and
+    lands each as a conflict-arbitrated event — so work shows up on its own
+    instead of being improvised only when asked. The arrivals table caps how
+    many land per day and dedupes across ticks."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(recurring_activities)")}
+    if "arrival_json" not in cols:
+        conn.execute("ALTER TABLE recurring_activities ADD COLUMN arrival_json TEXT")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS venture_opportunity_arrivals (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          activity_id TEXT NOT NULL,
+          date_key TEXT NOT NULL,
+          event_id TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_opp_arrivals_owner ON venture_opportunity_arrivals(owner_kind, owner_id, activity_id, date_key)"
     )

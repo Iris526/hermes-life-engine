@@ -39,6 +39,7 @@ def _decode(row) -> dict[str, Any]:
     d["weekdays"] = loads(d.pop("weekdays_json", None) or "[]", [])
     d["resource_costs"] = loads(d.pop("resource_costs_json", None) or "{}", {})
     d["supply_chain"] = loads(d.pop("supply_chain_json", None) or "null", None)
+    d["arrival"] = loads(d.pop("arrival_json", None) or "null", None)
     d["tags"] = loads(d.pop("tags_json", None) or "[]", [])
     return d
 
@@ -54,6 +55,7 @@ def create_recurring_activity(
     operation_model: str = "active", trigger_kind: str = "scheduled",
     location_kind: str = "fixed", location: str | None = None,
     supply_chain: dict[str, Any] | None = None,
+    arrival: dict[str, Any] | None = None,
     tags: list[Any] | None = None, source: str = "life_activity",
     canon_version: int | None = None, **_ignored: Any,
 ) -> dict[str, Any]:
@@ -69,13 +71,14 @@ def create_recurring_activity(
              id, owner_kind, owner_id, title, description, activity_type, event_category,
              activity_domain, cadence_kind, weekdays_json, start_time, end_time, timezone,
              resource_costs_json, importance, priority, status, start_date, end_date,
-             operation_model, trigger_kind, location_kind, location, supply_chain_json, tags_json, source)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             operation_model, trigger_kind, location_kind, location, supply_chain_json, arrival_json, tags_json, source)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (aid, owner_kind, owner_id, title.strip(), description, activity_type, event_category,
          activity_domain, cadence_kind, dumps(weekdays or []), start_time, end_time, timezone,
          dumps(resource_costs or {}), int(importance), int(priority), "active", start_date, end_date,
          operation_model, trigger_kind, location_kind, location,
-         dumps(supply_chain) if supply_chain else None, dumps(tags or []), source),
+         dumps(supply_chain) if supply_chain else None, dumps(arrival) if arrival else None,
+         dumps(tags or []), source),
     )
     append_journal(conn, owner_kind, owner_id, "recurring_activity_created",
                    {"activity_id": aid, "title": title, "cadence": cadence_kind}, source, canon_version=canon_version)
@@ -114,6 +117,8 @@ def update_recurring_activity(
         sets.append("resource_costs_json=?"); params.append(dumps(fields["resource_costs"]))
     if "supply_chain" in fields and fields["supply_chain"] is not None:
         sets.append("supply_chain_json=?"); params.append(dumps(fields["supply_chain"]))
+    if "arrival" in fields and fields["arrival"] is not None:
+        sets.append("arrival_json=?"); params.append(dumps(fields["arrival"]))
     if "tags" in fields and fields["tags"] is not None:
         sets.append("tags_json=?"); params.append(dumps(fields["tags"]))
     if not sets:
@@ -174,6 +179,45 @@ def due_activities(conn, owner_kind: str, owner_id: str, date_key: str, weekday:
             continue
         out.append(act)
     return out
+
+
+def _hash01(seed: str) -> float:
+    """Deterministic float in [0,1) from a string seed (reproducible, no RNG)."""
+    import hashlib
+    h = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    return int(h[:8], 16) / 0xFFFFFFFF
+
+
+def opportunity_target(activity: dict[str, Any], date_key: str) -> int:
+    """How many opportunities (委托/客人) should land for this venture on date_key.
+
+    Deterministic per (venture, day): the integer part of per_day always lands,
+    and the fractional part lands on days whose hash falls under it — so a
+    per_day of 1.5 averages out while staying reproducible and testable.
+    """
+    arrival = activity.get("arrival") if isinstance(activity.get("arrival"), dict) else {}
+    per_day = float(arrival.get("per_day", 1) or 0)
+    if per_day <= 0:
+        return 0
+    base = int(per_day)
+    frac = per_day - base
+    bonus = 1 if (frac > 0 and _hash01(f"{activity['id']}:{date_key}") < frac) else 0
+    return base + bonus
+
+
+def count_arrivals(conn, owner_kind: str, owner_id: str, activity_id: str, date_key: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) c FROM venture_opportunity_arrivals WHERE owner_kind=? AND owner_id=? AND activity_id=? AND date_key=?",
+        (owner_kind, owner_id, activity_id, date_key),
+    ).fetchone()
+    return int(row["c"]) if row else 0
+
+
+def record_arrival(conn, owner_kind: str, owner_id: str, activity_id: str, date_key: str, event_id: str | None) -> None:
+    conn.execute(
+        "INSERT INTO venture_opportunity_arrivals(id, owner_kind, owner_id, activity_id, date_key, event_id) VALUES(?,?,?,?,?,?)",
+        (new_id("opparr"), owner_kind, owner_id, activity_id, date_key, event_id),
+    )
 
 
 def record_occurrence(conn, owner_kind: str, owner_id: str, activity_id: str, date_key: str,

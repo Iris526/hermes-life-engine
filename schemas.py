@@ -392,6 +392,8 @@ LIFE_ACTIVITY = {
             "location_kind": {"type": "string", "enum": ["fixed", "flexible"], "description": "fixed=a set spot (a stall); flexible=varies per occurrence (外勤)."},
             "location": {"type": "string", "description": "Where it operates, e.g. 十二城东市。"},
             "supply_chain": {"type": "object", "description": "Optional 进销存 binding so goods don't appear from nowhere: {goods_resource:'stock.jingfu', goods_name:'净符', unit:'枚', initial_stock:0, unit_price:8 (income per unit sold), demand_per_occurrence:12 (units you expect to sell each time), money_resource:'money.lingzhu', restock:{threshold:10, quantity:50, unit_cost:3}}. With this set, income comes from sales (sold=min(demand,stock)×unit_price, stock decremented) and the heartbeat auto-creates a 进货 event (cost=quantity×unit_cost, adds stock on completion) when stock<threshold."},
+            "trigger_kind": {"type": "string", "enum": ["scheduled", "opportunity", "manual"], "description": "scheduled=runs on the cadence (default); opportunity=委托/客人 arrive on their own per the arrival rate; manual=only when invoked."},
+            "arrival": {"type": "object", "description": "For trigger_kind=opportunity: {per_day:2 (avg jobs that arrive per day; fractional ok), duration_minutes:90}. The heartbeat lands that many 委托 events on their own each day (conflict-arbitrated into free slots) — they carry resource_costs as the pay, credited on completion."},
             "status": {"type": "string", "enum": ["active", "paused", "cancelled"]},
             "limit": {"type": "integer"},
         },
