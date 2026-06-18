@@ -516,12 +516,19 @@ function renderProactiveBubble() {
   if (ob) { text = ob.draft_text || ob.message_text || ob.summary; kind = "want-say"; }
   else if (it) { text = it.summary; kind = "on-mind"; }
   if (!text) { el.className = "speech-bubble hidden"; el.onclick = null; return; }
+  const intentId = ob ? (ob.intent_id || null) : (it ? it.id : null);
   const full = String(text);
   const tag = kind === "want-say" ? "📣 想对你说" : "💭 想找机会说";
   const shown = full.length > 42 ? full.slice(0, 42) + "…" : full;
   el.className = "speech-bubble " + kind;
-  el.innerHTML = `<span class="sb-tag">${tag}</span><span class="sb-text">${escapeHtml(shown)}</span>`;
+  el.innerHTML = `<span class="sb-tag">${tag}</span><span class="sb-text">${escapeHtml(shown)}</span><span class="sb-close" title="不说了 / 关闭">✕</span>`;
   el.onclick = () => { switchOverlay("stage"); showToast((kind === "want-say" ? "📣 " : "💭 ") + full, "ok", 6500); };
+  const closeBtn = el.querySelector(".sb-close");
+  if (closeBtn) closeBtn.onclick = (e) => {
+    e.stopPropagation();
+    el.className = "speech-bubble hidden";          // hide immediately (observatory)
+    if (intentId) doAction("proactive_dismiss", { intent_id: intentId });  // persist if writable
+  };
 }
 
 // ── 右栏:日程 ─────────────────────────────────
@@ -580,12 +587,16 @@ function renderProactive() {
     el.innerHTML = '<div class="empty-state">无待发讯息</div>';
     return;
   }
-  el.innerHTML = all.slice(0, 10).map(item =>
-    `<div class="proactive-card ${item._t === "outbox" ? "queued" : ""}">
+  el.innerHTML = all.slice(0, 10).map(item => {
+    const iid = item._t === "outbox" ? (item.intent_id || "") : (item.id || "");
+    const sendBtn = (item._t === "outbox" && item.id) ? `<button class="pi-act send" title="标记为已送达" onclick="doAction('proactive_send',{outbox_id:'${item.id}'})">送达</button>` : "";
+    const dropBtn = iid ? `<button class="pi-act drop" title="消掉这条" onclick="doAction('proactive_dismiss',{intent_id:'${iid}'})">消掉</button>` : "";
+    return `<div class="proactive-card ${item._t === "outbox" ? "queued" : ""}">
       <div class="pi-type">${item.intent_type || item._t}</div>
       <div class="pi-summary">${(item.summary || "").slice(0, 60)}</div>
-    </div>`
-  ).join("");
+      <div class="pi-acts">${sendBtn}${dropBtn}</div>
+    </div>`;
+  }).join("");
 }
 
 // ── 右栏:最近事件 ─────────────────────────────

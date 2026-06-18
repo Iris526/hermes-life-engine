@@ -271,6 +271,12 @@ def create_app(life_dir: str | None = None) -> FastAPI:
                     return rt.review("apply_all", state.owner_kind, state.owner_id, None, None, section=req.payload.get("section"), safe_only=True, limit=int(req.payload.get("limit") or 5))
                 if req.action == "sleep_recovery_plan":
                     return rt.sleep("recovery_plan", state.owner_kind, state.owner_id, None, None)
+                if req.action == "proactive_dismiss":
+                    return rt.proactive("suppress", state.owner_kind, state.owner_id, None, None,
+                                        intent_id=req.payload.get("intent_id"), reason="dismissed from observatory")
+                if req.action == "proactive_send":
+                    return rt.proactive("send", state.owner_kind, state.owner_id, None, None,
+                                        outbox_id=req.payload.get("outbox_id"), manual=True)
                 return {"ok": False, "error": f"Unknown action: {req.action}"}
             finally:
                 rt.close()

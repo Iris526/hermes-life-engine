@@ -288,6 +288,13 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .v-orb .glyph { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:13px; color:var(--text); text-shadow:0 1px 2px #000; z-index:2; }
 .v-orb.energy .fill { background:linear-gradient(180deg,#ffd24a,#c0392b); }
 .v-orb.mood .fill { background:linear-gradient(180deg,#7dffae,#2a9d6a); }
+/* proactive speech-bubble close + outbox card actions */
+.speech-bubble .sb-close { margin-left:8px; cursor:pointer; opacity:.6; font-size:12px; padding:0 4px; border-radius:3px; }
+.speech-bubble .sb-close:hover { opacity:1; color:var(--cinnabar); background:rgba(0,0,0,.25); }
+.pi-acts { display:flex; gap:6px; margin-top:5px; }
+.pi-act { font-size:11px; padding:2px 8px; border-radius:2px; cursor:pointer; background:var(--bg-2); border:1px solid var(--border-dim); color:var(--text-dim); }
+.pi-act.send:hover { border-color:var(--cyan); color:var(--cyan); }
+.pi-act.drop:hover { border-color:var(--cinnabar); color:var(--cinnabar); }
 
 /* 角色:活动特效 + 头顶表情 */
 .actor-fx { position:absolute; left:50%; bottom:46%; transform:translateX(-50%); z-index:3; pointer-events:none; width:120px; height:120px; }
