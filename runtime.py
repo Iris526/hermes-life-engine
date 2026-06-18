@@ -1236,6 +1236,7 @@ class LifeEngineRuntime:
                 persona_result = self._run_persona_drift_for_tick(owner_kind, owner_id, control, tick_id, trace, now, minutes_elapsed)
                 meals_result = self._settle_meals_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 recurring_result = self._materialize_recurring_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
+                supply_result = self._settle_supply_chain_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 proactive_result = self._run_proactive_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 managed_review_result = self._run_managed_review_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
                 delayed_release = {"released_count": 0}
@@ -1245,7 +1246,7 @@ class LifeEngineRuntime:
                         delayed_release = release_delayed_replies(self.conn, owner_kind, owner_id, reason="released by heartbeat after agent became available", source="heartbeat", limit=20)
                 except Exception as exc:
                     delayed_release = {"error": f"{type(exc).__name__}: {exc}"}
-                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "recurring_activities": recurring_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
+                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "recurring_activities": recurring_result, "venture_supply": supply_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
                 if isinstance(recovered, dict) and recovered.get("gap"):
                     out["gap"] = recovered["gap"]
                 append_journal(self.conn, owner_kind, owner_id, "heartbeat_tick", {"now": now, **out}, "heartbeat", canon_version=control.get("active_canon_version"))
@@ -1520,6 +1521,12 @@ class LifeEngineRuntime:
                             end_iso = _dt.fromtimestamp(fe, tz=tzinfo).isoformat()
                     except Exception:
                         pass
+                costs = dict(act.get("resource_costs") or {})
+                # For a supply-chain venture, income is settled from sales (stock
+                # × price), so drop any money keys from the static event costs to
+                # avoid double-counting — keep only effort costs (energy, etc.).
+                if act.get("supply_chain"):
+                    costs = {k: v for k, v in costs.items() if not str(k).startswith("money")}
                 ev_payload = {
                     "title": act["title"],
                     "description": act.get("description") or "由营生(周期活动)自动铺出的当日事项。",
@@ -1529,7 +1536,7 @@ class LifeEngineRuntime:
                     "status": "planned",
                     "importance": int(act.get("importance") or 55),
                     "priority": int(act.get("priority") or 55),
-                    "resource_costs": act.get("resource_costs") or {},
+                    "resource_costs": costs,
                     "source": "recurring_activity",
                     "tags": (act.get("tags") or []) + ["营生", "recurring", act["id"]],
                     "attributes": {"recurring_activity_id": act["id"], "generated_by": "recurring_activity", "operation_model": op_model},
@@ -1548,6 +1555,121 @@ class LifeEngineRuntime:
             return {"status": "ok", "date_key": date_key, "count": len(materialized), "materialized": materialized}
         except Exception as exc:
             append_audit(self.conn, owner_kind, owner_id, "recurring_materialize_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
+            return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+    def _account_value(self, owner_kind: str, owner_id: str, key: str) -> float:
+        row = self.conn.execute(
+            "SELECT current_value FROM resource_accounts WHERE owner_kind=? AND owner_id=? AND resource_key=?",
+            (owner_kind, owner_id, key),
+        ).fetchone()
+        return float(row["current_value"]) if row and row["current_value"] is not None else 0.0
+
+    def _settle_supply_chain_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
+                                      tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
+        """进销存: settle sales for completed venture occurrences (sold =
+        min(demand, stock) → stock down, money up), mark arrived restock orders,
+        and auto-create a 进货 (procurement) event when stock runs low — so goods
+        never appear from nowhere. Gated by `recurring_activities`."""
+        if owner_kind != "agent":
+            return {"status": "skipped", "reason": "non-agent owner"}
+        gates = control.get("module_gates") or {}
+        if str(gates.get("recurring_activities", "auto") or "auto").lower() in {"off", "disabled", "false"}:
+            return {"status": "skipped", "reason": "gate off"}
+        try:
+            from .time_utils import parse_datetime
+            from datetime import timedelta as _td
+            sold_total = 0.0
+            income_total = 0.0
+            restocks = 0
+            for act in recurring.list_recurring_activities(self.conn, owner_kind, owner_id, status="active"):
+                sc = act.get("supply_chain")
+                if not isinstance(sc, dict) or not sc.get("goods_resource"):
+                    continue
+                goods = sc["goods_resource"]
+                money = sc.get("money_resource") or "money.lingzhu"
+                unit_price = float(sc.get("unit_price") or 0)
+                demand = float(sc.get("demand_per_occurrence") or 0)
+                # 1) settle sales for this venture's completed, unsettled occurrences
+                occs = self.conn.execute(
+                    "SELECT id, event_id FROM recurring_activity_occurrences WHERE owner_kind=? AND owner_id=? AND activity_id=? AND sale_settled=0",
+                    (owner_kind, owner_id, act["id"]),
+                ).fetchall()
+                for occ in occs:
+                    ev = get_event(self.conn, occ["event_id"]) if occ["event_id"] else None
+                    if not ev or ev.get("status") not in {"completed", "partial", "done"}:
+                        continue
+                    stock = self._account_value(owner_kind, owner_id, goods)
+                    sold = max(0.0, min(demand, stock))
+                    income = round(sold * unit_price, 2)
+                    if sold > 0:
+                        sale_ops = [{"type": "RESOURCE_DELTA", "payload": {"resource_key": goods, "delta": -sold, "operation": "consume", "reason": f"售出 @{act['title']}", "source": "venture_sale", "event_id": occ["event_id"]}}]
+                        if income:
+                            sale_ops.append({"type": "RESOURCE_DELTA", "payload": {"resource_key": money, "delta": income, "operation": "produce", "reason": f"营业收入 @{act['title']}", "source": "venture_sale", "event_id": occ["event_id"]}})
+                        with trace.span("venture_sale", {"activity_id": act["id"], "sold": sold}):
+                            self._commit_ops_locked(sale_ops, owner_kind, owner_id, "venture_sale", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                    self.conn.execute(
+                        "UPDATE recurring_activity_occurrences SET sale_settled=1, sold_quantity=?, income=? WHERE id=?",
+                        (sold, income, occ["id"]),
+                    )
+                    sold_total += sold
+                    income_total += income
+                # 2) mark restock orders received once their procurement event completes
+                for order in self.conn.execute(
+                    "SELECT id, event_id FROM venture_restock_orders WHERE owner_kind=? AND owner_id=? AND activity_id=? AND status='pending'",
+                    (owner_kind, owner_id, act["id"]),
+                ).fetchall():
+                    ev = get_event(self.conn, order["event_id"]) if order["event_id"] else None
+                    if ev and ev.get("status") in {"completed", "partial", "done"}:
+                        self.conn.execute("UPDATE venture_restock_orders SET status='received', received_at=datetime('now') WHERE id=?", (order["id"],))
+                # 3) low stock → auto-create a 进货 event (cost money, adds stock on completion), deduped
+                restock = sc.get("restock") if isinstance(sc.get("restock"), dict) else None
+                if restock:
+                    threshold = float(restock.get("threshold") or 0)
+                    qty = float(restock.get("quantity") or 0)
+                    unit_cost = float(restock.get("unit_cost") or 0)
+                    stock = self._account_value(owner_kind, owner_id, goods)
+                    pending = self.conn.execute(
+                        "SELECT 1 FROM venture_restock_orders WHERE owner_kind=? AND owner_id=? AND activity_id=? AND status='pending'",
+                        (owner_kind, owner_id, act["id"]),
+                    ).fetchone()
+                    if stock < threshold and qty > 0 and not pending:
+                        base = parse_datetime(now)
+                        atz = act.get("timezone") or "UTC"
+                        try:
+                            from zoneinfo import ZoneInfo
+                            base = base.astimezone(ZoneInfo(atz))
+                        except Exception:
+                            pass
+                        r_start = (base + _td(minutes=30)).isoformat()
+                        r_end = (base + _td(minutes=90)).isoformat()
+                        ev_payload = {
+                            "title": f"进货：{sc.get('goods_name') or goods}",
+                            "description": f"为「{act['title']}」补货（库存 {stock:g} 低于 {threshold:g}）。",
+                            "event_type": "errand", "event_category": "work",
+                            "status": "planned", "importance": 60, "priority": 60,
+                            "resource_costs": {goods: qty, money: -round(qty * unit_cost, 2)},
+                            "source": "venture_restock",
+                            "tags": ["营生", "进货", act["id"]],
+                            "attributes": {"recurring_activity_id": act["id"], "venture_restock": True},
+                        }
+                        if act.get("location"):
+                            ev_payload["location"] = {"name": act.get("location"), "kind": "flexible"}
+                        with trace.span("venture_restock", {"activity_id": act["id"], "qty": qty}):
+                            c1 = self._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "venture_restock", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                        rev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
+                        if rev_id:
+                            try:
+                                self._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": rev_id, "start": r_start, "end": r_end, "block_type": "venture_restock", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 60}}}], owner_kind, owner_id, "venture_restock", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                            except Exception:
+                                pass
+                        self.conn.execute(
+                            "INSERT INTO venture_restock_orders(id, owner_kind, owner_id, activity_id, event_id, goods_name, quantity, unit_cost, status) VALUES(?,?,?,?,?,?,?,?, 'pending')",
+                            (new_id("restock"), owner_kind, owner_id, act["id"], rev_id, sc.get("goods_name") or goods, qty, unit_cost),
+                        )
+                        restocks += 1
+            return {"status": "ok", "sold": sold_total, "income": income_total, "restocks_ordered": restocks}
+        except Exception as exc:
+            append_audit(self.conn, owner_kind, owner_id, "venture_supply_settle_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
     def _run_autonomy_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
@@ -1814,7 +1936,22 @@ class LifeEngineRuntime:
         """
         action_l = str(action or "list").strip().lower()
         if action_l in {"register", "create", "add", "注册", "开张"}:
-            return self.commit_ops([{"type": "CREATE_RECURRING_ACTIVITY", "payload": payload}], owner_kind, owner_id, "life_activity_tool", session_id, turn_id)
+            ops: list[dict[str, Any]] = [{"type": "CREATE_RECURRING_ACTIVITY", "payload": payload}]
+            # A supply-chain venture sells a goods resource — make sure it's
+            # defined (as a non-vital 'goods' stock account) so restock/sale
+            # deltas have somewhere to land. Income comes from sales, not the
+            # static resource_costs, so the goods resource is the source of truth.
+            sc = payload.get("supply_chain") or {}
+            goods = sc.get("goods_resource") if isinstance(sc, dict) else None
+            if goods and not self.conn.execute(
+                "SELECT 1 FROM resource_definitions WHERE owner_kind=? AND owner_id=? AND key=?",
+                (owner_kind, owner_id, goods),
+            ).fetchone():
+                ops.append({"type": "RESOURCE_DEFINE", "payload": {
+                    "key": goods, "display_name": sc.get("goods_name") or goods,
+                    "resource_class": "goods", "unit": sc.get("unit") or "件",
+                    "min": 0, "initial": float(sc.get("initial_stock", 0) or 0)}})
+            return self.commit_ops(ops, owner_kind, owner_id, "life_activity_tool", session_id, turn_id)
         if action_l in {"list", "ls", "列表"}:
             with transaction(self.conn):
                 return {"ok": True, "activities": recurring.list_recurring_activities(self.conn, owner_kind, owner_id, status=payload.get("status"), limit=int(payload.get("limit", 50)))}

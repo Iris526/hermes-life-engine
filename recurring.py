@@ -38,6 +38,7 @@ def _decode(row) -> dict[str, Any]:
     d = dict(row)
     d["weekdays"] = loads(d.pop("weekdays_json", None) or "[]", [])
     d["resource_costs"] = loads(d.pop("resource_costs_json", None) or "{}", {})
+    d["supply_chain"] = loads(d.pop("supply_chain_json", None) or "null", None)
     d["tags"] = loads(d.pop("tags_json", None) or "[]", [])
     return d
 
@@ -52,6 +53,7 @@ def create_recurring_activity(
     start_date: str | None = None, end_date: str | None = None,
     operation_model: str = "active", trigger_kind: str = "scheduled",
     location_kind: str = "fixed", location: str | None = None,
+    supply_chain: dict[str, Any] | None = None,
     tags: list[Any] | None = None, source: str = "life_activity",
     canon_version: int | None = None, **_ignored: Any,
 ) -> dict[str, Any]:
@@ -67,12 +69,13 @@ def create_recurring_activity(
              id, owner_kind, owner_id, title, description, activity_type, event_category,
              activity_domain, cadence_kind, weekdays_json, start_time, end_time, timezone,
              resource_costs_json, importance, priority, status, start_date, end_date,
-             operation_model, trigger_kind, location_kind, location, tags_json, source)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             operation_model, trigger_kind, location_kind, location, supply_chain_json, tags_json, source)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (aid, owner_kind, owner_id, title.strip(), description, activity_type, event_category,
          activity_domain, cadence_kind, dumps(weekdays or []), start_time, end_time, timezone,
          dumps(resource_costs or {}), int(importance), int(priority), "active", start_date, end_date,
-         operation_model, trigger_kind, location_kind, location, dumps(tags or []), source),
+         operation_model, trigger_kind, location_kind, location,
+         dumps(supply_chain) if supply_chain else None, dumps(tags or []), source),
     )
     append_journal(conn, owner_kind, owner_id, "recurring_activity_created",
                    {"activity_id": aid, "title": title, "cadence": cadence_kind}, source, canon_version=canon_version)
@@ -109,6 +112,8 @@ def update_recurring_activity(
         sets.append("weekdays_json=?"); params.append(dumps(fields["weekdays"]))
     if "resource_costs" in fields and fields["resource_costs"] is not None:
         sets.append("resource_costs_json=?"); params.append(dumps(fields["resource_costs"]))
+    if "supply_chain" in fields and fields["supply_chain"] is not None:
+        sets.append("supply_chain_json=?"); params.append(dumps(fields["supply_chain"]))
     if "tags" in fields and fields["tags"] is not None:
         sets.append("tags_json=?"); params.append(dumps(fields["tags"]))
     if not sets:

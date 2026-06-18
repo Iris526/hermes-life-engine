@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 53
+_SCHEMA_VERSION = 54
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -261,6 +261,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 53:
         _create_schema_v53(conn)
         _record_schema_migration(conn, 53, "venture_operation_model_location")
+    if current < 54:
+        _create_schema_v54(conn)
+        _record_schema_migration(conn, 54, "venture_supply_chain")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3721,3 +3724,44 @@ def _create_schema_v53(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE recurring_activities ADD COLUMN location_kind TEXT NOT NULL DEFAULT 'fixed'")
     if "location" not in cols:
         conn.execute("ALTER TABLE recurring_activities ADD COLUMN location TEXT")
+
+
+def _create_schema_v54(conn: sqlite3.Connection) -> None:
+    """Supply chain for ventures (进销存): goods don't appear from nowhere.
+
+    A venture may bind a goods item (a collection_item with a quantity) + a sale
+    price + per-occurrence demand + a restock policy. Selling consumes stock and
+    earns price×sold; when stock runs low the heartbeat auto-creates a 进货
+    (procurement) event that costs money and, on completion, adds stock. Sale
+    settlement is tracked on the occurrence; procurement orders get their own
+    lightweight table so a restock can co-exist with the day's sale occurrence."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(recurring_activities)")}
+    if "supply_chain_json" not in cols:
+        conn.execute("ALTER TABLE recurring_activities ADD COLUMN supply_chain_json TEXT")
+    occ_cols = {r[1] for r in conn.execute("PRAGMA table_info(recurring_activity_occurrences)")}
+    if "sale_settled" not in occ_cols:
+        conn.execute("ALTER TABLE recurring_activity_occurrences ADD COLUMN sale_settled INTEGER NOT NULL DEFAULT 0")
+    if "sold_quantity" not in occ_cols:
+        conn.execute("ALTER TABLE recurring_activity_occurrences ADD COLUMN sold_quantity REAL")
+    if "income" not in occ_cols:
+        conn.execute("ALTER TABLE recurring_activity_occurrences ADD COLUMN income REAL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS venture_restock_orders (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          activity_id TEXT NOT NULL,
+          event_id TEXT,
+          goods_name TEXT,
+          quantity REAL NOT NULL DEFAULT 0,
+          unit_cost REAL NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'pending',   -- pending | received | cancelled
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          received_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_restock_owner_status ON venture_restock_orders(owner_kind, owner_id, activity_id, status)"
+    )

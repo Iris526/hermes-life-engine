@@ -10,8 +10,8 @@ def test_v01210_schema_and_context_policy(tmp_path, monkeypatch):
     rt = LifeEngineRuntime()
     try:
         assert PLUGIN_VERSION == "0.16.0"
-        assert _SCHEMA_VERSION == 53
-        assert rt.conn.execute("PRAGMA user_version").fetchone()[0] == 53
+        assert _SCHEMA_VERSION == 54
+        assert rt.conn.execute("PRAGMA user_version").fetchone()[0] == 54
         row = rt.conn.execute("SELECT name FROM sqlite_master WHERE name='prompt_context_runs'").fetchone()
         assert row is not None
         out = rt.context("policy")
