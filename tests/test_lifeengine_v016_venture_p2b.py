@@ -103,18 +103,19 @@ def test_low_stock_makes_from_materials(tmp_path):
         rt.close()
 
 
-def test_making_postpones_without_materials(tmp_path):
+def test_making_waits_without_materials(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
         activate(rt)
-        sc = dict(SUPPLY)  # no materials_initial → materials start at 0
+        sc = dict(SUPPLY)  # no materials_initial AND no material_restock → no way to get materials
         rt.activity("register", title="自制净符摊", cadence_kind="daily",
                     start_time="10:00", end_time="14:00", timezone="UTC", supply_chain=sc)
         rt.tick(now="2026-06-15T15:00:00+00:00", manual=False)
-        assert _make_event(rt) is not None       # it still tries to make
-        rt.tick(now=_iso_after(_block_end_ts(rt, "制作")), manual=False)
-        # no materials → the 制作 event can't complete, goods stay at 0
+        # with no materials in hand (and no restock to fetch them), the engine
+        # does NOT create a doomed 制作 event — it waits. Goods never appear.
+        assert _make_event(rt) is None
+        rt.tick(now="2026-06-16T15:00:00+00:00", manual=False)
         assert _stock(rt, "stock.jingfu") == 0
     finally:
         rt.close()

@@ -1587,6 +1587,68 @@ class LifeEngineRuntime:
         ).fetchone()
         return float(row["current_value"]) if row and row["current_value"] is not None else 0.0
 
+    def _venture_replenish_event(self, *, owner_kind: str, owner_id: str, control: dict[str, Any], tick_id: str,
+                                 trace: Trace, now: str, act: dict[str, Any], target_key: str, order_qty: float,
+                                 costs: dict[str, Any], title: str, desc: str, dur: int, unit_cost: float, tag: str) -> bool:
+        """Create one replenishment event (买工具/买原料/进货/制作) for target_key and
+        record a pending order. Deduped per (venture, target resource) so the
+        goods, each material, and each tool replenish independently. Returns True
+        if an order was created."""
+        from .time_utils import parse_datetime
+        from datetime import timedelta as _td
+        if order_qty <= 0:
+            return False
+        if self.conn.execute(
+            "SELECT 1 FROM venture_restock_orders WHERE owner_kind=? AND owner_id=? AND activity_id=? AND goods_name=? AND status='pending'",
+            (owner_kind, owner_id, act["id"], target_key),
+        ).fetchone():
+            return False
+        from .time_utils import to_epoch as _to_epoch
+        from .impromptu import _next_free_slot
+        from datetime import datetime as _dt
+        base = parse_datetime(now)
+        atz = act.get("timezone") or "UTC"
+        try:
+            from zoneinfo import ZoneInfo
+            tzinfo = ZoneInfo(atz)
+        except Exception:
+            tzinfo = None
+        # place each replenishment event in the next free slot from now+30min so
+        # multiple orders (笔/原料/制作…) serialize instead of overlapping (the
+        # schedule overlap guard would otherwise reject all but the first block).
+        after_ts = int(_to_epoch((base + _td(minutes=30)).isoformat()))
+        fs, fe = _next_free_slot(self.conn, owner_kind, owner_id, after_ts=after_ts, duration_s=max(60, int(dur) * 60), exclude_ids=set())
+        if tzinfo is not None:
+            r_start = _dt.fromtimestamp(fs, tz=tzinfo).isoformat()
+            r_end = _dt.fromtimestamp(fe, tz=tzinfo).isoformat()
+        else:
+            r_start = (base + _td(minutes=30)).isoformat()
+            r_end = (base + _td(minutes=30 + dur)).isoformat()
+        ev_payload = {
+            "title": title, "description": desc,
+            "event_type": "work", "event_category": "work",
+            "status": "planned", "importance": 60, "priority": 60,
+            "resource_costs": costs,
+            "source": "venture_restock",
+            "tags": ["营生", tag, act["id"]],
+            "attributes": {"recurring_activity_id": act["id"], "venture_restock": True, "target": target_key},
+        }
+        if act.get("location"):
+            ev_payload["location"] = {"name": act.get("location"), "kind": "flexible"}
+        with trace.span("venture_replenish", {"activity_id": act["id"], "target": target_key, "qty": order_qty}):
+            c1 = self._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "venture_restock", session_id=None, turn_id=tick_id, trace=trace, control=control)
+        rev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
+        if rev_id:
+            try:
+                self._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": rev_id, "start": r_start, "end": r_end, "block_type": "venture_restock", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 60}}}], owner_kind, owner_id, "venture_restock", session_id=None, turn_id=tick_id, trace=trace, control=control)
+            except Exception:
+                pass
+        self.conn.execute(
+            "INSERT INTO venture_restock_orders(id, owner_kind, owner_id, activity_id, event_id, goods_name, quantity, unit_cost, status) VALUES(?,?,?,?,?,?,?,?, 'pending')",
+            (new_id("restock"), owner_kind, owner_id, act["id"], rev_id, target_key, order_qty, unit_cost),
+        )
+        return True
+
     def _settle_supply_chain_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
                                       tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
         """进销存: settle sales for completed venture occurrences (sold =
@@ -1674,73 +1736,61 @@ class LifeEngineRuntime:
                     ev = get_event(self.conn, order["event_id"]) if order["event_id"] else None
                     if ev and ev.get("status") in terminal:
                         self.conn.execute("UPDATE venture_restock_orders SET status='received', received_at=datetime('now') WHERE id=?", (order["id"],))
-                # 3) low stock → replenish, deduped. recipe(制作: 材料→成品) takes
-                #    precedence over restock(进货: 花钱买成品). Either way it's an
-                #    event that adds goods on completion; materials/money are its cost.
+                # 3) low goods → replenish the whole upstream chain, deduped per
+                #    resource. recipe(制作) means make from materials (+tools);
+                #    restock(进货) means buy finished goods. For 制作, the chain is
+                #    买笔(tool) → 买原料(material) → 制作(materials→goods) → 摆摊(sell).
                 recipe = sc.get("recipe") if has_supply and isinstance(sc.get("recipe"), dict) else None
                 restock = sc.get("restock") if has_supply and isinstance(sc.get("restock"), dict) else None
-                plan = recipe or restock
-                if plan:
-                    threshold = float(plan.get("threshold") or 0)
+                if recipe or restock:
+                    threshold = float((recipe or restock).get("threshold") or 0)
                     stock = self._account_value(owner_kind, owner_id, goods)
-                    pending = self.conn.execute(
-                        "SELECT 1 FROM venture_restock_orders WHERE owner_kind=? AND owner_id=? AND activity_id=? AND status='pending'",
-                        (owner_kind, owner_id, act["id"]),
-                    ).fetchone()
-                    if recipe:
-                        order_qty = float(recipe.get("batch_output") or 0)
-                        costs: dict[str, Any] = {goods: order_qty}
-                        for mk, mq in (recipe.get("materials") or {}).items():
-                            costs[mk] = -float(mq)
-                        for ek, ev_ in (recipe.get("effort") or {}).items():
-                            costs[ek] = float(ev_)
-                        dur = int(recipe.get("duration_minutes") or 120)
-                        title = f"制作：{sc.get('goods_name') or goods}"
-                        desc = f"为「{act['title']}」制作补货（库存 {stock:g} 低于 {threshold:g}）。"
-                        unit_cost = 0.0
-                        tag = "制作"
-                    else:
-                        order_qty = float(restock.get("quantity") or 0)
-                        unit_cost = float(restock.get("unit_cost") or 0)
-                        costs = {goods: order_qty, money: -round(order_qty * unit_cost, 2)}
-                        dur = 60
-                        title = f"进货：{sc.get('goods_name') or goods}"
-                        desc = f"为「{act['title']}」补货（库存 {stock:g} 低于 {threshold:g}）。"
-                        tag = "进货"
-                    if stock < threshold and order_qty > 0 and not pending:
-                        base = parse_datetime(now)
-                        atz = act.get("timezone") or "UTC"
-                        try:
-                            from zoneinfo import ZoneInfo
-                            base = base.astimezone(ZoneInfo(atz))
-                        except Exception:
-                            pass
-                        r_start = (base + _td(minutes=30)).isoformat()
-                        r_end = (base + _td(minutes=30 + dur)).isoformat()
-                        ev_payload = {
-                            "title": title, "description": desc,
-                            "event_type": "work", "event_category": "work",
-                            "status": "planned", "importance": 60, "priority": 60,
-                            "resource_costs": costs,
-                            "source": "venture_restock",
-                            "tags": ["营生", tag, act["id"]],
-                            "attributes": {"recurring_activity_id": act["id"], "venture_restock": True, "mode": ("make" if recipe else "buy")},
-                        }
-                        if act.get("location"):
-                            ev_payload["location"] = {"name": act.get("location"), "kind": "flexible"}
-                        with trace.span("venture_replenish", {"activity_id": act["id"], "qty": order_qty, "mode": ("make" if recipe else "buy")}):
-                            c1 = self._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "venture_restock", session_id=None, turn_id=tick_id, trace=trace, control=control)
-                        rev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
-                        if rev_id:
-                            try:
-                                self._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": rev_id, "start": r_start, "end": r_end, "block_type": "venture_restock", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 60}}}], owner_kind, owner_id, "venture_restock", session_id=None, turn_id=tick_id, trace=trace, control=control)
-                            except Exception:
-                                pass
-                        self.conn.execute(
-                            "INSERT INTO venture_restock_orders(id, owner_kind, owner_id, activity_id, event_id, goods_name, quantity, unit_cost, status) VALUES(?,?,?,?,?,?,?,?, 'pending')",
-                            (new_id("restock"), owner_kind, owner_id, act["id"], rev_id, sc.get("goods_name") or goods, order_qty, unit_cost),
-                        )
-                        restocks += 1
+                    if stock < threshold:
+                        if recipe:
+                            goods_name = sc.get("goods_name") or goods
+                            # a) tools (durables): bought once if absent, not consumed
+                            for tkey, tspec in (recipe.get("tools") or {}).items():
+                                tspec = tspec if isinstance(tspec, dict) else {}
+                                if self._account_value(owner_kind, owner_id, tkey) < 1:
+                                    tc = float(tspec.get("unit_cost") or 0)
+                                    if self._venture_replenish_event(owner_kind=owner_kind, owner_id=owner_id, control=control, tick_id=tick_id, trace=trace, now=now, act=act,
+                                            target_key=tkey, order_qty=1, costs={tkey: 1, money: -round(tc, 2)},
+                                            title=f"买{tspec.get('name') or '工具'}：{tspec.get('name') or tkey}", desc=f"「{act['title']}」缺工具 {tkey}，去置办。",
+                                            dur=int(tspec.get("duration_minutes") or 60), unit_cost=tc, tag="买工具"):
+                                        restocks += 1
+                            # b) materials: bought when low (their own threshold)
+                            for mkey, mspec in (recipe.get("material_restock") or {}).items():
+                                mspec = mspec if isinstance(mspec, dict) else {}
+                                if self._account_value(owner_kind, owner_id, mkey) < float(mspec.get("threshold") or 0):
+                                    mq = float(mspec.get("quantity") or 0); mc = float(mspec.get("unit_cost") or 0)
+                                    if self._venture_replenish_event(owner_kind=owner_kind, owner_id=owner_id, control=control, tick_id=tick_id, trace=trace, now=now, act=act,
+                                            target_key=mkey, order_qty=mq, costs={mkey: mq, money: -round(mq * mc, 2)},
+                                            title=f"买原料：{mspec.get('name') or mkey}", desc=f"为「{act['title']}」备料 {mkey}。",
+                                            dur=int(mspec.get("duration_minutes") or 60), unit_cost=mc, tag="买原料"):
+                                        restocks += 1
+                            # c) make: only when tools present and materials sufficient
+                            mats = recipe.get("materials") or {}
+                            tools_ok = all(self._account_value(owner_kind, owner_id, t) >= 1 for t in (recipe.get("tools") or {}))
+                            mats_ok = all(self._account_value(owner_kind, owner_id, m) >= float(q) for m, q in mats.items())
+                            batch = float(recipe.get("batch_output") or 0)
+                            if tools_ok and mats_ok and batch > 0:
+                                costs: dict[str, Any] = {goods: batch}
+                                for mk, mq in mats.items():
+                                    costs[mk] = -float(mq)
+                                for ek, ev_ in (recipe.get("effort") or {}).items():
+                                    costs[ek] = float(ev_)
+                                if self._venture_replenish_event(owner_kind=owner_kind, owner_id=owner_id, control=control, tick_id=tick_id, trace=trace, now=now, act=act,
+                                        target_key=goods, order_qty=batch, costs=costs,
+                                        title=f"制作：{goods_name}", desc=f"为「{act['title']}」制作补货（库存 {stock:g} 低于 {threshold:g}）。",
+                                        dur=int(recipe.get("duration_minutes") or 120), unit_cost=0.0, tag="制作"):
+                                    restocks += 1
+                        else:
+                            q = float(restock.get("quantity") or 0); uc = float(restock.get("unit_cost") or 0)
+                            if self._venture_replenish_event(owner_kind=owner_kind, owner_id=owner_id, control=control, tick_id=tick_id, trace=trace, now=now, act=act,
+                                    target_key=goods, order_qty=q, costs={goods: q, money: -round(q * uc, 2)},
+                                    title=f"进货：{sc.get('goods_name') or goods}", desc=f"为「{act['title']}」补货（库存 {stock:g} 低于 {threshold:g}）。",
+                                    dur=60, unit_cost=uc, tag="进货"):
+                                restocks += 1
             return {"status": "ok", "sold": sold_total, "income": income_total, "restocks_ordered": restocks}
         except Exception as exc:
             append_audit(self.conn, owner_kind, owner_id, "venture_supply_settle_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
@@ -2110,6 +2160,12 @@ class LifeEngineRuntime:
                 mat_initial = recipe.get("materials_initial") if isinstance(recipe.get("materials_initial"), dict) else {}
                 for mkey in recipe["materials"]:
                     _ensure_resource(mkey, mkey, "material", None, mat_initial.get(mkey, 0))
+                # tools (笔 etc.) are durable 'tool' stock the maker keeps; define
+                # them too so 买笔 has somewhere to land and 制作 can check them.
+                if isinstance(recipe.get("tools"), dict):
+                    for tkey, tspec in recipe["tools"].items():
+                        tspec = tspec if isinstance(tspec, dict) else {}
+                        _ensure_resource(tkey, tspec.get("name") or tkey, "tool", "把", tspec.get("initial", 0))
             return self.commit_ops(ops, owner_kind, owner_id, "life_activity_tool", session_id, turn_id)
         if action_l in {"list", "ls", "列表"}:
             with transaction(self.conn):
