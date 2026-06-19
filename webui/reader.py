@@ -399,6 +399,63 @@ class LifeEngineReader:
                 r["symbols"] = _safe_json(r.get("symbols_json"), [])
             return rows
 
+    def campaigns(self, owner_kind: str, owner_id: str, limit: int = 12) -> list[dict[str, Any]]:
+        """v0.18 资料片: cross-week themed arcs, active first then recently resolved."""
+        with self._connect() as conn:
+            if not self._table_exists(conn, "campaigns"):
+                return []
+            rows = self._all(
+                conn,
+                "SELECT * FROM campaigns WHERE owner_kind=? AND owner_id=? AND status IN ('active','resolved') "
+                "ORDER BY (status='active') DESC, updated_at DESC LIMIT ?",
+                (owner_kind, owner_id, limit),
+            )
+            for r in rows:
+                phases = _safe_json(r.get("phases_json"), [])
+                r["phases"] = phases
+                r["theme"] = _safe_json(r.get("theme_json"), {})
+                r["phase_count"] = len(phases)
+                cp = int(r.get("current_phase") or 0)
+                r["current_phase_title"] = phases[cp].get("title") if 0 <= cp < len(phases) else None
+            return rows
+
+    def inner_life(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
+        """v0.18 心相: her current self-narrative + the opinions she holds."""
+        with self._connect() as conn:
+            opinions = []
+            if self._table_exists(conn, "agent_opinions"):
+                opinions = self._all(
+                    conn,
+                    "SELECT target, opinion_type, strength, confidence, reason, evidence_count, updated_at "
+                    "FROM agent_opinions WHERE agent_id=? AND status='active' "
+                    "ORDER BY confidence*ABS(strength) DESC, updated_at DESC LIMIT 12",
+                    (owner_id,),
+                )
+            self_narrative = None
+            if self._table_exists(conn, "memories"):
+                rows = self._all(
+                    conn,
+                    "SELECT content, created_at FROM memories WHERE owner_kind=? AND owner_id=? "
+                    "AND memory_type='self_narrative' ORDER BY created_at DESC LIMIT 1",
+                    (owner_kind, owner_id),
+                )
+                if rows:
+                    self_narrative = {"content": rows[0].get("content"), "at": rows[0].get("created_at")}
+            return {"self_narrative": self_narrative, "opinions": opinions}
+
+    def relationship_notes(self, owner_kind: str, owner_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        """v0.18 牵挂: what the user told her about the user's own life."""
+        with self._connect() as conn:
+            if not self._table_exists(conn, "relationship_notes"):
+                return []
+            return self._all(
+                conn,
+                "SELECT topic, content, salience, sentiment, follow_up_due_ts, followed_up_at, created_at "
+                "FROM relationship_notes WHERE agent_id=? AND status='active' "
+                "ORDER BY salience DESC, created_at DESC LIMIT ?",
+                (owner_id, limit),
+            )
+
     def proactive(self, owner_kind: str, owner_id: str, limit: int = 20) -> dict[str, Any]:
         # proactive tables are keyed by agent_id (proactive is agent-only), not
         # owner_kind/owner_id — query by whichever key the table actually has.
@@ -795,6 +852,9 @@ class LifeEngineReader:
         delayed = self.delayed_replies(owner_kind, owner_id, limit=20)
         pro = self.proactive(owner_kind, owner_id, limit=10)
         collections = self.collections(owner_kind, owner_id, limit=50)
+        campaigns = self.campaigns(owner_kind, owner_id, limit=12)
+        inner_life = self.inner_life(owner_kind, owner_id)
+        relationship = self.relationship_notes(owner_kind, owner_id, limit=20)
         sprite = map_avatar_state(state, current, sleep_day, review, delayed)
         workspace = self.workspace_docs(limit=20, include_content=False)
         payload = {
@@ -813,6 +873,9 @@ class LifeEngineReader:
             "delayed_replies": delayed,
             "proactive": pro,
             "collections": collections,
+            "campaigns": campaigns,
+            "inner_life": inner_life,
+            "relationship": relationship,
             "workspace": workspace,
             "doctor": self.doctor_latest(owner_kind, owner_id),
             "persona": self.persona(owner_kind, owner_id),

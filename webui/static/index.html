@@ -250,6 +250,39 @@
         </div>
       </div>
 
+      <!-- 事变 / 资料片面板 -->
+      <div id="overlay-campaigns" class="overlay-panel">
+        <div class="panel-full-header">
+          <span class="panel-title">🗺️ 事变·资料片</span>
+          <button class="panel-close" data-close>✕</button>
+        </div>
+        <div class="panel-full-body">
+          <div id="campaigns-list" class="campaigns-list"></div>
+        </div>
+      </div>
+
+      <!-- 心相 / 内境面板 -->
+      <div id="overlay-innerlife" class="overlay-panel">
+        <div class="panel-full-header">
+          <span class="panel-title">🌱 心相·内境</span>
+          <button class="panel-close" data-close>✕</button>
+        </div>
+        <div class="panel-full-body innerlife-body">
+          <div class="innerlife-section">
+            <h3 class="section-label">自我叙事</h3>
+            <div id="self-narrative" class="self-narrative"></div>
+          </div>
+          <div class="innerlife-section">
+            <h3 class="section-label">我的看法</h3>
+            <div id="opinions-list" class="opinions-list"></div>
+          </div>
+          <div class="innerlife-section">
+            <h3 class="section-label">我记得你的</h3>
+            <div id="relationship-list" class="relationship-list"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- 详情抽屉(事件/物品/梦境/追溯共用) -->
       <div id="detail-drawer" class="detail-drawer hidden">
         <div class="drawer-header">
@@ -305,6 +338,12 @@
       </button>
       <button class="hotbar-btn" data-overlay="dreams" title="梦境">
         <span class="hotbar-icon">💭</span><span class="hotbar-label">梦境</span>
+      </button>
+      <button class="hotbar-btn" data-overlay="campaigns" title="事变·资料片">
+        <span class="hotbar-icon">🗺️</span><span class="hotbar-label">事变</span>
+      </button>
+      <button class="hotbar-btn" data-overlay="innerlife" title="心相·内境">
+        <span class="hotbar-icon">🌱</span><span class="hotbar-label">心相</span>
       </button>
       <button class="hotbar-btn" data-overlay="codex" title="功法库">
         <span class="hotbar-icon">📜</span><span class="hotbar-label">典籍</span>

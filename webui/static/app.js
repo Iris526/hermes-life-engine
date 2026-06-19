@@ -172,6 +172,8 @@ function render() {
   renderCollections();
   renderCloset();
   renderDreams();
+  renderCampaigns();
+  renderInnerLife();
   renderReview();
   renderTrace();
   renderSettings();
@@ -421,10 +423,16 @@ function renderStage() {
   // 任务条
   const ribbon = document.getElementById("quest-ribbon");
   if (ribbon) {
+    const activeCampaign = (snapshotData.campaigns || []).find(c => c.status === "active");
     if (currentEvent) {
       ribbon.innerHTML = `<span class="qr-tag">⚔ 当前</span>${escapeHtml(currentEvent.title)}`;
       ribbon.classList.remove("hidden");
       ribbon.onclick = () => showEventDetail(currentEvent.id);
+    } else if (activeCampaign) {
+      const ph = activeCampaign.current_phase_title ? ` · ${escapeHtml(activeCampaign.current_phase_title)}` : "";
+      ribbon.innerHTML = `<span class="qr-tag">🗺 资料片</span>${escapeHtml(activeCampaign.title)}${ph}`;
+      ribbon.classList.remove("hidden");
+      ribbon.onclick = () => switchOverlay("campaigns");
     } else {
       ribbon.classList.add("hidden");
       ribbon.onclick = null;
@@ -748,6 +756,76 @@ function renderDreams() {
       ${symbols.length ? `<div class="dream-symbols">${symbols.map(s => `<span class="dream-symbol">${s}</span>`).join("")}</div>` : ""}
     </div>`;
   }).join("");
+}
+
+// ── 事变 / 资料片面板 ──────────────────────────
+function renderCampaigns() {
+  const camps = snapshotData.campaigns || [];
+  const el = document.getElementById("campaigns-list");
+  if (!el) return;
+  if (!camps.length) {
+    el.innerHTML = '<div class="empty-state">还没有在张罗的大事</div>';
+    return;
+  }
+  el.innerHTML = camps.map(c => {
+    const phases = c.phases || [];
+    const cp = Number(c.current_phase) || 0;
+    const resolved = c.status === "resolved";
+    const pct = Math.max(0, Math.min(100, (Number(c.progress) || 0) * 100));
+    const phaseChips = phases.map((p, i) => {
+      const st = resolved || i < cp ? "done" : (i === cp ? "now" : "todo");
+      return `<span class="phase-chip ${st}">${escapeHtml(p.title || ("第" + (i + 1) + "阶段"))}</span>`;
+    }).join('<span class="phase-arrow">→</span>');
+    return `<div class="campaign-card ${resolved ? "resolved" : "active"}">
+      <div class="campaign-head">
+        <span class="campaign-title">${escapeHtml(c.title)}</span>
+        <span class="campaign-status">${resolved ? "已收尾" : "进行中"}</span>
+      </div>
+      ${c.description ? `<div class="campaign-desc">${escapeHtml(c.description)}</div>` : ""}
+      <div class="campaign-phases">${phaseChips}</div>
+      <div class="vital-bar"><div class="vital-bar-track"><div class="vital-bar-fill ${resolved ? "" : "high"}" style="width:${pct}%"></div></div></div>
+    </div>`;
+  }).join("");
+}
+
+// ── 心相 / 内境面板 ────────────────────────────
+function renderInnerLife() {
+  const inner = snapshotData.inner_life || {};
+  const narEl = document.getElementById("self-narrative");
+  if (narEl) {
+    const nar = inner.self_narrative;
+    narEl.innerHTML = (nar && nar.content)
+      ? `<blockquote class="narrative-quote">“${escapeHtml(nar.content)}”<cite>${formatTime(nar.at)}</cite></blockquote>`
+      : '<div class="empty-state">还没有形成自我叙事</div>';
+  }
+  const opEl = document.getElementById("opinions-list");
+  if (opEl) {
+    const ops = inner.opinions || [];
+    const typeLabel = { like: "喜欢", dislike: "不喜欢", concern: "在意", value: "看重", discovery: "发现" };
+    opEl.innerHTML = ops.length ? ops.map(o => {
+      const v = Number(o.strength) || 0;
+      const pct = Math.max(0, Math.min(100, (v + 1) / 2 * 100));
+      const cls = Math.abs(v) < 0.2 ? "" : (v > 0 ? "high" : "low");
+      return `<div class="opinion-row">
+        <div class="opinion-head"><span class="opinion-target">${escapeHtml(o.target)}</span><span class="opinion-type">${typeLabel[o.opinion_type] || escapeHtml(o.opinion_type || "")}</span></div>
+        <div class="persona-trait-track"><div class="persona-trait-center"></div><div class="persona-trait-fill ${cls}" style="width:${pct}%"></div></div>
+        ${o.reason ? `<div class="opinion-reason">${escapeHtml(o.reason)}</div>` : ""}
+      </div>`;
+    }).join("") : '<div class="empty-state">还没有形成什么看法</div>';
+  }
+  const relEl = document.getElementById("relationship-list");
+  if (relEl) {
+    const notes = snapshotData.relationship || [];
+    const now = Date.now() / 1000;
+    relEl.innerHTML = notes.length ? notes.map(n => {
+      const due = n.follow_up_due_ts && !n.followed_up_at && Number(n.follow_up_due_ts) <= now;
+      return `<div class="relationship-card ${n.sentiment === "concern" ? "concern" : ""}">
+        ${n.topic ? `<span class="rel-topic">${escapeHtml(n.topic)}</span>` : ""}
+        <div class="rel-content">${escapeHtml(n.content)}</div>
+        ${due ? '<span class="rel-due">想问问你</span>' : ""}
+      </div>`;
+    }).join("") : '<div class="empty-state">还没记下关于你的事</div>';
+  }
 }
 
 // ── 功法库面板 ────────────────────────────────

@@ -143,7 +143,7 @@ class WebUIState:
 
 def create_app(life_dir: str | None = None) -> FastAPI:
     state = WebUIState(life_dir)
-    app = FastAPI(title="LifeEngine WebUI", version="0.17.0")
+    app = FastAPI(title="LifeEngine WebUI", version="0.18.0")
     app.state.lifeengine_webui = state
     app.add_middleware(
         CORSMiddleware,
@@ -163,7 +163,7 @@ def create_app(life_dir: str | None = None) -> FastAPI:
         try:
             reader = state.reader()
             meta = reader.meta()
-            return {"ok": True, "webui_version": "0.17.0", "meta": meta}
+            return {"ok": True, "webui_version": "0.18.0", "meta": meta}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -229,6 +229,18 @@ def create_app(life_dir: str | None = None) -> FastAPI:
     @app.get("/api/dreams")
     def dreams(owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
         return {"items": state.reader().dreams(owner_kind or state.owner_kind, owner_id or state.owner_id)}
+
+    @app.get("/api/campaigns")
+    def campaigns(owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
+        return {"items": state.reader().campaigns(owner_kind or state.owner_kind, owner_id or state.owner_id)}
+
+    @app.get("/api/inner_life")
+    def inner_life(owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
+        return state.reader().inner_life(owner_kind or state.owner_kind, owner_id or state.owner_id)
+
+    @app.get("/api/relationship")
+    def relationship(owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
+        return {"items": state.reader().relationship_notes(owner_kind or state.owner_kind, owner_id or state.owner_id)}
 
     @app.get("/api/trace/latest")
     def trace_latest(limit: int = 20) -> dict[str, Any]:
