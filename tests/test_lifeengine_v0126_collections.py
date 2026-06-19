@@ -16,7 +16,7 @@ def hermes_home(monkeypatch):
 
 
 def test_version_schema_and_collection_tables():
-    assert PLUGIN_VERSION == "0.17.0"
+    assert PLUGIN_VERSION == "0.18.0"
     assert _SCHEMA_VERSION >= 43
     rt = LifeEngineRuntime()
     try:

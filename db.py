@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 56
+_SCHEMA_VERSION = 57
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -300,6 +300,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 56:
         _create_schema_v56(conn)
         _record_schema_migration(conn, 56, "venture_operation_behaviour")
+    if current < 57:
+        _create_schema_v57(conn)
+        _record_schema_migration(conn, 57, "life_author_runs")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3840,3 +3843,38 @@ def _create_schema_v56(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(recurring_activities)")}
     if "wage_per_occurrence" not in cols:
         conn.execute("ALTER TABLE recurring_activities ADD COLUMN wage_per_occurrence REAL NOT NULL DEFAULT 0")
+
+
+def _create_schema_v57(conn: sqlite3.Connection) -> None:
+    """LifeAuthor run log (v0.18.0). LifeAuthor is the generative inner-life
+    seam: it calls Hermes' host-owned registered model (via the PluginLlm
+    facade) to author dream/plan/idle content instead of hardcoded templates,
+    degrading to templates when the host model is absent. Each call records one
+    row here for cost/budget/audit — tokens, estimated cost, model, status. No
+    resource mutation lives here; resource effects still flow through
+    apply_delta on the normal op paths. Character-agnostic: content is authored
+    from Canon, nothing hardcoded."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS life_author_runs (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          kind TEXT NOT NULL,                 -- dream | daily_plan | idle_share | ask_about_user | campaign_seed | reflection
+          status TEXT NOT NULL,               -- ok | unparsed | error | budget_exceeded
+          provider TEXT,
+          model TEXT,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          total_tokens INTEGER NOT NULL DEFAULT 0,
+          cost_usd REAL NOT NULL DEFAULT 0,
+          purpose TEXT,
+          error TEXT,
+          trace_id TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_life_author_runs_owner ON life_author_runs(owner_kind, owner_id, created_at)"
+    )

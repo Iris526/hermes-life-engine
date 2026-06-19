@@ -55,7 +55,7 @@ def _make_detail_db(tmp_path: Path) -> Path:
 
 
 def test_webui_v0122_version():
-    assert PLUGIN_VERSION == "0.17.0"
+    assert PLUGIN_VERSION == "0.18.0"
 
 
 def test_reader_event_detail_and_trace_explain(tmp_path):

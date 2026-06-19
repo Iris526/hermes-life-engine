@@ -25,7 +25,7 @@ def test_v011_version_schema_and_tables(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
-        assert PLUGIN_VERSION == "0.17.0"
+        assert PLUGIN_VERSION == "0.18.0"
         assert _SCHEMA_VERSION >= 29
         assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 29
         for table in [

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 PLUGIN_NAME = "lifeengine"
-PLUGIN_VERSION = "0.17.0"
+PLUGIN_VERSION = "0.18.0"
 DB_FILENAME = "lifeengine.db"
 VECTOR_DIM = 384
 
@@ -69,6 +69,10 @@ DEFAULT_MODULE_GATES = {
     "meals": "auto",
     # v0.16.0 recurring activities (营生): heartbeat materializes due occupations
     "recurring_activities": "auto",
+    # v0.18.0 LifeAuthor: generative inner-life content via the host model.
+    # Resolves to off at runtime when the host PluginLlm facade isn't importable
+    # (dev/CI), so the engine falls back to deterministic templates.
+    "life_author": "auto",
 }
 
 DEFAULT_CANON_TEMPLATE = {
@@ -111,6 +115,15 @@ DEFAULT_CANON_TEMPLATE = {
     "behavior_rules": {},
     "autonomy": {"enabled": True, "default_mode": "full", "agent_decides_self_life": True},
     "proactive": {"mode": "pending_only"},
+    "life_author": {
+        "enabled": True,
+        "daily_token_budget": 200000,
+        "timeout_seconds": 20,
+        # model per kind — only honoured if the HOST opts the plugin into model
+        # override (plugins.entries.lifeengine.llm.allow_model_override +
+        # allowed_models); otherwise ignored and the user's active model is used.
+        "models": {},
+    },
     "execution": {"defaultOutcomePolicy": "narrative_simulator", "allowPostpone": True, "allowPartial": True},
     "serendipity": {"dailyMinorEventProbability": 0.25, "dramaLevel": "low", "maxSignificantSurprisesPerWeek": 1},
     "diary": {},

@@ -18,8 +18,15 @@ from .resources import reconcile_resources
 from .time_utils import now_iso, to_epoch
 from .trace import append_journal, new_id
 from .sleep_reply_dream_policy import get_policy as get_srd_policy, render_dream_share
+from . import life_author
 
 MIN_CORE_DREAM_MINUTES = 90
+
+# Memory/event rows that belong to the engine's own machinery rather than the
+# agent's lived life — excluded from dream source material so dreams stay about
+# life, not system/engineering bookkeeping.
+_NON_LIFE_MEMORY_TYPES = ("system_log", "debug_trace", "engineering_note", "audit", "system")
+_NON_LIFE_EVENT_CATEGORIES = ("system", "system_maintenance", "maintenance", "debug", "internal_audit")
 
 
 def _decode_row(row) -> dict[str, Any]:
@@ -225,8 +232,20 @@ def run_dream_audit(conn, owner_kind: str, owner_id: str, dream_run_id: str, *, 
 
 
 def _recent_context(conn, owner_kind: str, owner_id: str, limit: int = 6) -> dict[str, Any]:
-    memories = conn.execute("SELECT id, memory_type, content, importance, emotional_weight FROM memories WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT ?", (owner_kind, owner_id, int(limit))).fetchall()
-    events = conn.execute("SELECT id,title,event_category,status,importance,progress FROM events WHERE owner_kind=? AND owner_id=? ORDER BY updated_at DESC LIMIT ?", (owner_kind, owner_id, int(limit))).fetchall()
+    mem_excl = ",".join("?" for _ in _NON_LIFE_MEMORY_TYPES)
+    ev_excl = ",".join("?" for _ in _NON_LIFE_EVENT_CATEGORIES)
+    memories = conn.execute(
+        f"SELECT id, memory_type, content, importance, emotional_weight FROM memories "
+        f"WHERE owner_kind=? AND owner_id=? AND COALESCE(memory_type,'') NOT IN ({mem_excl}) "
+        f"ORDER BY created_at DESC LIMIT ?",
+        (owner_kind, owner_id, *_NON_LIFE_MEMORY_TYPES, int(limit)),
+    ).fetchall()
+    events = conn.execute(
+        f"SELECT id,title,event_category,status,importance,progress FROM events "
+        f"WHERE owner_kind=? AND owner_id=? AND COALESCE(event_category,'') NOT IN ({ev_excl}) "
+        f"ORDER BY updated_at DESC LIMIT ?",
+        (owner_kind, owner_id, *_NON_LIFE_EVENT_CATEGORIES, int(limit)),
+    ).fetchall()
     goals = []
     try:
         goals = conn.execute("SELECT id,title,status,progress,priority FROM goals WHERE owner_kind=? AND owner_id=? ORDER BY updated_at DESC LIMIT ?", (owner_kind, owner_id, int(max(3, limit // 2)))).fetchall()
@@ -239,39 +258,78 @@ def _recent_context(conn, owner_kind: str, owner_id: str, limit: int = 6) -> dic
     }
 
 
-def _compose_dream_text(ctx: dict[str, Any], findings: list[dict[str, Any]], session: dict[str, Any] | None) -> tuple[str, str, list[str]]:
+_DREAM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "content": {"type": "string"},
+        "share_text": {"type": "string"},
+        "symbols": {"type": "array", "items": {"type": "string"}},
+        "mood_delta": {"type": "number"},
+        "residue": {"type": "string"},
+    },
+    "required": ["content", "share_text"],
+}
+
+
+def _author_dream(conn, owner_kind: str, owner_id: str, ctx: dict[str, Any],
+                  session: dict[str, Any] | None, trace_id: str | None) -> dict[str, Any] | None:
+    """Author a life-flavoured dream from the agent's OWN lived life.
+
+    Source is life-domain only (memories / events / goals) — NO audit findings,
+    NO engine self-reference. Returns the authored dict, or None when the host
+    model is unavailable (caller falls back to a clean template).
+    """
+    memories = [str(m.get("content") or "")[:120] for m in (ctx.get("memories") or [])[:5] if str(m.get("content") or "").strip()]
+    events = [str(e.get("title") or "")[:60] for e in (ctx.get("events") or [])[:5] if e.get("title")]
+    goals = [str(g.get("title") or "")[:60] for g in (ctx.get("goals") or [])[:3] if g.get("title")]
+    duration = int((session or {}).get("actual_duration_minutes") or 0) or None
+    context = {
+        "最近的生活片段": memories,
+        "近来做过或安排的事": events,
+        "心里挂着的方向": goals,
+        "这一觉睡了大约几分钟": duration,
+    }
+    instructions = (
+        "给你自己写一个梦。梦要超现实、有画面和情绪，取材于上面这些*你自己的生活片段*"
+        "（以及对方跟你讲过的他的生活，如果有）。用第一人称。可以变形、跳跃、用象征，"
+        "但梦的是*生活*，不是任何系统或工程。\n"
+        "输出字段：content=梦本身；share_text=醒来后你想跟对方说的关于这个梦的一两句话；"
+        "symbols=梦里的几个意象；mood_delta=醒来后心情的变化，一个 -20 到 20 的数；"
+        "residue=可留可不留的一缕余感（一句话）。"
+    )
+    return life_author.author(
+        conn, owner_kind, owner_id, kind="dream",
+        instructions=instructions, context=context, schema=_DREAM_SCHEMA,
+        max_tokens=700, temperature=0.9, trace_id=trace_id,
+    )
+
+
+def _fallback_dream_text(ctx: dict[str, Any], session: dict[str, Any] | None) -> tuple[str, str, list[str]]:
+    """Deterministic, life-flavoured dream for when the host model is absent.
+
+    Unlike the pre-0.18 template, it does NOT mention LifeEngine / self-checks /
+    ledgers and does NOT weave in audit findings — it stays about lived life.
+    """
     memories = ctx.get("memories") or []
     events = ctx.get("events") or []
     goals = ctx.get("goals") or []
-    duration = session.get("actual_duration_minutes") if session else None
-    quality = session.get("quality_score") if session else None
-    mem_fragments = [str(m.get("content") or "")[:48] for m in memories[:3] if str(m.get("content") or "").strip()]
-    event_titles = [str(e.get("title") or "")[:32] for e in events[:3] if e.get("title")]
-    goal_titles = [str(g.get("title") or "")[:32] for g in goals[:2] if g.get("title")]
-    symbols = ["账页", "时钟", "门", "灯"]
-    if findings:
-        symbols.append("未合上的抽屉")
-    if goal_titles:
-        symbols.append("远处的路标")
-    if event_titles:
-        symbols.append("排好的格子")
-    first_memory = mem_fragments[0] if mem_fragments else "最近的零散日常"
-    first_event = event_titles[0] if event_titles else "今天的安排"
-    goal_part = f"，远处还有写着『{goal_titles[0]}』的路标" if goal_titles else ""
-    audit_part = "梦里我还顺手检查了几只没合上的抽屉" if findings else "梦里那些抽屉都合上了"
-    sleep_part = f"睡了大约 {duration} 分钟" if duration is not None else "这一觉"
-    if quality is not None:
-        sleep_part += f"，睡眠质量约 {round(float(quality), 2)}"
+    mem = [str(m.get("content") or "")[:40] for m in memories[:2] if str(m.get("content") or "").strip()]
+    ev = [str(e.get("title") or "")[:24] for e in events[:2] if e.get("title")]
+    gl = [str(g.get("title") or "")[:24] for g in goals[:1] if g.get("title")]
+    anchor = mem[0] if mem else (ev[0] if ev else "最近的某个寻常午后")
+    scene = ev[0] if ev else "一条走熟了的路"
+    far = f"，远处隐约有『{gl[0]}』的影子" if gl else ""
+    symbols = ["光", "门", "水"]
+    if ev:
+        symbols.append("熟悉的街角")
+    if gl:
+        symbols.append("远处的灯")
     content = (
-        f"我像是在一间安静的资料室里醒着做梦。桌上摊着一本生活账页，第一页写着『{first_memory}』，"
-        f"旁边的时钟把『{first_event}』拆成一格一格的光{goal_part}。{audit_part}，"
-        f"确认没有什么东西完全掉出生活线。醒来时我记得最清楚的是：{sleep_part}，梦的感觉像一次温和的自检。"
+        f"梦里我又回到了像『{anchor}』那样的地方。{scene}在脚下慢慢铺开，空气是软的{far}。"
+        f"没发生什么大事，只是走着、看着，心里很静。醒来时还记得那种安稳的感觉。"
     )
-    share = "我醒来前做了一个像 LifeEngine 自检一样的梦：它把最近的记忆、日程和资源账页都摊开检查了一遍。"
-    if findings:
-        share += f"梦后自检发现 {len(findings)} 个需要留意的状态点，我已经记到 trace 里了。"
-    else:
-        share += "这次梦后自检没有发现明显漏结算。"
+    share = "我做了个挺安静的梦，醒来心里暖暖的，有点想跟你说说。"
     return content, share, symbols
 
 
@@ -363,7 +421,24 @@ def run_dream_cycle(conn, owner_kind: str, owner_id: str, *, sleep_session_id: s
     audit = run_dream_audit(conn, owner_kind, owner_id, run_id, sleep_session=session)
     findings = audit.get("findings") or []
     ctx = _recent_context(conn, owner_kind, owner_id, limit=int(policy.get("memory_window", 6)))
-    content, share_text, symbols = _compose_dream_text(ctx, findings, session)
+    # v0.18.0: the dream is AUTHORED from the agent's own lived life (life-domain
+    # memories / events / goals), not procedurally composed from the nightly
+    # audit. Audit findings stay internal (dream_runs + trace) and never enter
+    # the dream content. Falls back to a clean, life-flavoured template when the
+    # host model is unavailable.
+    authored = _author_dream(conn, owner_kind, owner_id, ctx, session, trace_id)
+    if authored and str(authored.get("content") or "").strip():
+        content = str(authored.get("content")).strip()
+        share_text = str(authored.get("share_text") or "").strip()
+        symbols = [str(s).strip() for s in (authored.get("symbols") or []) if str(s).strip()][:6]
+        dream_mood_delta = authored.get("mood_delta")
+        dream_residue = str(authored.get("residue") or "").strip()
+    else:
+        content, share_text, symbols = _fallback_dream_text(ctx, session)
+        dream_mood_delta = None
+        dream_residue = ""
+    if not share_text:
+        share_text = "我做了个梦，醒来还留着点感觉，有点想跟你说说。"
     share_text = render_dream_share({"effective_policy": srd_policy}, summary=share_text)
     source_memory_ids = [m.get("id") for m in (ctx.get("memories") or []) if m.get("id")]
     source_event_ids = [e.get("id") for e in (ctx.get("events") or []) if e.get("id")]
@@ -371,17 +446,34 @@ def run_dream_cycle(conn, owner_kind: str, owner_id: str, *, sleep_session_id: s
     source_finding_ids = [f.get("id") for f in findings if f.get("id")]
     entry = create_dream_entry(
         conn, owner_kind, owner_id, dream_run_id=run_id, sleep_session_id=sleep_session_id,
-        content=content, summary="睡眠中的 LifeEngine 自检梦", share_text=share_text,
+        content=content, summary=(content[:24].strip() or None), share_text=share_text,
         symbols=symbols, source_memory_ids=source_memory_ids, source_event_ids=source_event_ids,
         source_goal_ids=source_goal_ids, source_finding_ids=source_finding_ids, source=source,
     )
+    # The dream leaves a residue: a small mood tint, and a leftover feeling that
+    # P4's reflection/opinion loop will later pick up from the journal.
+    if owner_kind == "agent" and dream_mood_delta:
+        try:
+            from .emotion import record_mood_reaction
+            _d = max(-20.0, min(20.0, float(dream_mood_delta)))
+            if _d:
+                record_mood_reaction(conn, owner_kind, owner_id, delta=_d, reason="梦的余感", trigger="dream", source="dream")
+        except Exception as exc:
+            append_journal(conn, owner_kind, owner_id, "dream_mood_residue_failed", {"error": str(exc)}, source)
+    if dream_residue:
+        append_journal(conn, owner_kind, owner_id, "dream_residue", {"dream_run_id": run_id, "residue": dream_residue}, source)
+    try:
+        _vivid = dream_mood_delta is not None and abs(float(dream_mood_delta)) >= 10
+    except (TypeError, ValueError):
+        _vivid = False
+
     proactive_intent = None
     if create_share_intent and owner_kind == "agent":
         proactive_intent = create_proactive_intent(
             conn, owner_id,
             target_type="user", target_id=target_user_id,
             intent_type="self_reflection_share", summary=share_text,
-            emotional_tone="calm", importance=55 if not findings else 68,
+            emotional_tone="calm", importance=62 if _vivid else 55,
             urgency=35, novelty=70, relationship_relevance=60,
             privacy_level="safe_to_share", status="generated",
             generated_by="dream", source="dream",
