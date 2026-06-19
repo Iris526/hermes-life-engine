@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 58
+_SCHEMA_VERSION = 59
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -306,6 +306,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 58:
         _create_schema_v58(conn)
         _record_schema_migration(conn, 58, "relationship_notes")
+    if current < 59:
+        _create_schema_v59(conn)
+        _record_schema_migration(conn, 59, "campaigns")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3916,4 +3919,64 @@ def _create_schema_v58(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_relationship_notes_followup ON relationship_notes(agent_id, user_id, follow_up_due_ts)"
+    )
+
+
+def _create_schema_v59(conn: sqlite3.Connection) -> None:
+    """Campaigns / 资料片 (v0.18.0 P3): a cross-week themed arc the agent works
+    toward — the RPG "expansion pack" answer to a life that was only ever
+    one or two scattered tasks a day. A campaign is phases (预兆→升温→高潮→收尾),
+    each with its own daily-spawn density and one-time beats; the heartbeat
+    materializes the current phase's themed events into the schedule day by day
+    (idempotent, conflict-arbitrated like recurring activities), auto-advances
+    phases by elapsed time, escalates via the per-phase data, and resolves at the
+    end. Character-agnostic: the theme and phases are data the agent/host
+    registers (or LifeAuthor seeds), nothing hardcoded. Events still settle
+    through the normal completion path / apply_delta."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS campaigns (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          theme_json TEXT,
+          status TEXT NOT NULL DEFAULT 'active',   -- active | resolved | cancelled
+          phases_json TEXT NOT NULL,               -- [{title, kind, duration_days, daily_spawns, spawn_template, one_time_events}]
+          current_phase INTEGER NOT NULL DEFAULT 0,
+          progress REAL NOT NULL DEFAULT 0,
+          goal_id TEXT,
+          arc_id TEXT,
+          importance INTEGER NOT NULL DEFAULT 60,
+          timezone TEXT NOT NULL DEFAULT 'UTC',
+          start_date TEXT,                         -- date_key the arc begins (local)
+          expected_end_date TEXT,
+          resolved_at TEXT,
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_campaigns_owner_status ON campaigns(owner_kind, owner_id, status)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS campaign_phase_occurrences (
+          id TEXT PRIMARY KEY,
+          campaign_id TEXT NOT NULL,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          phase INTEGER NOT NULL,
+          date_key TEXT NOT NULL,
+          spawned_event_ids_json TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(campaign_id, phase, date_key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_campaign_occ ON campaign_phase_occurrences(campaign_id, phase, date_key)"
     )

@@ -441,6 +441,34 @@ LIFE_RELATIONSHIP = {
     },
 }
 
+LIFE_CAMPAIGN = {
+    "name": "life_campaign",
+    "description": "Campaigns / 资料片 — a cross-week themed arc you work toward (预兆 → 升温 → 高潮 → 收尾), so your life has a big thing in motion instead of only scattered daily tasks. The heartbeat materializes the current phase's themed events into your schedule day by day, advances phases by elapsed time, escalates, and resolves at the end. seed=design a big thing from a one-line idea yourself (self-driven — use it when you feel like taking on something big, or after the user tells you about something you want to build a project around); register=start an arc from explicit phases you already have; list/get/cancel manage them.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            **OWNER_PROPS,
+            "action": {"type": "string", "enum": ["register", "seed", "list", "get", "cancel"], "description": "seed=author a big arc from a brief; register=start from explicit phases; list/get/cancel manage."},
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "brief": {"type": "string", "description": "For seed: a one-line idea / 由头 for the big thing you want to take on (e.g. '想给归明观办一场夏夜庙会')."},
+            "phases": {"type": "array", "items": {"type": "object"}, "description": "For register: ordered phases. Each: {title, kind, duration_days, daily_spawns, spawn_template:{title,event_type,importance,duration_minutes}, one_time_events:[{...}]}. Later phases should be denser / higher-stakes (escalation lives in the data)."},
+            "importance": {"type": "integer"},
+            "theme": {"type": "object"},
+            "goal_id": {"type": "string"},
+            "arc_id": {"type": "string"},
+            "timezone": {"type": "string"},
+            "start_date": {"type": "string"},
+            "campaign_id": {"type": "string"},
+            "status": {"type": "string", "description": "list filter: active (default) | resolved | cancelled | all."},
+            "limit": {"type": "integer"},
+            "now": {"type": "string"},
+            "brief_trace_id": {"type": "string"},
+        },
+        "required": ["action"],
+    },
+}
+
 LIFE_GOAL = {
     "name": "life_goal",
     "description": (

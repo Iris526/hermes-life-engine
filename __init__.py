@@ -52,6 +52,7 @@ def register(ctx):
         ("life_meals", schemas.LIFE_MEALS, tools.life_meals, "Meal records (breakfast/lunch/dinner)", "🍱"),
         ("life_mood", schemas.LIFE_MOOD, tools.life_mood, "Emotional reactions: nudge the mood gauge with a reason", "🎭"),
         ("life_relationship", schemas.LIFE_RELATIONSHIP, tools.life_relationship, "Relationship memory: what the user told you about their own life", "💞"),
+        ("life_campaign", schemas.LIFE_CAMPAIGN, tools.life_campaign, "Campaigns (资料片): cross-week themed arcs you work toward", "📜"),
         ("life_activity", schemas.LIFE_ACTIVITY, tools.life_activity, "Recurring activities (营生): register/cancel an engine-materialized occupation", "🪧"),
         ("life_goal", schemas.LIFE_GOAL, tools.life_goal, "Goals, life arcs, decomposition, and reflection", "🎯"),
         ("life_autonomy", schemas.LIFE_AUTONOMY, tools.life_autonomy, "Autonomy planner decisions and runs", "🧭"),

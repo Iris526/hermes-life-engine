@@ -1286,6 +1286,7 @@ class LifeEngineRuntime:
                 persona_result = self._run_persona_drift_for_tick(owner_kind, owner_id, control, tick_id, trace, now, minutes_elapsed)
                 meals_result = self._settle_meals_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 recurring_result = self._materialize_recurring_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
+                campaign_result = self._run_campaigns_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 supply_result = self._settle_supply_chain_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 opportunity_result = self._roll_opportunities_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 realtime_sync = self._sync_realtime_to_schedule_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
@@ -1299,7 +1300,7 @@ class LifeEngineRuntime:
                         delayed_release = release_delayed_replies(self.conn, owner_kind, owner_id, reason="released by heartbeat after agent became available", source="heartbeat", limit=20)
                 except Exception as exc:
                     delayed_release = {"error": f"{type(exc).__name__}: {exc}"}
-                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "recurring_activities": recurring_result, "venture_supply": supply_result, "venture_opportunities": opportunity_result, "realtime_sync": realtime_sync, "companion": companion_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
+                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "recurring_activities": recurring_result, "campaigns": campaign_result, "venture_supply": supply_result, "venture_opportunities": opportunity_result, "realtime_sync": realtime_sync, "companion": companion_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
                 partial_reasons = self._heartbeat_partial_reasons(out)
                 tick_status = "partial" if partial_reasons else "done"
                 if partial_reasons:
@@ -1635,6 +1636,75 @@ class LifeEngineRuntime:
         except Exception as exc:
             append_audit(self.conn, owner_kind, owner_id, "recurring_materialize_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+    def _run_campaigns_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
+                                tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
+        """v0.18.0 P3: materialize each active campaign (资料片) day by day — spawn
+        the current phase's themed events (one-time beats on first entry +
+        per-day spawns), auto-advance phases by elapsed time, escalate via the
+        per-phase data, and resolve at the arc's end. Idempotent per
+        (campaign, phase, day); conflict-arbitrated like recurring. Gated by
+        `campaigns`."""
+        if owner_kind != "agent":
+            return {"status": "skipped", "reason": "non-agent owner"}
+        gates = control.get("module_gates") or {}
+        mode = str(gates.get("campaigns", "auto") or "auto").lower()
+        if mode in {"off", "disabled", "false"}:
+            return {"status": "skipped", "reason": f"gate={mode}"}
+        try:
+            from . import campaigns as _campaigns
+            canon = get_active_canon(self.conn, owner_kind, owner_id)
+            tz_name = _tz_from_canon(canon) or "UTC"
+            out = []
+            for camp in _campaigns.list_campaigns(self.conn, owner_kind, owner_id, status="active"):
+                ctz = camp.get("timezone") or tz_name
+                date_key = _campaigns._local_date_key(now, ctz)
+                plan = _campaigns.plan_today(self.conn, camp, date_key)
+                if plan["resolve"]:
+                    _campaigns.resolve_campaign(self.conn, camp["id"], now=now)
+                    append_journal(self.conn, owner_kind, owner_id, "campaign_resolved", {"campaign_id": camp["id"], "title": camp.get("title")}, "campaign")
+                    out.append({"campaign_id": camp["id"], "resolved": True})
+                    continue
+                if plan["already_done"]:
+                    continue
+                spawned_ids = []
+                for ev in plan["spawn"]:
+                    duration_minutes = int(ev.get("duration_minutes") or 60)
+                    ev_payload = {k: v for k, v in ev.items() if k != "duration_minutes"}
+                    ev_payload.setdefault("status", "planned")
+                    ev_payload["source"] = "campaign"
+                    with trace.span("campaign_materialize", {"campaign_id": camp["id"], "phase": plan["phase_idx"]}):
+                        c1 = self._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "campaign", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                    ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
+                    if ev_id:
+                        spawned_ids.append(ev_id)
+                        try:
+                            self._schedule_campaign_event(owner_kind, owner_id, control, tick_id, trace, now, ctz, ev_id, duration_minutes)
+                        except Exception:
+                            pass
+                _campaigns.record_phase_occurrence(self.conn, camp["id"], owner_kind, owner_id, plan["phase_idx"], date_key, spawned_ids)
+                _campaigns.update_phase_progress(self.conn, camp["id"], plan["phase_idx"], plan["progress"])
+                out.append({"campaign_id": camp["id"], "phase": plan["phase_idx"], "spawned": len(spawned_ids), "progress": plan["progress"]})
+            return {"status": "ok", "campaigns": out}
+        except Exception as exc:
+            append_audit(self.conn, owner_kind, owner_id, "campaign_materialize_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
+            return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+    def _schedule_campaign_event(self, owner_kind: str, owner_id: str, control: dict[str, Any],
+                                 tick_id: str, trace: Trace, now: str, tz_name: str,
+                                 ev_id: str, duration_minutes: int) -> None:
+        """Place a campaign event into the next free slot (一人不能分身)."""
+        from .impromptu import _next_free_slot
+        from .time_utils import to_epoch as _to_epoch
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo
+        now_ts = int(_to_epoch(now))
+        dur = max(60, int(duration_minutes) * 60)
+        fs, fe = _next_free_slot(self.conn, owner_kind, owner_id, after_ts=now_ts, duration_s=dur, exclude_ids=set())
+        tzinfo = ZoneInfo(tz_name)
+        start_iso = _dt.fromtimestamp(fs, tz=tzinfo).isoformat()
+        end_iso = _dt.fromtimestamp(fe, tz=tzinfo).isoformat()
+        self._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": ev_id, "start": start_iso, "end": end_iso, "block_type": "campaign", "timezone_name": tz_name, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 30}}}], owner_kind, owner_id, "campaign", session_id=None, turn_id=tick_id, trace=trace, control=control)
 
     def _account_value(self, owner_kind: str, owner_id: str, key: str) -> float:
         row = self.conn.execute(
@@ -2288,6 +2358,67 @@ class LifeEngineRuntime:
             with transaction(self.conn):
                 return {"ok": True, "due": rel.notes_due_for_followup(self.conn, owner_id, user_id, now=payload.get("now"), limit=int(payload.get("limit", 5)))}
         raise ValueError(f"Unknown relationship action: {action}")
+
+    def campaign(self, action: str = "list", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+                 session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """Campaigns / 资料片: a cross-week themed arc (预兆→升温→高潮→收尾) the
+        heartbeat materializes into the schedule day by day. register=start an arc
+        from explicit phases; seed=let the host model design one from a brief
+        (self-driven 大事); list/get/cancel manage them."""
+        from . import campaigns as _campaigns
+        action_l = str(action or "list").strip().lower()
+        canon = get_active_canon(self.conn, owner_kind, owner_id)
+        tz = payload.get("timezone") or _tz_from_canon(canon) or "UTC"
+        if action_l in {"register", "create", "start"}:
+            with transaction(self.conn):
+                camp = _campaigns.create_campaign(
+                    self.conn, owner_kind, owner_id,
+                    title=payload.get("title", ""), phases=payload.get("phases") or [],
+                    description=payload.get("description"), theme=payload.get("theme"),
+                    goal_id=payload.get("goal_id"), arc_id=payload.get("arc_id"),
+                    importance=int(payload.get("importance", 60)), timezone=tz,
+                    start_date=payload.get("start_date"), now=payload.get("now"), source="life_campaign",
+                )
+            return {"ok": True, "campaign": camp}
+        if action_l in {"seed"}:
+            from . import life_author
+            instructions = (
+                "给你自己张罗一件最近想做的大事，铺成一条跨越若干天的弧。"
+                "分几个阶段（预兆/铺垫→升温→高潮→收尾），越往后越密、越要紧。"
+                "每个阶段给 title、duration_days、daily_spawns（每天铺几件相关小事）、"
+                "spawn_template（每天那类事的模板：title/event_type/importance/duration_minutes）、"
+                "可选 one_time_events（这个阶段的关键节点事件）。输出 title、description、importance、phases。"
+                "全部关于*生活*，自洽，别提任何系统/工程词。"
+            )
+            with transaction(self.conn):
+                parsed = life_author.author(
+                    self.conn, owner_kind, owner_id, kind="campaign_seed",
+                    instructions=instructions, context={"由头/想法": payload.get("brief", "")},
+                    schema=_campaigns.SEED_SCHEMA, max_tokens=1400, temperature=0.85, trace_id=payload.get("trace_id"),
+                )
+                if not parsed or not (parsed.get("phases") or []):
+                    return {"ok": False, "reason": "no host model available or empty blueprint", "seeded": False}
+                camp = _campaigns.create_campaign(
+                    self.conn, owner_kind, owner_id,
+                    title=str(parsed.get("title") or "近来想做的一件大事"), phases=parsed["phases"],
+                    description=parsed.get("description"), theme={"seed_brief": payload.get("brief", "")},
+                    importance=int(parsed.get("importance", 60)), timezone=tz,
+                    start_date=payload.get("start_date"), now=payload.get("now"), source="campaign_seed",
+                )
+            return {"ok": True, "campaign": camp, "seeded": True}
+        if action_l in {"list", "campaigns"}:
+            status = payload.get("status", "active")
+            if status in {"all", "any", "*", None}:
+                status = None
+            with transaction(self.conn):
+                return {"ok": True, "campaigns": _campaigns.list_campaigns(self.conn, owner_kind, owner_id, status=status, limit=int(payload.get("limit", 50)))}
+        if action_l in {"get"}:
+            with transaction(self.conn):
+                return {"ok": True, "campaign": _campaigns.get_campaign(self.conn, payload["campaign_id"])}
+        if action_l in {"cancel", "stop"}:
+            with transaction(self.conn):
+                return {"ok": True, "campaign": _campaigns.cancel_campaign(self.conn, owner_kind, owner_id, payload["campaign_id"])}
+        raise ValueError(f"Unknown campaign action: {action}")
 
     # ----- recurring activities (营生) -------------------------------------
     def activity(self, action: str = "list", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,

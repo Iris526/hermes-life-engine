@@ -77,6 +77,9 @@ DEFAULT_MODULE_GATES = {
     # quiet + in a good mood, or to follow up on what you told her). Needs
     # life_author (host model) + proactive; degrades to silence without a host.
     "companion": "auto",
+    # v0.18.0 P3 campaigns (资料片): cross-week themed arcs the heartbeat
+    # materializes into the schedule day by day, advancing/escalating/resolving.
+    "campaigns": "auto",
 }
 
 DEFAULT_CANON_TEMPLATE = {
