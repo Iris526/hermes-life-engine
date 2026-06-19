@@ -200,3 +200,22 @@ RPG 感最大的杠杆：跨周长弧、阶段升级、自动铺事件。
 - campaign 自然随机性（per-phase 波动）可在确定性掷点上叠加（仿 venture P3 的 hash 掷点，无 RNG）。
 - relationship_notes 可接入向量检索（复用现有 FTS+vec）做更准的追问召回。
 - 模型档位与 `daily_token_budget` 上线后按真实成本回调。
+
+## 实现状态（2026-06-19，已落地并推到 main）
+
+全部离线验证（fake author + 降级路径），全量 fast 套件 288 passed；**真·调宿主模型那条路只能在 iris 上实跑确认**（开发机无 Hermes）。
+
+| 提交 | 内容 | schema |
+|---|---|---|
+| `7de662e` | **P1** LifeAuthor 地基（`life_author.py`，经 `PluginLlm` 调宿主模型、无宿主降级）+ 做梦改写（梦生活、不梦工程） | 57 |
+| `f204934` | **P2** 主动陪伴（`companion.py`，idle/好心情/到期回访）+ owner-life 关系记忆（`relationship.py` + `life_relationship`） | 58 |
+| `dd66c24` | **P3** campaign/资料片 引擎（`campaigns.py` + `_run_campaigns_for_tick` + `life_campaign`，含 seed 自发起弧） | 59 |
+| `01b432b` | **P4** 反思→观点循环 + 自我叙事（`opinions.py` + `life_opinion`） | 60 |
+| `57f8846` | autonomy 每日 goal-step 生成式化（`_author_goal_step`，接 campaign/opinion）+ 观点喂做梦/规划 | — |
+| `ecb926f` | 内心生活注入聊天上下文（`_inner_life_capsule` → `inner_life`：自我叙事/观点/在忙的弧/该问的事） | — |
+
+新工具：`life_relationship`💞 `life_campaign`📜 `life_opinion`🌱（SKILL.md 已加 v0.18 使用指南）。新门控：`life_author` / `companion` / `campaigns` / `reflection`（默认 auto，无宿主全部降级）。
+
+**上线 iris 步骤**：① 部署本插件到 iris 的 `~/.hermes/plugins/lifeengine`；② 可选在宿主 `config.yaml` 设 `plugins.entries.lifeengine.llm.allow_model_override: true` + `allowed_models` 启用 Haiku/Sonnet/Opus 分档（不设则用明灯当前活跃模型）；③ 触发一次做梦/tick/`life_opinion reflect`，确认 `life_author_runs` 出现 `status='ok'` 行即生成式链路打通。
+
+**仍遗留**：应用既有 `life_reflections.proposed_ops`；真·推送（你不在时也发，属宿主投递侧）。
