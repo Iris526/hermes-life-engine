@@ -234,8 +234,15 @@ def author(conn, owner_kind: str, owner_id: str, *, kind: str, instructions: str
             purpose=purpose,
         )
     except Exception as exc:
+        # In dev/CI or a no-agent heartbeat, the host facade may be importable
+        # while no provider is actually configured. Treat that the same as
+        # "no host": degrade silently instead of recording a noisy author run.
+        # Other model errors are still recorded for audit/debugging.
+        msg = f"{type(exc).__name__}: {exc}"
+        if "No LLM provider configured" in msg or "no provider available" in msg:
+            return None
         _record(conn, owner_kind, owner_id, kind=kind, status="error", model=eff_model,
-                error=f"{type(exc).__name__}: {exc}", purpose=purpose, trace_id=trace_id)
+                error=msg, purpose=purpose, trace_id=trace_id)
         return None
 
     parsed = getattr(res, "parsed", None)
