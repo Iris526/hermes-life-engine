@@ -1284,6 +1284,7 @@ class LifeEngineRuntime:
                 recovered = self._settle_resources(owner_kind, owner_id, minutes_elapsed, control)
                 autonomy_result = self._run_autonomy_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
                 persona_result = self._run_persona_drift_for_tick(owner_kind, owner_id, control, tick_id, trace, now, minutes_elapsed)
+                reflection_result = self._run_reflection_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 meals_result = self._settle_meals_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 recurring_result = self._materialize_recurring_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 campaign_result = self._run_campaigns_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
@@ -1300,7 +1301,7 @@ class LifeEngineRuntime:
                         delayed_release = release_delayed_replies(self.conn, owner_kind, owner_id, reason="released by heartbeat after agent became available", source="heartbeat", limit=20)
                 except Exception as exc:
                     delayed_release = {"error": f"{type(exc).__name__}: {exc}"}
-                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "recurring_activities": recurring_result, "campaigns": campaign_result, "venture_supply": supply_result, "venture_opportunities": opportunity_result, "realtime_sync": realtime_sync, "companion": companion_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
+                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "reflection": reflection_result, "meals": meals_result, "recurring_activities": recurring_result, "campaigns": campaign_result, "venture_supply": supply_result, "venture_opportunities": opportunity_result, "realtime_sync": realtime_sync, "companion": companion_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
                 partial_reasons = self._heartbeat_partial_reasons(out)
                 tick_status = "partial" if partial_reasons else "done"
                 if partial_reasons:
@@ -2125,6 +2126,26 @@ class LifeEngineRuntime:
             append_audit(self.conn, owner_kind, owner_id, "companion_failed", "warning", str(exc), {}, trace.id)
             return {"error": f"{type(exc).__name__}: {exc}"}
 
+    def _run_reflection_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
+                                 tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
+        """v0.18.0 P4: once a day, look back over recent experience and form /
+        reinforce opinions + write a line of self-narrative, so lived experience
+        visibly changes what she values and says. Paced inside run_reflection;
+        degrades to a no-op without a host model. Gated by `reflection`."""
+        if owner_kind != "agent":
+            return {"status": "skipped", "reason": "non-agent owner"}
+        gates = control.get("module_gates") or {}
+        mode = str(gates.get("reflection", "auto") or "auto").strip().lower()
+        if mode in {"off", "disabled", "manual", "false"}:
+            return {"status": "skipped", "reason": f"gate={mode}"}
+        try:
+            from . import opinions
+            with trace.span("reflection", {"tick_id": tick_id}):
+                return opinions.run_reflection(self.conn, owner_id, owner_kind=owner_kind, now=now, trace_id=trace.id)
+        except Exception as exc:
+            append_audit(self.conn, owner_kind, owner_id, "reflection_failed", "warning", str(exc), {}, trace.id)
+            return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
     def sleep(self, action: str = "state", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
               session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
         if action in {"state", "status"}:
@@ -2419,6 +2440,36 @@ class LifeEngineRuntime:
             with transaction(self.conn):
                 return {"ok": True, "campaign": _campaigns.cancel_campaign(self.conn, owner_kind, owner_id, payload["campaign_id"])}
         raise ValueError(f"Unknown campaign action: {action}")
+
+    def opinion(self, action: str = "list", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+                session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """The agent's own evolving opinions + self-narrative (v0.18.0 P4). They
+        grow on their own via the daily reflection pass; list/narrative read them
+        (so growth can show in conversation), record notes a stance explicitly,
+        reflect triggers a look-back now."""
+        from . import opinions as _op
+        action_l = str(action or "list").strip().lower()
+        if action_l in {"list", "opinions"}:
+            with transaction(self.conn):
+                return {"ok": True, "opinions": _op.list_opinions(self.conn, owner_id, limit=int(payload.get("limit", 50))),
+                        "self_narrative": _op.latest_self_narrative(self.conn, owner_id)}
+        if action_l in {"narrative", "self", "self_narrative"}:
+            with transaction(self.conn):
+                return {"ok": True, "self_narrative": _op.latest_self_narrative(self.conn, owner_id),
+                        "opinions": _op.salient_opinions(self.conn, owner_id, limit=int(payload.get("limit", 6)))}
+        if action_l in {"record", "form", "note"}:
+            with transaction(self.conn):
+                o = _op.form_or_reinforce_opinion(
+                    self.conn, owner_id, target=payload.get("target", ""),
+                    opinion_type=payload.get("opinion_type", "like"), strength=float(payload.get("strength", 0.5)),
+                    confidence=float(payload.get("confidence", 0.6)), reason=payload.get("reason"), source="life_opinion",
+                )
+            return {"ok": True, "opinion": o}
+        if action_l in {"reflect"}:
+            with transaction(self.conn):
+                return _op.run_reflection(self.conn, owner_id, owner_kind=owner_kind, now=payload.get("now"),
+                                          force=bool(payload.get("force", True)))
+        raise ValueError(f"Unknown opinion action: {action}")
 
     # ----- recurring activities (营生) -------------------------------------
     def activity(self, action: str = "list", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,

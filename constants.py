@@ -80,6 +80,9 @@ DEFAULT_MODULE_GATES = {
     # v0.18.0 P3 campaigns (资料片): cross-week themed arcs the heartbeat
     # materializes into the schedule day by day, advancing/escalating/resolving.
     "campaigns": "auto",
+    # v0.18.0 P4 reflection: once-a-day look-back that forms/reinforces opinions
+    # and a self-narrative from lived experience. Needs life_author; no-op without.
+    "reflection": "auto",
 }
 
 DEFAULT_CANON_TEMPLATE = {

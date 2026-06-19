@@ -179,10 +179,16 @@ def _author_followup(conn, agent_id: str, user_id: str, note: dict[str, Any], *,
 def _author_idle_share(conn, agent_id: str, user_id: str, *, trace_id: str | None) -> dict[str, Any] | None:
     life = _recent_life(conn, agent_id)
     notes = [n.get("content") for n in rel.recent_salient_notes(conn, agent_id, user_id, limit=2) if n.get("content")]
+    try:
+        from . import opinions as _op
+        stances = _op.opinion_phrases(conn, agent_id, limit=3)
+    except Exception:
+        stances = []
     context = {
         "你最近的生活片段": life.get("memories"),
         "你近来做的事": life.get("events"),
         "你记得的对方的生活": notes,
+        "你最近的一些看法/在意的": stances,
         "此刻心情": "不错",
     }
     instructions = (

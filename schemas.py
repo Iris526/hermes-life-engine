@@ -469,6 +469,27 @@ LIFE_CAMPAIGN = {
     },
 }
 
+LIFE_OPINION = {
+    "name": "life_opinion",
+    "description": "Your own evolving opinions and self-narrative — the stances you've formed about things in your life (like / dislike / concern / value / discovery, each with a strength), and a line about how you've been changing. These grow on their own via a daily reflection over your lived experience. list / narrative=read them, and reference them in conversation so your growth shows ('我最近想明白一件事…', '这阵子我越来越爱往外跑了'); record=note a stance you've formed; reflect=do a look-back right now (forms/reinforces opinions + writes a fresh self-narrative).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            **OWNER_PROPS,
+            "action": {"type": "string", "enum": ["list", "narrative", "record", "reflect"], "description": "list/narrative=read; record=note a stance; reflect=look back now."},
+            "target": {"type": "string", "description": "For record: what the opinion is about (e.g. '夜市'、'记账这件事'、'最近的钱')."},
+            "opinion_type": {"type": "string", "enum": ["like", "dislike", "concern", "value", "discovery"]},
+            "strength": {"type": "number", "description": "-1..1 (negative = against / dislike, positive = for / like)."},
+            "confidence": {"type": "number", "description": "0..1, how settled the stance is."},
+            "reason": {"type": "string"},
+            "limit": {"type": "integer"},
+            "now": {"type": "string"},
+            "force": {"type": "boolean"},
+        },
+        "required": ["action"],
+    },
+}
+
 LIFE_GOAL = {
     "name": "life_goal",
     "description": (

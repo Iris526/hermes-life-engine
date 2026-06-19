@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 59
+_SCHEMA_VERSION = 60
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -309,6 +309,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 59:
         _create_schema_v59(conn)
         _record_schema_migration(conn, 59, "campaigns")
+    if current < 60:
+        _create_schema_v60(conn)
+        _record_schema_migration(conn, 60, "agent_opinions")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3979,4 +3982,43 @@ def _create_schema_v59(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_campaign_occ ON campaign_phase_occurrences(campaign_id, phase, date_key)"
+    )
+
+
+def _create_schema_v60(conn: sqlite3.Connection) -> None:
+    """Agent opinions (v0.18.0 P4): the missing growth loop. Before this,
+    experience accumulated as inert rows — persona drift was only a tone hint,
+    memories were write-only, reflections' proposed_ops were never applied, and
+    the agent had no persistent opinions/preferences. An opinion is a durable
+    stance the agent forms about something in its world (a place, a person, an
+    activity, an idea): like / dislike / concern / value / discovery, with a
+    signed strength and a confidence that grows as experience reinforces it. The
+    periodic reflection pass (LifeAuthor) forms/reinforces these from recent
+    lived experience and writes a one-line self-narrative; autonomy / companion /
+    dreams then draw on them, so experience visibly changes what she does and
+    says ("我最近想明白一件事…"). UNIQUE(agent_id, target, opinion_type) so an
+    opinion strengthens rather than duplicating."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_opinions (
+          id TEXT PRIMARY KEY,
+          agent_id TEXT NOT NULL,
+          target TEXT NOT NULL,               -- what it's about (place/person/activity/thing/idea)
+          opinion_type TEXT NOT NULL,         -- like | dislike | concern | value | discovery
+          strength REAL NOT NULL DEFAULT 0,   -- -1..1
+          confidence REAL NOT NULL DEFAULT 0.5, -- 0..1, grows with reinforcement
+          reason TEXT,
+          formed_from_event_id TEXT,
+          reflection_memory_id TEXT,
+          evidence_count INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL DEFAULT 'active',
+          last_reinforced_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(agent_id, target, opinion_type)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_opinions_owner ON agent_opinions(agent_id, status, confidence)"
     )
