@@ -213,6 +213,12 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
         # Mood is private agent-life: on work-compact platforms show only the
         # coarse band, never the exact value or the behavioral note.
         capsule["mood"] = {"band": mood.get("band")} if work_compact else mood
+    inner_life = data.get("inner_life") or {}
+    if inner_life and not work_compact:
+        # Private agent-life: her self-narrative, current opinions, the big arc
+        # she's in the middle of, and what she meant to ask — so the model can
+        # voice her growth and what she's living. Omitted on work platforms.
+        capsule["inner_life"] = inner_life
     feedback = data.get("final_gate_feedback") or []
     if feedback and not work_compact:
         capsule["internal_feedback"] = feedback[:2]
@@ -232,7 +238,7 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
         # Hard cap by removing progressively less critical sections.
         # sleep/reply_gate are excluded — they are always-on state signals
         # the model needs to decide whether to reply at all.
-        for key in ["persona", "memory_sample", "goals", "behavior", "collection", "dreams", "resources", "active_or_recent_events"]:
+        for key in ["persona", "memory_sample", "goals", "behavior", "collection", "dreams", "inner_life", "resources", "active_or_recent_events"]:
             if key in capsule and len(text) > policy.budget_chars:
                 capsule.pop(key, None)
                 text = "\n<LIFEENGINE_CONTEXT mode=\"progressive_slim\">\n" + json.dumps(capsule, ensure_ascii=False, indent=2, sort_keys=True) + "\n</LIFEENGINE_CONTEXT>"

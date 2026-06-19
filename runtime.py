@@ -4299,6 +4299,44 @@ class LifeEngineRuntime:
             "run_id": resolved.get("run_id"),
         }
 
+    def _inner_life_capsule(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
+        """v0.18.0: the agent's inner life, surfaced for the turn — its current
+        self-narrative, the opinions it holds, the big thing it's in the middle
+        of (active campaign + phase), and anything it meant to ask the user about.
+        This is what makes v0.18's growth / arc / relationship actually show up in
+        conversation. Best-effort; private agent-life (omitted on work platforms)."""
+        cap: dict[str, Any] = {}
+        try:
+            from . import opinions as _opinions
+            nar = _opinions.latest_self_narrative(self.conn, owner_id)
+            if nar:
+                cap["self_narrative"] = nar
+            stances = _opinions.opinion_phrases(self.conn, owner_id, limit=4)
+            if stances:
+                cap["opinions"] = stances
+        except Exception:
+            pass
+        try:
+            from . import campaigns as _campaigns
+            active = _campaigns.list_campaigns(self.conn, owner_kind, owner_id, status="active", limit=1)
+            if active:
+                c = active[0]
+                phases = c.get("phases") or []
+                cp = int(c.get("current_phase") or 0)
+                phase_title = phases[cp].get("title") if 0 <= cp < len(phases) else None
+                cap["working_toward"] = {"title": c.get("title"), "phase": phase_title,
+                                         "progress": round(float(c.get("progress") or 0), 2)}
+        except Exception:
+            pass
+        try:
+            from . import relationship as _relationship
+            due = _relationship.notes_due_for_followup(self.conn, owner_id, None, limit=1)
+            if due:
+                cap["meant_to_ask_you_about"] = str(due[0].get("content") or "")[:160]
+        except Exception:
+            pass
+        return cap
+
     def build_context_for_turn(self, session_id: str | None, turn_id: str | None, user_message: str,
                                sender_id: str | None = None, platform: str | None = None,
                                model: str | None = None) -> str:
@@ -4366,6 +4404,7 @@ class LifeEngineRuntime:
                 resolved_behavior = self._resolve_behavior_for_context(owner_kind, owner_id, user_message)
                 persona_capsule = _safe(lambda: persona.render_persona_capsule(persona.ensure_persona(self.conn, owner_kind, owner_id, canon)) if owner_kind == "agent" else {}, {})
                 mood_capsule = _safe(lambda: (lambda m: {"value": m, "band": emotion.mood_band(m), "note": emotion.mood_bias(m).get("note")})(emotion.current_mood(self.conn, owner_kind, owner_id)) if owner_kind == "agent" else {}, {})
+                inner_life = _safe(lambda: self._inner_life_capsule(owner_kind, owner_id) if owner_kind == "agent" else {}, {})
                 context_data = {
                     "owner_scope": scope.__dict__,
                     "engine_state": control["engine_state"],
@@ -4373,6 +4412,7 @@ class LifeEngineRuntime:
                     "module_gates": control.get("module_gates"),
                     "persona": persona_capsule,
                     "mood": mood_capsule,
+                    "inner_life": inner_life,
                     "canon_brief": {"identity": (canon or {}).get("identity"), "worldview": (canon or {}).get("worldview"), "truth_sources": (canon or {}).get("truth_sources")},
                     "realtime": get_realtime_state(self.conn, owner_kind, owner_id),
                     "resources": [{"resource_key": a["resource_key"], "current_value": a["current_value"], "unit": a.get("unit"), "state": a.get("state")} for a in (resources.get("accounts", [])[:20])],
