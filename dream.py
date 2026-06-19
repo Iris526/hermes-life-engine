@@ -19,6 +19,7 @@ from .time_utils import now_iso, to_epoch
 from .trace import append_journal, new_id
 from .sleep_reply_dream_policy import get_policy as get_srd_policy, render_dream_share
 from . import life_author
+from . import relationship as rel
 
 MIN_CORE_DREAM_MINUTES = 90
 
@@ -284,10 +285,17 @@ def _author_dream(conn, owner_kind: str, owner_id: str, ctx: dict[str, Any],
     events = [str(e.get("title") or "")[:60] for e in (ctx.get("events") or [])[:5] if e.get("title")]
     goals = [str(g.get("title") or "")[:60] for g in (ctx.get("goals") or [])[:3] if g.get("title")]
     duration = int((session or {}).get("actual_duration_minutes") or 0) or None
+    # v0.18.0 P2: a few things the user shared about THEIR life can surface in
+    # the dream too — the mutual-companionship setting cuts both ways.
+    try:
+        user_notes = [str(n.get("content") or "")[:120] for n in rel.recent_salient_notes(conn, owner_id, limit=2) if str(n.get("content") or "").strip()]
+    except Exception:
+        user_notes = []
     context = {
         "最近的生活片段": memories,
         "近来做过或安排的事": events,
         "心里挂着的方向": goals,
+        "对方跟你讲过的他的生活": user_notes,
         "这一觉睡了大约几分钟": duration,
     }
     instructions = (

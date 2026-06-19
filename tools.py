@@ -231,6 +231,14 @@ def life_mood(args: dict, **kwargs) -> str:
     return _run(lambda rt: rt.mood(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
 
 
+def life_relationship(args: dict, **kwargs) -> str:
+    """Relationship memory: record / list / due — what the user told you about their own life."""
+    owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
+    action = args.get("action", "list")
+    payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "action"}}
+    return _run(lambda rt: rt.relationship(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
+
+
 def life_activity(args: dict, **kwargs) -> str:
     """Recurring activities (营生): register / list / pause / resume / cancel."""
     owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))

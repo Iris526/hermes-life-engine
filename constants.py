@@ -73,6 +73,10 @@ DEFAULT_MODULE_GATES = {
     # Resolves to off at runtime when the host PluginLlm facade isn't importable
     # (dev/CI), so the engine falls back to deterministic templates.
     "life_author": "auto",
+    # v0.18.0 P2 companion: idle / companionship outreach (she reaches out when
+    # quiet + in a good mood, or to follow up on what you told her). Needs
+    # life_author (host model) + proactive; degrades to silence without a host.
+    "companion": "auto",
 }
 
 DEFAULT_CANON_TEMPLATE = {
@@ -123,6 +127,11 @@ DEFAULT_CANON_TEMPLATE = {
         # override (plugins.entries.lifeengine.llm.allow_model_override +
         # allowed_models); otherwise ignored and the user's active model is used.
         "models": {},
+    },
+    "companion": {
+        "enabled": True,
+        "idle_max_per_day": 3,        # at most this many self-initiated idle/companion lines per day
+        "min_minutes_between": 180,   # spacing between idle outreach
     },
     "execution": {"defaultOutcomePolicy": "narrative_simulator", "allowPostpone": True, "allowPartial": True},
     "serendipity": {"dailyMinorEventProbability": 0.25, "dramaLevel": "low", "maxSignificantSurprisesPerWeek": 1},

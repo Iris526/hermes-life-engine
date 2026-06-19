@@ -420,6 +420,27 @@ LIFE_MOOD = {
     },
 }
 
+LIFE_RELATIONSHIP = {
+    "name": "life_relationship",
+    "description": "Durable memory of what the USER tells you about THEIR own life — so you can follow up later ('你上次说的那个面试怎么样了') and ground what you say in their world, instead of only ever talking about your own life. record=remember something the user just shared (set follow_up_after_hours when it's worth circling back on — an interview, a trip, a worry — and the companion loop will prompt you to ask); list=read what you remember about them; due=things worth following up on now. Record naturally whenever the user shares something real about their life.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            **OWNER_PROPS,
+            "action": {"type": "string", "enum": ["record", "list", "due"], "description": "record=remember a thing the user shared; list=read recent notes; due=notes worth following up on now."},
+            "content": {"type": "string", "description": "What the user shared about their life, in your words (e.g. 'Ringo 这周四有个面试，挺紧张')."},
+            "topic": {"type": "string", "description": "Short label, e.g. '工作/面试'、'家人'、'旅行'。"},
+            "salience": {"type": "integer", "description": "0-100, how much it matters to them / to you. Default 50."},
+            "sentiment": {"type": "string", "enum": ["positive", "neutral", "concern"], "description": "Optional emotional colour of the note."},
+            "follow_up_after_hours": {"type": "number", "description": "If set, you'll be reminded to follow up after this many hours (e.g. 48 = ask how the interview went two days later)."},
+            "user_id": {"type": "string", "description": "Which user this is about (defaults to the current/anonymous user)."},
+            "limit": {"type": "integer"},
+            "now": {"type": "string"},
+        },
+        "required": ["action"],
+    },
+}
+
 LIFE_GOAL = {
     "name": "life_goal",
     "description": (

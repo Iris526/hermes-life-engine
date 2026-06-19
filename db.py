@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 57
+_SCHEMA_VERSION = 58
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -303,6 +303,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 57:
         _create_schema_v57(conn)
         _record_schema_migration(conn, 57, "life_author_runs")
+    if current < 58:
+        _create_schema_v58(conn)
+        _record_schema_migration(conn, 58, "relationship_notes")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -3877,4 +3880,40 @@ def _create_schema_v57(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_life_author_runs_owner ON life_author_runs(owner_kind, owner_id, created_at)"
+    )
+
+
+def _create_schema_v58(conn: sqlite3.Connection) -> None:
+    """Relationship notes (v0.18.0 P2): durable memory of what the USER told the
+    agent about the user's OWN life — the other half of "各有各的生活、互相讲述".
+    The companion/idle outreach loop and dreams draw on these to follow up
+    ("你上次说的那个面试…") instead of only ever talking about the agent's events.
+    follow_up_due_ts marks when a note is worth circling back on; followed_up_at
+    records that the agent did. Character-agnostic: notes are data the host/agent
+    records during chat, nothing hardcoded."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS relationship_notes (
+          id TEXT PRIMARY KEY,
+          agent_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          topic TEXT,
+          content TEXT NOT NULL,
+          salience INTEGER NOT NULL DEFAULT 50,
+          sentiment TEXT,                       -- positive | neutral | concern (optional)
+          follow_up_due_ts INTEGER,             -- epoch seconds; when to consider circling back
+          followed_up_at TEXT,
+          last_referenced_at TEXT,
+          status TEXT NOT NULL DEFAULT 'active', -- active | archived
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_relationship_notes_owner ON relationship_notes(agent_id, user_id, status, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_relationship_notes_followup ON relationship_notes(agent_id, user_id, follow_up_due_ts)"
     )

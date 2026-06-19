@@ -36,6 +36,9 @@ _DEFAULT_TTL_HOURS: dict[str, float] = {
     "share_interesting": 36, "share": 36, "suggestion": 36,
     "report_progress": 48, "report_failure": 48,
     "ask_for_help": 72,
+    # v0.18.0 P2 companion: idle outreach goes stale fast — a "想你" or a
+    # follow-up question shouldn't surface a day later.
+    "idle_share": 10, "ask_about_user": 18,
 }
 _DEFAULT_TTL_FALLBACK_HOURS = 36.0
 _STALE_MAX_HOURS = 168.0  # 7 days: hard backstop for undelivered intents

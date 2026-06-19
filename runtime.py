@@ -1289,6 +1289,7 @@ class LifeEngineRuntime:
                 supply_result = self._settle_supply_chain_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 opportunity_result = self._roll_opportunities_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 realtime_sync = self._sync_realtime_to_schedule_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
+                companion_result = self._run_companion_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 proactive_result = self._run_proactive_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 managed_review_result = self._run_managed_review_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
                 delayed_release = {"released_count": 0}
@@ -1298,7 +1299,7 @@ class LifeEngineRuntime:
                         delayed_release = release_delayed_replies(self.conn, owner_kind, owner_id, reason="released by heartbeat after agent became available", source="heartbeat", limit=20)
                 except Exception as exc:
                     delayed_release = {"error": f"{type(exc).__name__}: {exc}"}
-                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "recurring_activities": recurring_result, "venture_supply": supply_result, "venture_opportunities": opportunity_result, "realtime_sync": realtime_sync, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
+                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "meals": meals_result, "recurring_activities": recurring_result, "venture_supply": supply_result, "venture_opportunities": opportunity_result, "realtime_sync": realtime_sync, "companion": companion_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
                 partial_reasons = self._heartbeat_partial_reasons(out)
                 tick_status = "partial" if partial_reasons else "done"
                 if partial_reasons:
@@ -2028,6 +2029,31 @@ class LifeEngineRuntime:
             append_audit(self.conn, owner_kind, owner_id, "proactive_failed", "warning", str(exc), {"mode": mode}, trace.id)
             return {"error": f"{type(exc).__name__}: {exc}"}
 
+    def _run_companion_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
+                                tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
+        """v0.18.0 P2: when the agent has been quiet a while and it's a good
+        moment (good mood, or a remembered thing about the user is due for a
+        follow-up), author one idle/companion line and file it as a proactive
+        intent. The proactive evaluation that runs next in this same tick then
+        surfaces it on the next turn. Degrades to nothing without a host model."""
+        if owner_kind != "agent":
+            return {"generated": None, "reason": "not agent"}
+        gates = control.get("module_gates") or {}
+        if str(gates.get("proactive", "pending_only") or "pending_only").strip().lower() == "off":
+            return {"generated": None, "reason": "proactive off"}
+        if str(gates.get("companion", "auto") or "auto").strip().lower() in {"off", "disabled", "manual", "false"}:
+            return {"generated": None, "reason": "companion off"}
+        try:
+            from . import companion
+            with trace.span("companion_generate", {"tick_id": tick_id}):
+                intent = companion.maybe_generate_companion_intent(
+                    self.conn, owner_id, control=control, now=now, trace_id=trace.id,
+                )
+            return {"generated": intent.get("id") if intent else None,
+                    "intent_type": intent.get("intent_type") if intent else None}
+        except Exception as exc:
+            append_audit(self.conn, owner_kind, owner_id, "companion_failed", "warning", str(exc), {}, trace.id)
+            return {"error": f"{type(exc).__name__}: {exc}"}
 
     def sleep(self, action: str = "state", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
               session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
@@ -2234,6 +2260,34 @@ class LifeEngineRuntime:
                 "recent": emotion.recent_mood_reactions(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 5))),
             }
         raise ValueError(f"Unknown mood action: {action}")
+
+    def relationship(self, action: str = "list", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+                     session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """Durable memory of what the USER told the agent about the user's OWN
+        life — the other half of "各有各的生活、互相讲述". ``record`` remembers
+        something the user shared (optionally with a follow-up time); ``list``
+        reads recent notes; ``due`` returns notes worth circling back on now. The
+        companion loop and dreams draw on these."""
+        from . import relationship as rel
+        action_l = str(action or "list").strip().lower()
+        user_id = str(payload.get("user_id") or "anonymous-user")
+        if action_l in {"record", "remember", "note"}:
+            with transaction(self.conn):
+                note = rel.record_relationship_note(
+                    self.conn, owner_id, user_id,
+                    content=payload.get("content", ""), topic=payload.get("topic"),
+                    salience=int(payload.get("salience", 50)), sentiment=payload.get("sentiment"),
+                    follow_up_after_hours=payload.get("follow_up_after_hours"),
+                    source="life_relationship", now=payload.get("now"),
+                )
+            return {"ok": True, "note": note}
+        if action_l in {"list", "notes"}:
+            with transaction(self.conn):
+                return {"ok": True, "notes": rel.list_relationship_notes(self.conn, owner_id, user_id, limit=int(payload.get("limit", 20)))}
+        if action_l in {"due", "followup", "follow_up"}:
+            with transaction(self.conn):
+                return {"ok": True, "due": rel.notes_due_for_followup(self.conn, owner_id, user_id, now=payload.get("now"), limit=int(payload.get("limit", 5)))}
+        raise ValueError(f"Unknown relationship action: {action}")
 
     # ----- recurring activities (营生) -------------------------------------
     def activity(self, action: str = "list", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
