@@ -291,11 +291,17 @@ def _author_dream(conn, owner_kind: str, owner_id: str, ctx: dict[str, Any],
         user_notes = [str(n.get("content") or "")[:120] for n in rel.recent_salient_notes(conn, owner_id, limit=2) if str(n.get("content") or "").strip()]
     except Exception:
         user_notes = []
+    try:
+        from . import opinions as _opinions
+        stances = _opinions.opinion_phrases(conn, owner_id, limit=2)
+    except Exception:
+        stances = []
     context = {
         "最近的生活片段": memories,
         "近来做过或安排的事": events,
         "心里挂着的方向": goals,
         "对方跟你讲过的他的生活": user_notes,
+        "你最近在意/喜欢的": stances,
         "这一觉睡了大约几分钟": duration,
     }
     instructions = (

@@ -303,6 +303,55 @@ def update_autonomy_decision_result(
     return get_autonomy_decision(conn, decision_id)
 
 
+def _author_goal_step(conn, owner_kind: str, owner_id: str, *, goal: dict[str, Any],
+                      downshift: bool, energy: Any, mood: Any, trace_id: str | None) -> dict[str, Any] | None:
+    """v0.18.0: give the autonomy goal-step event real texture via LifeAuthor —
+    a concrete, human next-step title + a line of what/why, in place of the
+    generic '推进目标：X'. Ties into an active campaign and the agent's current
+    opinions when present. Returns {title, description} or None (caller keeps the
+    deterministic template). Content only — costs/goal_id stay deterministic."""
+    try:
+        from . import life_author, emotion
+        ctx: dict[str, Any] = {
+            "目标": goal.get("title"),
+            "目标类型": goal.get("goal_type"),
+            "此刻精力": ("偏低" if (energy is not None and float(energy) < 30) else "还行"),
+            "此刻心情": emotion.mood_band(mood),
+            "今天是否该放轻": bool(downshift),
+        }
+        try:
+            from . import campaigns as _campaigns
+            active = _campaigns.list_campaigns(conn, owner_kind, owner_id, status="active", limit=1)
+            if active:
+                ctx["你最近在筹备的大事"] = active[0].get("title")
+        except Exception:
+            pass
+        try:
+            from . import opinions as _opinions
+            phrases = _opinions.opinion_phrases(conn, owner_id, limit=2)
+            if phrases:
+                ctx["你最近在意/喜欢的"] = phrases
+        except Exception:
+            pass
+        schema = {
+            "type": "object", "additionalProperties": False,
+            "properties": {"title": {"type": "string"}, "description": {"type": "string"}},
+            "required": ["title"],
+        }
+        instructions = (
+            "为推进上面这个目标，想一个*具体、有质地*的下一步。"
+            "title=像真人会写在日程上的自然标题（不要写成『推进目标：X』这种笼统说法），"
+            "description=一句话说今天打算具体做什么、为什么是现在。"
+            "若你最近在筹备某件大事，可以让这步和它呼应；若今天该放轻，就选个轻一点的步骤。"
+            "只谈生活，别提任何系统或工程。"
+        )
+        return life_author.author(conn, owner_kind, owner_id, kind="daily_plan",
+                                  instructions=instructions, context=ctx, schema=schema,
+                                  max_tokens=200, temperature=0.8, trace_id=trace_id)
+    except Exception:
+        return None
+
+
 def plan_autonomy(
     conn,
     owner_kind: str,
@@ -468,6 +517,20 @@ def plan_autonomy(
         if energy is not None:
             costs["energy"] = -3
         adjustment = {"type": "goal_step_downshifted", "severity": sleep_ctx.get("severity", "moderate")}
+
+    # v0.18.0: replace the generic '推进目标：X' title with an authored, textured
+    # next step when the host model is available (falls back to the template).
+    authored = _author_goal_step(conn, owner_kind, owner_id, goal=selected,
+                                 downshift=bool(sleep_ctx.get("should_downshift")),
+                                 energy=energy, mood=mood, trace_id=trace_id)
+    if authored:
+        a_title = str(authored.get("title") or "").strip()
+        a_desc = str(authored.get("description") or "").strip()
+        if a_title:
+            title = a_title
+        if a_desc:
+            description = a_desc
+        tags = tags + ["authored"]
 
     ops = [{"type": "CREATE_EVENT", "payload": {
         "title": title,
