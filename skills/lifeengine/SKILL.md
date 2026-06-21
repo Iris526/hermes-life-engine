@@ -52,7 +52,8 @@ Typical proactive flow:
 - Create an intent: `life_proactive(action="create", summary="...", intent_type="report_progress")`
 - Evaluate policy: `life_proactive(action="evaluate", intent_id="proactive_...")`
 - If pending_only, mention naturally next turn when appropriate.
-- If outbox queued and an adapter actually delivers it, mark sent: `life_proactive(action="send", outbox_id="outbox_...", result={...})`.
+- If outbox queued, let the server delivery bridge call the configured adapter: `life_proactive(action="deliver")`.
+- Only use `life_proactive(action="send", outbox_id="outbox_...", result={...})` when an external adapter has already delivered it and you are marking the row sent.
 - Suppress or expire stale/private items with `life_proactive(action="suppress"|"expire")`.
 
 

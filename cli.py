@@ -244,7 +244,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_autonomy.add_argument("--limit", type=int, default=20)
 
     p_proactive = sub.add_parser("proactive", help="Proactive intent and outbox operations")
-    p_proactive.add_argument("action", choices=["list", "get", "create", "evaluate", "outbox", "send", "suppress", "expire", "state"])
+    p_proactive.add_argument("action", choices=["list", "get", "create", "evaluate", "outbox", "deliver", "send", "suppress", "expire", "state"])
     p_proactive.add_argument("--intent-id")
     p_proactive.add_argument("--outbox-id")
     p_proactive.add_argument("--target-user-id")
@@ -262,6 +262,12 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_proactive.add_argument("--reason", default="manual CLI")
     p_proactive.add_argument("--status")
     p_proactive.add_argument("--limit", type=int, default=20)
+    p_proactive.add_argument("--dry-run", action="store_true")
+    p_proactive.add_argument("--delivery-mode", choices=["off", "command", "webhook", "stdout"])
+    p_proactive.add_argument("--delivery-command")
+    p_proactive.add_argument("--delivery-channel")
+    p_proactive.add_argument("--webhook-url")
+    p_proactive.add_argument("--delivery-timeout-seconds", type=float)
 
 
     p_execution = sub.add_parser("execution", help="Narrative execution simulator and serendipity")
@@ -715,6 +721,12 @@ def _handle_proactive_cli(rt: LifeEngineRuntime, args: Any) -> None:
         "reason": args.reason,
         "status": args.status,
         "limit": args.limit,
+        "dry_run": getattr(args, "dry_run", False),
+        "delivery_mode": getattr(args, "delivery_mode", None),
+        "delivery_command": getattr(args, "delivery_command", None),
+        "delivery_channel": getattr(args, "delivery_channel", None),
+        "webhook_url": getattr(args, "webhook_url", None),
+        "delivery_timeout_seconds": getattr(args, "delivery_timeout_seconds", None),
         "workers": getattr(args, "workers", None),
         "items": getattr(args, "items", None),
         "report_id": getattr(args, "report_id", None),
@@ -1287,6 +1299,8 @@ def slash_life(raw_args: str, **kwargs) -> str:
                 if len(rest) >= 2:
                     payload["intent_id"] = rest[1]
                 return format_result(rt.proactive("evaluate", **payload))
+            if rest[0] in {"deliver", "delivery", "dispatch"}:
+                return format_result(rt.proactive("deliver"))
             if rest[0] in {"send", "sent"} and len(rest) >= 2:
                 return format_result(rt.proactive("send", outbox_id=rest[1], manual=True))
             if rest[0] == "suppress" and len(rest) >= 2:

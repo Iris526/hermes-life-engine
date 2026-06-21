@@ -192,6 +192,7 @@ from .collection_flow import (
 )
 
 from .invariants import run_doctor as run_invariant_doctor
+from .delivery import deliver_queued_outbox, delivery_config_status
 from .meals import (
     create_meal_record,
     list_meals,
@@ -2628,6 +2629,14 @@ class LifeEngineRuntime:
 
     def proactive(self, action: str = "list", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
                   session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """管理主动意图、outbox 以及外部投递。
+
+        输入来自 life_proactive 工具、CLI 或 heartbeat 脚本；create/evaluate/send/
+        suppress/expire 仍走 LifeOps 事务和 receipt，deliver 是服务器运维侧副作用：
+        它读取 queued outbox、调用已配置的 command/webhook/stdout，成功后再标记
+        sent。deliver 不应在其它 LifeOps 大事务内部调用，失败时保留 queued outbox
+        供下次重试，并通过 proactive_deliveries 留审计记录。
+        """
         if owner_kind != "agent":
             raise ValueError("proactive operations are only valid for agent self-life")
         if action in {"list", "intents"}:
@@ -2652,6 +2661,17 @@ class LifeEngineRuntime:
         if action == "outbox":
             with transaction(self.conn):
                 return {"ok": True, "outbox": list_outbox(self.conn, owner_id, status=payload.get("status"), limit=int(payload.get("limit", 20)))}
+        if action in {"deliver", "delivery", "dispatch"}:
+            delivery_payload = dict(payload)
+            limit = int(delivery_payload.pop("limit", 10))
+            dry_run = bool(delivery_payload.pop("dry_run", False))
+            return deliver_queued_outbox(
+                self.conn,
+                owner_id,
+                limit=limit,
+                dry_run=dry_run,
+                **delivery_payload,
+            )
         if action in {"state", "states"}:
             with transaction(self.conn):
                 if payload.get("target_user_id") or payload.get("user_id"):
@@ -3368,7 +3388,8 @@ class LifeEngineRuntime:
                     "life_journal", "trace_runs", "trace_spans", "commit_receipts",
                     "resource_definitions", "resource_accounts", "resource_ledger",
                     "events", "schedule_blocks", "wake_jobs", "truth_source_reads",
-                    "goals", "autonomy_decisions", "proactive_intents",
+                    "goals", "autonomy_decisions", "proactive_intents", "proactive_outbox",
+                    "proactive_evaluations", "proactive_deliveries", "agent_user_proactive_state",
                     "execution_decisions", "serendipity_events", "memory_vec", "life_invariant_checks", "schema_migrations", "install_checks", "final_gate_reports", "final_gate_feedback_queue", "trace_coverage_reports", "acceptance_reports", "api_freeze_snapshots", "event_state_transitions", "schedule_block_state_transitions", "action_state_transitions", "agent_realtime_state", "agent_state_snapshots", "dream_runs", "dream_audit_findings", "dream_entries", "dream_repair_runs",
     "sleep_day_states", "sleep_recovery_plans", "delayed_reply_digests", "dream_repair_policies",
                 ]
@@ -3494,6 +3515,28 @@ class LifeEngineRuntime:
                         (owner_id,),
                     ).fetchone()[0]
                     add("proactive_queue", "warn" if queued_outbox > 20 else "ok", f"pending_intents={pending_intents}, queued_outbox={queued_outbox}", pending_intents=pending_intents, queued_outbox=queued_outbox)
+                    delivery_cfg = delivery_config_status()
+                    recent_failed_deliveries = self.conn.execute(
+                        "SELECT COUNT(*) FROM proactive_deliveries WHERE agent_id=? AND status='failed' AND created_at >= datetime('now','-24 hours')",
+                        (owner_id,),
+                    ).fetchone()[0]
+                    if queued_outbox and not delivery_cfg.get("enabled"):
+                        delivery_status = "error"
+                        delivery_msg = "queued proactive outbox exists but no delivery adapter is configured"
+                    elif recent_failed_deliveries:
+                        delivery_status = "warn"
+                        delivery_msg = f"{recent_failed_deliveries} proactive delivery attempt(s) failed in the last 24h"
+                    else:
+                        delivery_status = "ok"
+                        delivery_msg = "proactive delivery configured" if delivery_cfg.get("enabled") else "delivery disabled and no queued outbox"
+                    add(
+                        "proactive_delivery",
+                        delivery_status,
+                        delivery_msg,
+                        config=delivery_cfg,
+                        queued_outbox=queued_outbox,
+                        recent_failed_deliveries=recent_failed_deliveries,
+                    )
 
                 try:
                     from pathlib import Path
