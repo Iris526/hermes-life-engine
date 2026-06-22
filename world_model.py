@@ -17,7 +17,23 @@ WORLD_SCOPE_ID = "__world__"
 
 _SCOPE_KINDS = {"world", "region", "place"}
 
-_DEFAULT_MAP_CANVAS = {"width": 100, "height": 100, "unit": "grid", "projection": "local_grid"}
+_DEFAULT_MAP_CANVAS = {
+    "width": 100,
+    "height": 100,
+    "unit": "grid",
+    "projection": "local_grid",
+    "title": "世界地图",
+    "background_color": "#15181c",
+}
+_DEFAULT_MAP_VIEWPORT = {
+    "min_zoom": 0.75,
+    "max_zoom": 6.0,
+    "default_zoom": 1.0,
+    "zoom_step": 1.25,
+    "pan_enabled": True,
+    "marking_enabled": True,
+}
+_DEFAULT_MAP_GRID = {"visible": True, "size": 10, "major_every": 5}
 _BUILDING_PLACE_TYPES = {"building", "home", "shop", "market", "shrine", "temple", "gate", "venue", "station"}
 _TERRAIN_LABELS = {
     "urban": "城区",
@@ -30,6 +46,16 @@ _TERRAIN_LABELS = {
     "mountain": "山地",
     "plain": "平原",
     "custom": "地形",
+}
+_MARKER_ROLE_LABELS = {
+    "place": "地点",
+    "important_building": "重要建筑",
+    "quest": "任务",
+    "danger": "危险",
+    "resource": "资源",
+    "camp": "营地",
+    "portal": "传送点",
+    "custom": "标记",
 }
 
 def _row(row) -> dict[str, Any]:
@@ -105,6 +131,16 @@ def _clamp_map_value(value: Any, default: float, minimum: float = 0.0, maximum: 
     return max(minimum, min(maximum, _as_float(value, default)))
 
 
+def _positive_map_value(value: Any, default: float, minimum: float = 1.0, maximum: float = 10000.0) -> float:
+    """读取地图画布/缩放等正数配置。
+
+    输入来自 profile.rules.map 的画布、网格或视口字段；输出是受限正数。调用方是
+    地图契约归一化流程。异常或越界值会回落/夹取，保证旧档案和手写配置不会让
+    WebUI 地图崩溃。
+    """
+    return _clamp_map_value(value, default, minimum, maximum)
+
+
 def _nested_map_config(value: dict[str, Any] | None) -> dict[str, Any]:
     """读取记录中的 map 子结构。
 
@@ -116,6 +152,161 @@ def _nested_map_config(value: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     nested = value.get("map")
     return dict(nested) if isinstance(nested, dict) else {}
+
+
+def _map_canvas(map_cfg: dict[str, Any]) -> dict[str, Any]:
+    """生成地图画布结构。
+
+    输入是 profile.rules.map；输出是 WebUI 与上下文共享的 canvas。width/height 是
+    地图坐标系范围，不是 CSS 像素；所有区域、路线、标记都在这个坐标系内解释。
+    调用方是 map_state；无副作用。
+    """
+    canvas = dict(_DEFAULT_MAP_CANVAS)
+    canvas["width"] = _positive_map_value(map_cfg.get("width"), _DEFAULT_MAP_CANVAS["width"], 10.0)
+    canvas["height"] = _positive_map_value(map_cfg.get("height"), _DEFAULT_MAP_CANVAS["height"], 10.0)
+    for key in ("unit", "projection", "title", "background_color"):
+        if map_cfg.get(key) is not None:
+            canvas[key] = map_cfg.get(key)
+    return canvas
+
+
+def _map_viewport(map_cfg: dict[str, Any], canvas: dict[str, Any]) -> dict[str, Any]:
+    """生成地图视口能力结构。
+
+    输入是 profile.rules.map.viewport 与 canvas；输出描述默认缩放、缩放上下限、默认
+    中心点和交互开关。调用方是 WebUI 地图渲染器；它只表达能力，不保存用户临时
+    pan/zoom 状态。
+    """
+    raw = map_cfg.get("viewport") if isinstance(map_cfg.get("viewport"), dict) else {}
+    viewport = dict(_DEFAULT_MAP_VIEWPORT)
+    viewport["min_zoom"] = _positive_map_value(raw.get("min_zoom"), viewport["min_zoom"], 0.1, 20.0)
+    viewport["max_zoom"] = max(
+        viewport["min_zoom"],
+        _positive_map_value(raw.get("max_zoom"), viewport["max_zoom"], viewport["min_zoom"], 50.0),
+    )
+    viewport["default_zoom"] = _clamp_map_value(
+        raw.get("default_zoom"),
+        viewport["default_zoom"],
+        viewport["min_zoom"],
+        viewport["max_zoom"],
+    )
+    viewport["zoom_step"] = _positive_map_value(raw.get("zoom_step"), viewport["zoom_step"], 1.01, 4.0)
+    center = raw.get("default_center") if isinstance(raw.get("default_center"), dict) else {}
+    viewport["default_center"] = {
+        "x": _clamp_map_value(center.get("x"), canvas["width"] / 2, 0.0, canvas["width"]),
+        "y": _clamp_map_value(center.get("y"), canvas["height"] / 2, 0.0, canvas["height"]),
+    }
+    viewport["pan_enabled"] = bool(raw.get("pan_enabled", viewport["pan_enabled"]))
+    viewport["marking_enabled"] = bool(raw.get("marking_enabled", viewport["marking_enabled"]))
+    return viewport
+
+
+def _map_grid(map_cfg: dict[str, Any], canvas: dict[str, Any]) -> dict[str, Any]:
+    """生成地图网格配置。
+
+    输入是 profile.rules.map.grid；输出是可渲染网格设置。调用方是 WebUI SVG 地图。
+    size 的单位与 canvas 一致，默认按较短边的十分之一生成，避免任意画布尺寸下
+    网格过密或过疏。
+    """
+    raw = map_cfg.get("grid") if isinstance(map_cfg.get("grid"), dict) else {}
+    default_size = max(1.0, min(canvas["width"], canvas["height"]) / 10.0)
+    return {
+        "visible": bool(raw.get("visible", _DEFAULT_MAP_GRID["visible"])),
+        "size": _positive_map_value(raw.get("size"), default_size, 0.1, max(canvas["width"], canvas["height"])),
+        "major_every": int(_positive_map_value(raw.get("major_every"), _DEFAULT_MAP_GRID["major_every"], 1.0, 20.0)),
+    }
+
+
+def _iter_map_records(raw: Any) -> list[dict[str, Any]]:
+    """把 list/dict 形式的地图配置规整成对象列表。
+
+    输入来自 rules.map.assets、image_layers、routes 等用户可编辑字段；输出是 dict
+    列表。调用方只读这些对象；非法项会被跳过以保持兼容。
+    """
+    if isinstance(raw, dict):
+        items = []
+        for key, value in raw.items():
+            if isinstance(value, dict):
+                items.append({"id": key, **value})
+        return items
+    if isinstance(raw, list):
+        return [dict(item) for item in raw if isinstance(item, dict)]
+    return []
+
+
+def _map_assets(map_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """生成地图图片资源引用列表。
+
+    输入是 profile.rules.map.assets 或兼容的单底图字段；输出为 asset 结构，包含
+    id/name/kind/href/path。href 可以是 URL、/static 路径、data:image 或交给
+    WebUI /api/asset 解析的本地资源路径。该函数不读文件、不校验网络，只归一化
+    引用契约。
+    """
+    assets: list[dict[str, Any]] = []
+    for idx, asset in enumerate(_iter_map_records(map_cfg.get("assets") or map_cfg.get("asset_refs"))):
+        asset_id = str(asset.get("id") or asset.get("key") or f"asset.{idx}")
+        href = asset.get("href") or asset.get("url") or asset.get("uri") or asset.get("path")
+        assets.append({
+            "id": asset_id,
+            "name": asset.get("name") or asset.get("label") or asset_id,
+            "kind": asset.get("kind") or "image",
+            "href": href,
+            "path": asset.get("path"),
+            "attribution": asset.get("attribution"),
+        })
+    background = map_cfg.get("background_image") or map_cfg.get("image") or map_cfg.get("asset_path")
+    if background and not any(asset.get("id") == "base_map" for asset in assets):
+        assets.insert(0, {"id": "base_map", "name": "底图", "kind": "image", "href": background, "path": background})
+    return assets
+
+
+def _rect_from_map_record(record: dict[str, Any], canvas: dict[str, Any]) -> dict[str, float]:
+    """从地图配置记录读取矩形范围。
+
+    输入是图片图层、地形层或路线附属 bounds；输出 x/y/width/height。调用方负责
+    把记录渲染到 canvas 坐标系。bounds 子结构和顶层字段都兼容。
+    """
+    bounds = record.get("bounds") if isinstance(record.get("bounds"), dict) else {}
+    merged = {**bounds, **record}
+    width = _clamp_map_value(_coord_value(merged, "width", canvas["width"]), canvas["width"], 0.1, canvas["width"])
+    height = _clamp_map_value(_coord_value(merged, "height", canvas["height"]), canvas["height"], 0.1, canvas["height"])
+    x = _clamp_map_value(_coord_value(merged, "x", 0.0), 0.0, 0.0, max(0.0, canvas["width"] - width))
+    y = _clamp_map_value(_coord_value(merged, "y", 0.0), 0.0, 0.0, max(0.0, canvas["height"] - height))
+    return {"x": x, "y": y, "width": width, "height": height}
+
+
+def _map_image_layers(map_cfg: dict[str, Any], assets: list[dict[str, Any]], canvas: dict[str, Any]) -> list[dict[str, Any]]:
+    """生成地图图片图层。
+
+    输入是 profile.rules.map.image_layers 和 assets；输出可按顺序渲染的 image layer。
+    当只配置了底图 asset 而没有显式 image_layers 时，自动生成铺满画布的 base layer。
+    调用方是 map_state；无文件读写副作用。
+    """
+    asset_by_id = {asset.get("id"): asset for asset in assets}
+    raw_layers = _iter_map_records(map_cfg.get("image_layers") or map_cfg.get("layers"))
+    if not raw_layers and assets:
+        base = assets[0]
+        raw_layers = [{"id": "base", "name": base.get("name") or "底图", "asset_id": base.get("id")}]
+    layers = []
+    for idx, layer in enumerate(raw_layers):
+        asset_id = layer.get("asset_id") or layer.get("asset") or layer.get("ref")
+        asset = asset_by_id.get(asset_id) if asset_id else {}
+        href = layer.get("href") or layer.get("url") or layer.get("uri") or layer.get("path") or asset.get("href")
+        if not href:
+            continue
+        rect = _rect_from_map_record(layer, canvas)
+        layers.append({
+            "id": layer.get("id") or layer.get("key") or f"image_layer.{idx}",
+            "name": layer.get("name") or layer.get("label") or asset.get("name") or "地图图层",
+            "asset_id": asset_id,
+            "href": href,
+            "opacity": _clamp_map_value(layer.get("opacity"), 1.0, 0.0, 1.0),
+            "blend_mode": layer.get("blend_mode") or "normal",
+            "order": int(_as_float(layer.get("order"), idx)),
+            "source": "profile.rules.map.image_layers",
+            **rect,
+        })
+    return sorted(layers, key=lambda item: item.get("order", 0))
 
 
 def _coord_value(data: dict[str, Any], key: str, default: float) -> float:
@@ -160,12 +351,12 @@ def _terrain_from_record(record: dict[str, Any], fallback: str = "custom") -> st
     return fallback
 
 
-def _region_shape(region: dict[str, Any], index: int, total: int) -> dict[str, Any]:
+def _region_shape(region: dict[str, Any], index: int, total: int, canvas: dict[str, Any]) -> dict[str, Any]:
     """把区域记录转换为地图地形块。
 
-    输入是解码后的 region 及其列表序号；输出包含 x/y/width/height/terrain 的绘图
-    结构。显式坐标来自 traits.map 或 traits；缺省时按序号生成稳定布局，保证
-    WebUI 仍有实际地图可显示，同时通过 explicit_position 标明是否人工定位。
+    输入是解码后的 region、列表序号和地图 canvas；输出包含 x/y/width/height/terrain
+    的绘图结构。显式坐标来自 traits.map 或 traits；缺省时按序号生成稳定布局，
+    保证 WebUI 仍有实际地图可显示，同时通过 explicit_position 标明是否人工定位。
     """
     traits = region.get("traits") if isinstance(region.get("traits"), dict) else {}
     map_cfg = _nested_map_config(traits)
@@ -173,14 +364,16 @@ def _region_shape(region: dict[str, Any], index: int, total: int) -> dict[str, A
     columns = max(1, min(3, total or 1))
     col = index % columns
     row = index // columns
-    default_w = 88.0 / columns
-    default_h = 28.0
-    default_x = 6.0 + col * (default_w + 3.0)
-    default_y = 8.0 + row * (default_h + 5.0)
-    width = _clamp_map_value(_coord_value(traits, "width", default_w), default_w, 8.0, 96.0)
-    height = _clamp_map_value(_coord_value(traits, "height", default_h), default_h, 8.0, 96.0)
-    x = _clamp_map_value(_coord_value(traits, "x", default_x), default_x, 0.0, max(0.0, 100.0 - width))
-    y = _clamp_map_value(_coord_value(traits, "y", default_y), default_y, 0.0, max(0.0, 100.0 - height))
+    canvas_w = float(canvas.get("width") or _DEFAULT_MAP_CANVAS["width"])
+    canvas_h = float(canvas.get("height") or _DEFAULT_MAP_CANVAS["height"])
+    default_w = canvas_w * 0.88 / columns
+    default_h = canvas_h * 0.28
+    default_x = canvas_w * 0.06 + col * (default_w + canvas_w * 0.03)
+    default_y = canvas_h * 0.08 + row * (default_h + canvas_h * 0.05)
+    width = _clamp_map_value(_coord_value(traits, "width", default_w), default_w, max(1.0, canvas_w * 0.08), canvas_w)
+    height = _clamp_map_value(_coord_value(traits, "height", default_h), default_h, max(1.0, canvas_h * 0.08), canvas_h)
+    x = _clamp_map_value(_coord_value(traits, "x", default_x), default_x, 0.0, max(0.0, canvas_w - width))
+    y = _clamp_map_value(_coord_value(traits, "y", default_y), default_y, 0.0, max(0.0, canvas_h - height))
     terrain = _terrain_from_record(region, "urban")
     return {
         "id": region.get("id"),
@@ -199,27 +392,40 @@ def _region_shape(region: dict[str, Any], index: int, total: int) -> dict[str, A
 
 
 def _marker_from_place(place: dict[str, Any], index: int,
-                       region_shapes: dict[str, dict[str, Any]]) -> dict[str, Any]:
+                       region_shapes: dict[str, dict[str, Any]],
+                       canvas: dict[str, Any]) -> dict[str, Any]:
     """把地点记录转换为地图标记。
 
     输入是解码后的 place 和所属区域形状；输出是可绘制 marker。坐标优先来自
     coordinates.x/y，其次从所属 region 的矩形内稳定派生。调用方是 map_state；
-    副作用为无。
+    副作用为无。坐标解释使用 canvas 坐标系。
     """
     coordinates = place.get("coordinates") if isinstance(place.get("coordinates"), dict) else {}
     traits = place.get("traits") if isinstance(place.get("traits"), dict) else {}
     region = region_shapes.get(str(place.get("region_id") or "")) or {}
+    canvas_w = float(canvas.get("width") or _DEFAULT_MAP_CANVAS["width"])
+    canvas_h = float(canvas.get("height") or _DEFAULT_MAP_CANVAS["height"])
     explicit = any(key in coordinates or key in _nested_map_config(coordinates) for key in {"x", "y", "grid_x", "grid_y"})
     if explicit:
-        x = _clamp_map_value(_coord_value(coordinates, "x", 50.0), 50.0)
-        y = _clamp_map_value(_coord_value(coordinates, "y", 50.0), 50.0)
+        x = _clamp_map_value(_coord_value(coordinates, "x", canvas_w / 2), canvas_w / 2, 0.0, canvas_w)
+        y = _clamp_map_value(_coord_value(coordinates, "y", canvas_h / 2), canvas_h / 2, 0.0, canvas_h)
     elif region:
         slot = index % 9
-        x = _clamp_map_value(region.get("x", 8) + 5 + (slot % 3) * max(5.0, float(region.get("width", 25)) / 3), 50.0)
-        y = _clamp_map_value(region.get("y", 8) + 6 + (slot // 3) * max(5.0, float(region.get("height", 18)) / 3), 50.0)
+        x = _clamp_map_value(
+            region.get("x", canvas_w * 0.08) + canvas_w * 0.05 + (slot % 3) * max(canvas_w * 0.05, float(region.get("width", 25)) / 3),
+            canvas_w / 2,
+            0.0,
+            canvas_w,
+        )
+        y = _clamp_map_value(
+            region.get("y", canvas_h * 0.08) + canvas_h * 0.06 + (slot // 3) * max(canvas_h * 0.05, float(region.get("height", 18)) / 3),
+            canvas_h / 2,
+            0.0,
+            canvas_h,
+        )
     else:
-        x = _clamp_map_value(12 + (index % 8) * 10, 50.0)
-        y = _clamp_map_value(18 + (index // 8) * 12, 50.0)
+        x = _clamp_map_value(canvas_w * 0.12 + (index % 8) * canvas_w * 0.1, canvas_w / 2, 0.0, canvas_w)
+        y = _clamp_map_value(canvas_h * 0.18 + (index // 8) * canvas_h * 0.12, canvas_h / 2, 0.0, canvas_h)
     importance = _as_float(coordinates.get("importance", traits.get("importance", 50)), 50.0)
     place_type = str(place.get("place_type") or "place")
     is_building = place_type in _BUILDING_PLACE_TYPES or bool(traits.get("building_type") or coordinates.get("building_type"))
@@ -240,9 +446,54 @@ def _marker_from_place(place: dict[str, Any], index: int,
         "is_building": is_building,
         "is_important": is_important,
         "marker_role": marker_role,
+        "icon": coordinates.get("icon") or traits.get("icon"),
+        "asset_id": coordinates.get("asset_id") or traits.get("asset_id"),
+        "asset_url": coordinates.get("asset_url") or coordinates.get("image") or traits.get("asset_url"),
+        "color": coordinates.get("color") or traits.get("color"),
+        "size": _clamp_map_value(coordinates.get("size"), 1.0, 0.4, 3.0),
+        "label_position": coordinates.get("label_position") or "right",
         "explicit_position": explicit,
         "source": "place",
     }
+
+
+def _map_routes(map_cfg: dict[str, Any], canvas: dict[str, Any]) -> list[dict[str, Any]]:
+    """生成地图路线/道路结构。
+
+    输入是 profile.rules.map.routes；输出为可绘制折线。points 支持 [[x,y], ...] 或
+    {"x":..., "y":...} 列表。调用方是 WebUI 地图，主要用于道路、河道、边界线、
+    商道等 RPG 地图层。非法或不足两个点的路线会被跳过。
+    """
+    routes: list[dict[str, Any]] = []
+    canvas_w = float(canvas.get("width") or _DEFAULT_MAP_CANVAS["width"])
+    canvas_h = float(canvas.get("height") or _DEFAULT_MAP_CANVAS["height"])
+    for idx, route in enumerate(_iter_map_records(map_cfg.get("routes") or map_cfg.get("paths"))):
+        points = []
+        for point in route.get("points") or []:
+            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                x, y = point[0], point[1]
+            elif isinstance(point, dict):
+                x, y = point.get("x"), point.get("y")
+            else:
+                continue
+            points.append({
+                "x": _clamp_map_value(x, 0.0, 0.0, canvas_w),
+                "y": _clamp_map_value(y, 0.0, 0.0, canvas_h),
+            })
+        if len(points) < 2:
+            continue
+        role = str(route.get("role") or route.get("route_type") or "road")
+        routes.append({
+            "id": route.get("id") or route.get("key") or f"route.{idx}",
+            "name": route.get("name") or route.get("label") or "路线",
+            "role": role,
+            "points": points,
+            "width": _clamp_map_value(route.get("width"), 1.0, 0.2, 8.0),
+            "color": route.get("color"),
+            "dash": route.get("dash"),
+            "source": "profile.rules.map.routes",
+        })
+    return routes
 
 
 def _actor_marker(markers: list[dict[str, Any]], current_location: dict[str, Any] | None,
@@ -284,41 +535,51 @@ def map_state(profiles: list[dict[str, Any]], regions: list[dict[str, Any]], pla
     """生成结构化世界地图。
 
     输入是已解码的世界档案、区域、地点，以及可选当前 location；输出是 WebUI 和
-    context 可共享的地图对象，包括画布、地形层、区域形状、地点/建筑标记和明灯
-    当前位置标记。函数不写数据库；地形与坐标来自结构字段：
+    context 可共享的地图对象，包括画布、视口能力、网格、图片资源、图片图层、地形
+    层、路线、区域形状、地点/建筑标记和明灯当前位置标记。函数不写数据库；地形、
+    坐标、图片引用和交互能力来自结构字段：
     profile.rules.map、region.traits.map、place.coordinates。
     """
     profile_rules = profiles[0].get("rules") if profiles and isinstance(profiles[0].get("rules"), dict) else {}
     map_cfg = _nested_map_config(profile_rules)
-    canvas = {
-        **_DEFAULT_MAP_CANVAS,
-        **{k: map_cfg.get(k) for k in ("width", "height", "unit", "projection", "title") if map_cfg.get(k) is not None},
-    }
+    canvas = _map_canvas(map_cfg)
+    viewport = _map_viewport(map_cfg, canvas)
+    grid = _map_grid(map_cfg, canvas)
+    assets = _map_assets(map_cfg)
+    image_layers = _map_image_layers(map_cfg, assets, canvas)
+    routes = _map_routes(map_cfg, canvas)
     terrain_layers: list[dict[str, Any]] = []
     for idx, layer in enumerate(map_cfg.get("terrain_layers") or []):
         if not isinstance(layer, dict):
             continue
         terrain = str(layer.get("terrain") or layer.get("key") or "custom")
+        rect = _rect_from_map_record(layer, canvas)
         terrain_layers.append({
             "id": layer.get("id") or layer.get("key") or f"terrain.{idx}",
             "name": layer.get("name") or layer.get("label") or _TERRAIN_LABELS.get(terrain, terrain),
             "terrain": terrain,
             "terrain_label": _TERRAIN_LABELS.get(terrain, terrain),
-            "x": _clamp_map_value(layer.get("x"), 0.0),
-            "y": _clamp_map_value(layer.get("y"), 0.0),
-            "width": _clamp_map_value(layer.get("width"), 100.0, 1.0, 100.0),
-            "height": _clamp_map_value(layer.get("height"), 100.0, 1.0, 100.0),
+            **rect,
             "source": "profile.rules.map.terrain_layers",
         })
 
-    region_shapes = [_region_shape(region, i, len(regions)) for i, region in enumerate(regions)]
+    region_shapes = [_region_shape(region, i, len(regions), canvas) for i, region in enumerate(regions)]
     region_shape_by_id = {str(r.get("id")): r for r in region_shapes if r.get("id")}
-    markers = [_marker_from_place(place, i, region_shape_by_id) for i, place in enumerate(places)]
+    markers = [_marker_from_place(place, i, region_shape_by_id, canvas) for i, place in enumerate(places)]
     terrains = terrain_layers + region_shapes
     actor = _actor_marker(markers, current_location, actor_label)
+    marker_roles = {"place": _MARKER_ROLE_LABELS["place"], "important_building": _MARKER_ROLE_LABELS["important_building"]}
+    for marker in markers:
+        role = marker.get("marker_role") or "place"
+        marker_roles[role] = _MARKER_ROLE_LABELS.get(role, role)
     return {
         "canvas": canvas,
+        "viewport": viewport,
+        "grid": grid,
+        "assets": assets,
+        "image_layers": image_layers,
         "terrain": terrains,
+        "routes": routes,
         "regions": region_shapes,
         "markers": markers,
         "actor": actor,
@@ -327,13 +588,12 @@ def map_state(profiles: list[dict[str, Any]], regions: list[dict[str, Any]], pla
                 {"terrain": terrain, "label": label}
                 for terrain, label in sorted({t.get("terrain"): t.get("terrain_label") for t in terrains}.items())
             ],
-            "marker_roles": {
-                "place": "地点",
-                "important_building": "重要建筑",
-            },
+            "marker_roles": marker_roles,
         },
         "counts": {
             "terrain": len(terrains),
+            "image_layers": len(image_layers),
+            "routes": len(routes),
             "markers": len(markers),
             "important_markers": len([m for m in markers if m.get("is_important")]),
         },

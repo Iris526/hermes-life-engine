@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Guiming outskirts map">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#342f23"/>
+      <stop offset="0.55" stop-color="#222923"/>
+      <stop offset="1" stop-color="#17151d"/>
+    </linearGradient>
+    <pattern id="paper" width="8" height="8" patternUnits="userSpaceOnUse">
+      <path d="M0 7 L8 1" stroke="#e8d28a" stroke-opacity=".08" stroke-width=".45"/>
+      <path d="M2 0 L8 6" stroke="#00d4ff" stroke-opacity=".045" stroke-width=".35"/>
+    </pattern>
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="1.2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="100" height="100" fill="url(#bg)"/>
+  <rect width="100" height="100" fill="url(#paper)" opacity=".8"/>
+  <path d="M3 73 C16 68 28 75 42 71 C57 66 73 72 96 67 L96 84 C76 86 59 83 43 87 C29 90 16 84 4 88 Z" fill="#2f7180" opacity=".58"/>
+  <path d="M18 18 H76 V66 H18 Z" fill="#59615e" opacity=".58"/>
+  <path d="M24 26 H69 V58 H24 Z" fill="#2f3338" opacity=".36"/>
+  <path d="M35 42 C43 31 54 30 66 38" fill="none" stroke="#c6a757" stroke-opacity=".45" stroke-width="1.3" stroke-linecap="round"/>
+  <path d="M36 42 L43 34 L58 58" fill="none" stroke="#e7d08a" stroke-opacity=".44" stroke-width=".8" stroke-linecap="round" stroke-dasharray="2 1.5"/>
+  <g filter="url(#softGlow)">
+    <circle cx="43" cy="34" r="2.4" fill="#c6a757" opacity=".8"/>
+    <circle cx="36" cy="42" r="1.8" fill="#ff4e3d" opacity=".8"/>
+  </g>
+  <path d="M0 0 H100 V100 H0 Z" fill="none" stroke="#c6a757" stroke-opacity=".22" stroke-width=".8"/>
+</svg>

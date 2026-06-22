@@ -14,6 +14,20 @@ let reloadSerial = Date.now();
 let soundOn = true;
 let audioCtx = null;
 
+// 世界地图交互状态。作用域仅限当前 WebUI 页面生命周期；数据源来自 snapshotData.world_model.map，
+// 临时 viewBox/mark/settings 不落库，保存标记或设定时才通过 worldAction 写入 LifeEngine。
+let worldMapState = {
+  mapKey: null,
+  viewBox: null,
+  markMode: false,
+  dragging: false,
+  dragStart: null,
+  selectedMarkerId: null,
+  hoverPoint: null,
+  pendingMarker: null,
+  settingsOpen: false,
+};
+
 // 程序化音效(WebAudio,无需素材)。需用户手势后才能发声。
 function blip(kind) {
   if (!soundOn) return;
@@ -838,8 +852,8 @@ function promptWorldValue(label, fallback = "", required = false) {
   return value;
 }
 
-// 读取地图坐标输入；空值保留为空，数字值限制在 0..100 画布内。
-function promptWorldNumber(label, fallback = "", required = false) {
+// 读取世界观数字输入；空值保留为空，坐标/尺寸按当前地图画布范围限制。
+function promptWorldNumber(label, fallback = "", required = false, minimum = 0, maximum = 100) {
   const raw = promptWorldValue(label, fallback == null ? "" : String(fallback), required);
   if (raw === null) return null;
   if (!raw && !required) return "";
@@ -848,7 +862,7 @@ function promptWorldNumber(label, fallback = "", required = false) {
     showToast(`${label} 必须是数字`, "warn");
     return null;
   }
-  return Math.max(0, Math.min(100, value));
+  return Math.max(minimum, Math.min(maximum, value));
 }
 
 // 把用户输入合并回原有结构字段，避免编辑世界地图时擦掉其它 worldview 扩展。
@@ -858,6 +872,27 @@ function mergeMapFields(base = {}, fields = {}) {
     if (value !== "" && value != null) map[key] = value;
   });
   return { ...base, map };
+}
+
+// 兼容 list/dict 两种世界地图配置列表；用于保留用户已有图片层、资源和路线。
+function normalizeWorldMapRecords(raw = []) {
+  if (Array.isArray(raw)) return raw.filter(item => item && typeof item === "object").map(item => ({ ...item }));
+  if (raw && typeof raw === "object") {
+    return Object.entries(raw)
+      .filter(([, value]) => value && typeof value === "object")
+      .map(([id, value]) => ({ id, ...value }));
+  }
+  return [];
+}
+
+// 按 id 覆盖一条地图配置记录；调用方是世界档案编辑器，避免重建底图时丢失其它图层。
+function upsertWorldMapRecord(raw = [], entry = {}) {
+  const records = normalizeWorldMapRecords(raw);
+  const id = entry.id || entry.key;
+  const index = records.findIndex(item => item.id === id || item.key === id);
+  if (index >= 0) records[index] = { ...records[index], ...entry };
+  else records.push(entry);
+  return records;
 }
 
 function promptWorldScope(item = {}) {
@@ -881,9 +916,13 @@ async function worldEdit(kind, objectId = null) {
     showToast("找不到要编辑的世界对象", "warn");
     return;
   }
+  const mapCanvas = snapshotData.world_model?.map?.canvas || {};
+  const mapWidth = Number(mapCanvas.width) || 100;
+  const mapHeight = Number(mapCanvas.height) || 100;
   let action = "";
   let payload = {};
   if (kind === "profile") {
+    const mapCfg = item.rules?.map || {};
     const key = promptWorldValue("档案 key", item.key || "default", true);
     if (key === null) return;
     const title = promptWorldValue("档案标题", item.title || key, true);
@@ -892,20 +931,69 @@ async function worldEdit(kind, objectId = null) {
     if (summary === null) return;
     const background = promptWorldValue("背景正文", item.background_text || "");
     if (background === null) return;
-    const mapTitle = promptWorldValue("地图标题", item.rules?.map?.title || title || "世界地图");
+    const mapTitle = promptWorldValue("地图标题", mapCfg.title || title || "世界地图");
     if (mapTitle === null) return;
+    const width = promptWorldNumber("地图画布宽度", mapCfg.width ?? 100, true, 10, 10000);
+    if (width === null) return;
+    const height = promptWorldNumber("地图画布高度", mapCfg.height ?? 100, true, 10, 10000);
+    if (height === null) return;
+    const unit = promptWorldValue("地图单位", mapCfg.unit || "grid");
+    if (unit === null) return;
+    const projection = promptWorldValue("地图投影/坐标系", mapCfg.projection || "local_grid");
+    if (projection === null) return;
+    const baseLayer = normalizeWorldMapRecords(mapCfg.image_layers || mapCfg.layers).find(layer => layer.id === "base" || layer.asset_id === "base_map") || {};
+    const baseAsset = normalizeWorldMapRecords(mapCfg.assets || mapCfg.asset_refs).find(asset => asset.id === "base_map") || {};
+    const baseHref = promptWorldValue("底图资源路径/URL，可空", baseLayer.href || baseAsset.href || baseAsset.path || mapCfg.background_image || "");
+    if (baseHref === null) return;
+    const minZoom = promptWorldNumber("最小缩放", mapCfg.viewport?.min_zoom ?? 0.75, true, 0.1, 20);
+    if (minZoom === null) return;
+    const maxZoom = promptWorldNumber("最大缩放", mapCfg.viewport?.max_zoom ?? 6, true, minZoom, 50);
+    if (maxZoom === null) return;
+    const gridSize = promptWorldNumber("网格尺寸", mapCfg.grid?.size ?? Math.max(1, Math.min(width, height) / 10), true, 0.1, Math.max(width, height));
+    if (gridSize === null) return;
+    const nextMap = {
+      ...mapCfg,
+      title: mapTitle || title,
+      width,
+      height,
+      unit: unit || "grid",
+      projection: projection || "local_grid",
+      viewport: {
+        ...(mapCfg.viewport || {}),
+        min_zoom: minZoom,
+        max_zoom: maxZoom,
+        default_zoom: Math.max(minZoom, Math.min(maxZoom, Number(mapCfg.viewport?.default_zoom) || 1)),
+      },
+      grid: { ...(mapCfg.grid || {}), visible: true, size: gridSize },
+    };
+    if (baseHref) {
+      nextMap.assets = upsertWorldMapRecord(mapCfg.assets || mapCfg.asset_refs, {
+        id: "base_map",
+        name: "地图底图",
+        kind: "image",
+        href: baseHref,
+        path: baseHref,
+      });
+      nextMap.image_layers = upsertWorldMapRecord(mapCfg.image_layers || mapCfg.layers, {
+        id: "base",
+        name: "底图",
+        asset_id: "base_map",
+        href: baseHref,
+        x: 0,
+        y: 0,
+        width,
+        height,
+        opacity: 1,
+        order: -10,
+      });
+    }
     action = "profile";
     payload = {
       key,
       title,
       summary,
       background_text: background,
-      rules: mergeMapFields(item.rules || {}, {
-        title: mapTitle || title,
-        width: item.rules?.map?.width || 100,
-        height: item.rules?.map?.height || 100,
-        unit: item.rules?.map?.unit || "grid",
-      }),
+      rules: { ...(item.rules || {}), map: nextMap },
       evidence: item.evidence || {},
     };
   } else if (kind === "region") {
@@ -923,13 +1011,13 @@ async function worldEdit(kind, objectId = null) {
     if (content === null) return;
     const terrain = promptWorldValue("地形 terrain", item.traits?.map?.terrain || item.traits?.terrain || "urban");
     if (terrain === null) return;
-    const x = promptWorldNumber("地图 x 0..100", item.traits?.map?.x ?? 18, true);
+    const x = promptWorldNumber(`地图 x 0..${mapWidth}`, item.traits?.map?.x ?? mapWidth * 0.18, true, 0, mapWidth);
     if (x === null) return;
-    const y = promptWorldNumber("地图 y 0..100", item.traits?.map?.y ?? 18, true);
+    const y = promptWorldNumber(`地图 y 0..${mapHeight}`, item.traits?.map?.y ?? mapHeight * 0.18, true, 0, mapHeight);
     if (y === null) return;
-    const width = promptWorldNumber("地图宽度 0..100", item.traits?.map?.width ?? 50, true);
+    const width = promptWorldNumber(`地图宽度 0..${mapWidth}`, item.traits?.map?.width ?? mapWidth * 0.5, true, 1, mapWidth);
     if (width === null) return;
-    const height = promptWorldNumber("地图高度 0..100", item.traits?.map?.height ?? 36, true);
+    const height = promptWorldNumber(`地图高度 0..${mapHeight}`, item.traits?.map?.height ?? mapHeight * 0.36, true, 1, mapHeight);
     if (height === null) return;
     action = "region";
     payload = {
@@ -960,9 +1048,9 @@ async function worldEdit(kind, objectId = null) {
     if (content === null) return;
     const terrain = promptWorldValue("地形 terrain", item.coordinates?.terrain || item.traits?.terrain || "urban");
     if (terrain === null) return;
-    const x = promptWorldNumber("地图 x 0..100", item.coordinates?.x ?? 50, true);
+    const x = promptWorldNumber(`地图 x 0..${mapWidth}`, item.coordinates?.x ?? mapWidth / 2, true, 0, mapWidth);
     if (x === null) return;
-    const y = promptWorldNumber("地图 y 0..100", item.coordinates?.y ?? 50, true);
+    const y = promptWorldNumber(`地图 y 0..${mapHeight}`, item.coordinates?.y ?? mapHeight / 2, true, 0, mapHeight);
     if (y === null) return;
     const importance = promptWorldNumber("重要度 0..100", item.coordinates?.importance ?? item.traits?.importance ?? 50, true);
     if (importance === null) return;
@@ -972,6 +1060,10 @@ async function worldEdit(kind, objectId = null) {
     const isImportant = /^(y|yes|true|1|是|重要)$/i.test(importantRaw);
     const markerRole = promptWorldValue("地图标记 role", item.coordinates?.marker_role || (isImportant ? "important_building" : "place"));
     if (markerRole === null) return;
+    const icon = promptWorldValue("地图图标，可空", item.coordinates?.icon || "");
+    if (icon === null) return;
+    const markerAsset = promptWorldValue("标记图片资源路径/URL，可空", item.coordinates?.asset_url || item.coordinates?.image || "");
+    if (markerAsset === null) return;
     action = "place";
     payload = {
       key,
@@ -981,7 +1073,17 @@ async function worldEdit(kind, objectId = null) {
       parent_place_id: parentPlaceId || null,
       summary,
       content,
-      coordinates: mergeMapFields({ ...(item.coordinates || {}), x, y, terrain, importance, important: isImportant, marker_role: markerRole || "place" }, {}),
+      coordinates: mergeMapFields({
+        ...(item.coordinates || {}),
+        x,
+        y,
+        terrain,
+        importance,
+        important: isImportant,
+        marker_role: markerRole || "place",
+        icon: icon || undefined,
+        asset_url: markerAsset || undefined,
+      }, {}),
       traits: { ...(item.traits || {}), terrain, important: isImportant || Boolean(item.traits?.important) },
       evidence: item.evidence || {},
     };
@@ -1043,62 +1145,591 @@ async function archiveWorldObject(kind, objectId, label, cascade = false) {
   await worldAction("archive", { object_kind: kind, object_id: objectId, cascade });
 }
 
-// 渲染结构化世界地图；输入来自 world_model.map，输出 SVG 地形、地点和当前位置标记。
+// 规整地图数值输入。调用方是地图渲染和交互计算；输出始终是有限数字，避免坏数据进入 SVG 属性。
+function mapNum(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// 格式化 SVG 坐标。调用方是地图 SVG 字符串生成；输出短小数字字符串，降低 DOM 噪声。
+function fmtMapNum(value, digits = 2) {
+  const n = mapNum(value, 0);
+  const fixed = n.toFixed(digits);
+  return fixed.replace(/\.?0+$/, "");
+}
+
+// 读取地图画布配置。输入来自 world_model.map.canvas；输出是 WebUI 坐标系和标题/单位显示的唯一来源。
+function worldMapCanvas(map = {}) {
+  const canvas = map.canvas || {};
+  return {
+    width: Math.max(10, mapNum(canvas.width, 100)),
+    height: Math.max(10, mapNum(canvas.height, 100)),
+    title: canvas.title || "世界地图",
+    unit: canvas.unit || "grid",
+    backgroundColor: canvas.background_color || "#15181c",
+  };
+}
+
+// 生成地图视口状态 key。画布身份变化时调用方会重置 pan/zoom，避免旧视角套到新地图。
+function worldMapKey(map = {}) {
+  const canvas = worldMapCanvas(map);
+  return `${canvas.title}:${canvas.width}:${canvas.height}`;
+}
+
+// 限制地图视口边界。输入是临时 viewBox；输出不会越过 canvas/zoom 约束，供缩放和拖拽共用。
+function clampWorldMapViewBox(view, map = {}) {
+  const canvas = worldMapCanvas(map);
+  const width = Math.max(canvas.width / Math.max(1, mapNum(map.viewport?.max_zoom, 6)), Math.min(view.width, canvas.width / Math.max(0.1, mapNum(map.viewport?.min_zoom, 1))));
+  const height = Math.max(canvas.height / Math.max(1, mapNum(map.viewport?.max_zoom, 6)), Math.min(view.height, canvas.height / Math.max(0.1, mapNum(map.viewport?.min_zoom, 1))));
+  const minX = width >= canvas.width ? (canvas.width - width) / 2 : 0;
+  const maxX = width >= canvas.width ? minX : canvas.width - width;
+  const minY = height >= canvas.height ? (canvas.height - height) / 2 : 0;
+  const maxY = height >= canvas.height ? minY : canvas.height - height;
+  return {
+    x: Math.max(minX, Math.min(maxX, mapNum(view.x, 0))),
+    y: Math.max(minY, Math.min(maxY, mapNum(view.y, 0))),
+    width,
+    height,
+  };
+}
+
+// 计算默认视口。输入来自 map.viewport.default_*；输出用于首次渲染和“回到默认视角”。
+function defaultWorldMapViewBox(map = {}) {
+  const canvas = worldMapCanvas(map);
+  const viewport = map.viewport || {};
+  const zoom = Math.max(mapNum(viewport.min_zoom, 1), Math.min(mapNum(viewport.max_zoom, 6), mapNum(viewport.default_zoom, 1)));
+  const width = canvas.width / Math.max(0.1, zoom);
+  const height = canvas.height / Math.max(0.1, zoom);
+  const center = viewport.default_center || {};
+  return clampWorldMapViewBox({
+    x: mapNum(center.x, canvas.width / 2) - width / 2,
+    y: mapNum(center.y, canvas.height / 2) - height / 2,
+    width,
+    height,
+  }, map);
+}
+
+// 确保当前地图有可用视口。调用方是 renderWorldMap；只更新页面内临时状态，不写数据库。
+function ensureWorldMapView(map = {}) {
+  const key = worldMapKey(map);
+  if (worldMapState.mapKey !== key || !worldMapState.viewBox) {
+    worldMapState.mapKey = key;
+    worldMapState.viewBox = defaultWorldMapViewBox(map);
+    worldMapState.selectedMarkerId = null;
+    worldMapState.dragging = false;
+  } else {
+    worldMapState.viewBox = clampWorldMapViewBox(worldMapState.viewBox, map);
+  }
+  return worldMapState.viewBox;
+}
+
+// 规整地图图片引用。输入可为 URL、/static、data:image 或本地资产路径；输出给 SVG image.href。
+function safeMapImageHref(raw) {
+  const value = String(raw || "").trim();
+  if (!value || /^javascript:/i.test(value)) return "";
+  if (/^(https?:|data:image\/|blob:)/i.test(value) || value.startsWith("/")) return value;
+  return assetUrl(value);
+}
+
+// 把世界观 role/terrain 转成安全 CSS class token，避免用户输入破坏选择器或样式边界。
+function worldMapClassToken(value, fallback = "custom") {
+  return String(value || fallback).replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+// 生成地形样式类名。调用方是地形层渲染，保持 terrain key 与 CSS 调色分离。
+function worldMapTerrainClass(key) {
+  return `terrain_${worldMapClassToken(key)}`;
+}
+
+// 渲染地图网格层。输入来自 map.grid/canvas；输出 SVG line 组，过密时自动增大步长。
+function renderWorldMapGrid(map = {}) {
+  const canvas = worldMapCanvas(map);
+  const grid = map.grid || {};
+  if (grid.visible === false) return "";
+  let size = Math.max(0.1, mapNum(grid.size, Math.min(canvas.width, canvas.height) / 10));
+  const maxLines = 90;
+  while ((canvas.width / size) + (canvas.height / size) > maxLines) size *= 2;
+  const majorEvery = Math.max(1, Math.round(mapNum(grid.major_every, 5)));
+  const lines = [];
+  for (let x = 0, i = 0; x <= canvas.width + 0.0001; x += size, i += 1) {
+    lines.push(`<line class="${i % majorEvery === 0 ? "major" : ""}" x1="${fmtMapNum(x)}" y1="0" x2="${fmtMapNum(x)}" y2="${fmtMapNum(canvas.height)}"></line>`);
+  }
+  for (let y = 0, i = 0; y <= canvas.height + 0.0001; y += size, i += 1) {
+    lines.push(`<line class="${i % majorEvery === 0 ? "major" : ""}" x1="0" y1="${fmtMapNum(y)}" x2="${fmtMapNum(canvas.width)}" y2="${fmtMapNum(y)}"></line>`);
+  }
+  return `<g class="map-grid">${lines.join("")}</g>`;
+}
+
+// 渲染图片图层。输入来自 map.image_layers；输出 SVG image，不校验文件存在性，加载交给浏览器。
+function renderWorldMapImageLayers(map = {}) {
+  return (map.image_layers || []).map(layer => {
+    const href = safeMapImageHref(layer.href || layer.path || layer.url);
+    if (!href) return "";
+    return `<image class="map-image-layer" href="${escapeHtml(href)}" x="${fmtMapNum(layer.x)}" y="${fmtMapNum(layer.y)}"
+      width="${fmtMapNum(layer.width, 3)}" height="${fmtMapNum(layer.height, 3)}" opacity="${fmtMapNum(layer.opacity ?? 1, 3)}"
+      preserveAspectRatio="none"><title>${escapeHtml(layer.name || "地图图层")}</title></image>`;
+  }).join("");
+}
+
+// 渲染结构化地形层。输入来自 profile/region 派生结构；输出可点击标记之下的 SVG 区块。
+function renderWorldMapTerrain(map = {}) {
+  return (map.terrain || []).map(t => {
+    const x = mapNum(t.x), y = mapNum(t.y);
+    const w = Math.max(1, mapNum(t.width, 1));
+    const h = Math.max(1, mapNum(t.height, 1));
+    return `<g class="map-terrain ${worldMapTerrainClass(t.terrain)}">
+      <rect x="${fmtMapNum(x)}" y="${fmtMapNum(y)}" width="${fmtMapNum(w)}" height="${fmtMapNum(h)}" rx="1.2"></rect>
+      ${t.name ? `<text x="${fmtMapNum(x + Math.min(8, w * 0.06))}" y="${fmtMapNum(y + Math.min(8, h * 0.14))}" class="map-region-label">${escapeHtml(t.name)}</text>` : ""}
+    </g>`;
+  }).join("");
+}
+
+// 渲染路线/道路层。输入来自 profile.rules.map.routes；输出 SVG polyline，用于道路、河道或边界线。
+function renderWorldMapRoutes(map = {}) {
+  return (map.routes || []).map(route => {
+    const points = (route.points || []).map(p => `${fmtMapNum(p.x)},${fmtMapNum(p.y)}`).join(" ");
+    if (!points) return "";
+    const style = route.color ? ` style="--route-color:${escapeHtml(route.color)}"` : "";
+    const dash = route.dash ? ` stroke-dasharray="${escapeHtml(route.dash)}"` : "";
+    return `<polyline class="map-route route-${worldMapClassToken(route.role, "road")}" points="${points}"${dash}${style}>
+      <title>${escapeHtml(route.name || "路线")}</title>
+    </polyline>`;
+  }).join("");
+}
+
+// 渲染地点标记层。输入来自 world places；输出可点选的 SVG marker，并提供透明命中区。
+function renderWorldMapMarkers(map = {}) {
+  return (map.markers || []).map(m => {
+    const x = mapNum(m.x), y = mapNum(m.y);
+    const role = m.marker_role || "place";
+    const selected = worldMapState.selectedMarkerId === m.id ? " selected" : "";
+    const important = role === "important_building" || m.is_important;
+    const title = `${m.name || m.key || "地点"} · ${m.terrain || ""}`;
+    const label = escapeHtml(m.name || m.key || "");
+    const asset = safeMapImageHref(m.asset_url);
+    const size = Math.max(0.6, Math.min(3, mapNum(m.size, 1)));
+    const radius = important ? 3.2 * size : 2.2 * size;
+    const image = asset
+      ? `<image class="map-marker-image" href="${escapeHtml(asset)}" x="${fmtMapNum(-radius)}" y="${fmtMapNum(-radius)}" width="${fmtMapNum(radius * 2)}" height="${fmtMapNum(radius * 2)}" preserveAspectRatio="xMidYMid meet"></image>`
+      : "";
+    const icon = m.icon ? `<text class="map-marker-icon" x="0" y="1.4">${escapeHtml(m.icon)}</text>` : "";
+    const shape = important
+      ? `<path d="M0 ${fmtMapNum(-radius)} L${fmtMapNum(radius)} 0 L0 ${fmtMapNum(radius)} L${fmtMapNum(-radius)} 0 Z"></path>`
+      : `<circle r="${fmtMapNum(radius)}"></circle>`;
+    return `<g class="map-marker role-${worldMapClassToken(role, "place")}${important ? " important" : ""}${selected}" transform="translate(${fmtMapNum(x)} ${fmtMapNum(y)})" data-place-id="${escapeHtml(m.id || "")}">
+      <circle class="map-marker-hit" r="${fmtMapNum(Math.max(7, radius + 5))}"></circle>
+      ${image || shape}${icon}
+      <text x="${fmtMapNum(radius + 2)}" y="${fmtMapNum(-radius * 0.45)}">${label}</text>
+      <title>${escapeHtml(title)}</title>
+    </g>`;
+  }).join("");
+}
+
+// 渲染明灯当前位置。输入来自 map.actor；只展示结构化定位成功的地点，不从文本猜测位置。
+function renderWorldMapActor(map = {}) {
+  const actor = map.actor || {};
+  if (actor.status !== "located") return "";
+  const x = mapNum(actor.x), y = mapNum(actor.y);
+  return `<g class="map-actor" transform="translate(${fmtMapNum(x)} ${fmtMapNum(y)})">
+    <circle r="5.4"></circle><circle r="1.9"></circle>
+    <text x="6.2" y="2">${escapeHtml(actor.label || "明灯")}</text>
+    <title>${escapeHtml((actor.label || "明灯") + " · " + (actor.place_name || ""))}</title>
+  </g>`;
+}
+
+// 渲染待保存标记。输入来自 worldMapState.pendingMarker；输出只存在于前端，保存前不落库。
+function renderPendingWorldMapMarker() {
+  const pending = worldMapState.pendingMarker;
+  if (!pending) return "";
+  return `<g class="map-marker pending" transform="translate(${fmtMapNum(pending.x)} ${fmtMapNum(pending.y)})">
+    <circle class="map-marker-hit" r="8"></circle>
+    <circle r="2.8"></circle>
+    <text x="5" y="-2">${escapeHtml(pending.name || "新地点")}</text>
+  </g>`;
+}
+
+// 解析检查区当前地点。优先使用用户点选标记，其次回落到明灯所在地点，供 inspector 展示。
+function selectedWorldMapMarker(map = {}) {
+  const markers = map.markers || [];
+  return markers.find(m => m.id === worldMapState.selectedMarkerId) || markers.find(m => m.id === map.actor?.place_id) || null;
+}
+
+// 渲染地图检查区。根据 settings/pending/selected 状态输出设定表单、新标记表单或地点摘要。
+function renderWorldMapInspector(map = {}) {
+  if (worldMapState.settingsOpen) {
+    const profile = (snapshotData.world_model?.profiles || [])[0] || {};
+    const mapCfg = profile.rules?.map || {};
+    const canvas = worldMapCanvas(map);
+    const baseLayer = (map.image_layers || [])[0] || {};
+    const baseHref = baseLayer.href || map.assets?.[0]?.href || mapCfg.background_image || "";
+    return `<div class="world-map-inspector marker-editor">
+      <div class="world-map-inspector-title">地图设定</div>
+      <div class="world-map-form-grid">
+        <label>标题<input id="world-map-setting-title" value="${escapeHtml(canvas.title)}"></label>
+        <label>底图资源<input id="world-map-setting-base" value="${escapeHtml(baseHref)}"></label>
+        <label>宽度<input id="world-map-setting-width" type="number" min="10" max="10000" value="${escapeHtml(canvas.width)}"></label>
+        <label>高度<input id="world-map-setting-height" type="number" min="10" max="10000" value="${escapeHtml(canvas.height)}"></label>
+        <label>单位<input id="world-map-setting-unit" value="${escapeHtml(canvas.unit)}"></label>
+        <label>投影<input id="world-map-setting-projection" value="${escapeHtml(map.canvas?.projection || "local_grid")}"></label>
+        <label>最大缩放<input id="world-map-setting-max-zoom" type="number" min="1" max="50" step="0.1" value="${escapeHtml(map.viewport?.max_zoom ?? 6)}"></label>
+        <label>网格<input id="world-map-setting-grid" type="number" min="0.1" step="0.1" value="${escapeHtml(map.grid?.size ?? 10)}"></label>
+      </div>
+      <div class="world-map-inspector-actions">
+        <button class="world-mini-btn create" data-map-save-settings>保存设定</button>
+        <button class="world-mini-btn" data-map-cancel-settings>取消</button>
+      </div>
+    </div>`;
+  }
+  const pending = worldMapState.pendingMarker;
+  if (pending) {
+    const roles = ["place", "important_building", "quest", "danger", "resource", "camp", "portal"];
+    const options = roles.map(role => `<option value="${role}"${pending.role === role ? " selected" : ""}>${escapeHtml(role)}</option>`).join("");
+    return `<div class="world-map-inspector marker-editor">
+      <div class="world-map-inspector-title">新地图标记</div>
+      <div class="world-map-form-grid">
+        <label>名称<input id="world-map-mark-name" value="${escapeHtml(pending.name || "新地点")}"></label>
+        <label>Key<input id="world-map-mark-key" value="${escapeHtml(pending.key || "")}"></label>
+        <label>类型<select id="world-map-mark-role">${options}</select></label>
+        <label>地形<input id="world-map-mark-terrain" value="${escapeHtml(pending.terrain || "custom")}"></label>
+      </div>
+      <div class="world-map-inspector-meta">${fmtMapNum(pending.x)}, ${fmtMapNum(pending.y)}${pending.region_name ? ` · ${escapeHtml(pending.region_name)}` : ""}</div>
+      <div class="world-map-inspector-actions">
+        <button class="world-mini-btn create" data-map-save-marker>保存标记</button>
+        <button class="world-mini-btn" data-map-cancel-marker>取消</button>
+      </div>
+    </div>`;
+  }
+  const marker = selectedWorldMapMarker(map);
+  if (!marker) return '<div class="world-map-inspector muted">未选中标记</div>';
+  return `<div class="world-map-inspector">
+    <div class="world-map-inspector-title">${escapeHtml(marker.name || marker.key || "地点")}</div>
+    <div class="world-map-inspector-meta">${escapeHtml(marker.marker_role || "place")} · ${escapeHtml(marker.terrain || "terrain")} · ${fmtMapNum(marker.x)}, ${fmtMapNum(marker.y)}</div>
+    <div class="world-map-inspector-actions">${marker.id ? `<button class="world-mini-btn" onclick="worldEdit(${escapeJsArg("place")}, ${escapeJsArg(marker.id)})">编辑地点</button>` : ""}</div>
+  </div>`;
+}
+
+// 渲染地图图例。输入来自 map.legend 和 actor；输出 marker role 与明灯状态的紧凑说明。
+function renderWorldMapLegend(map = {}) {
+  const actor = map.actor || {};
+  const roles = map.legend?.marker_roles || {};
+  const roleLegend = Object.entries(roles).slice(0, 8)
+    .map(([role, label]) => `<span><i class="map-dot role-${worldMapClassToken(role, "place")}"></i>${escapeHtml(label)}</span>`)
+    .join("");
+  return `<div class="world-map-legend">
+    <span><i class="map-dot actor"></i>${escapeHtml(actor.status === "located" ? `${actor.label || "明灯"} · ${actor.place_name || ""}` : "明灯位置未知")}</span>
+    ${roleLegend}
+  </div>`;
+}
+
+// 执行地图缩放。输入是缩放倍率和可选锚点；副作用仅更新页面 viewBox 并重绘地图。
+function worldMapZoom(map = {}, factor = 1, anchor = null) {
+  const view = ensureWorldMapView(map);
+  const cx = anchor?.x ?? (view.x + view.width / 2);
+  const cy = anchor?.y ?? (view.y + view.height / 2);
+  const nextWidth = view.width / factor;
+  const nextHeight = view.height / factor;
+  const ratioX = (cx - view.x) / view.width;
+  const ratioY = (cy - view.y) / view.height;
+  worldMapState.viewBox = clampWorldMapViewBox({
+    x: cx - nextWidth * ratioX,
+    y: cy - nextHeight * ratioY,
+    width: nextWidth,
+    height: nextHeight,
+  }, map);
+  renderWorldMap(map);
+}
+
+// 适配整张地图。副作用是把临时 viewBox 重置为完整 canvas。
+function worldMapFit(map = {}) {
+  const canvas = worldMapCanvas(map);
+  worldMapState.viewBox = { x: 0, y: 0, width: canvas.width, height: canvas.height };
+  renderWorldMap(map);
+}
+
+// 回到默认视角。副作用是恢复 profile.rules.map.viewport 定义的默认 zoom/center。
+function worldMapHome(map = {}) {
+  worldMapState.viewBox = defaultWorldMapViewBox(map);
+  renderWorldMap(map);
+}
+
+// 把浏览器点击坐标转换为地图坐标。输入是 SVG 与 pointer/click 事件；输出 canvas 坐标点。
+function svgPointFromEvent(svg, event) {
+  const rect = svg.getBoundingClientRect();
+  const view = worldMapState.viewBox;
+  return {
+    x: view.x + ((event.clientX - rect.left) / rect.width) * view.width,
+    y: view.y + ((event.clientY - rect.top) / rect.height) * view.height,
+  };
+}
+
+// 查找点击点所在区域。输入是地图坐标；输出包含该点的 region，用于新标记自动归属。
+function regionAtMapPoint(map = {}, point = {}) {
+  return (map.regions || []).find(region => {
+    const x = mapNum(region.x), y = mapNum(region.y);
+    return point.x >= x && point.x <= x + mapNum(region.width) && point.y >= y && point.y <= y + mapNum(region.height);
+  }) || null;
+}
+
+// 在地图坐标处创建待保存标记。副作用只写入 pendingMarker 并重绘，实际持久化由保存按钮触发。
+async function createWorldMapMarkerAt(map = {}, point = {}) {
+  const region = regionAtMapPoint(map, point);
+  worldMapState.markMode = false;
+  worldMapState.pendingMarker = {
+    x: Number(point.x.toFixed(2)),
+    y: Number(point.y.toFixed(2)),
+    key: `map_marker_${Date.now()}`,
+    name: "新地点",
+    role: "place",
+    terrain: region?.terrain || "custom",
+    region_id: region?.id || null,
+    region_name: region?.name || null,
+  };
+  worldMapState.selectedMarkerId = null;
+  renderWorldMap(map);
+}
+
+// 保存待标记地点。输入来自内联表单和 pendingMarker；副作用是通过 worldAction 写入 world_places。
+async function savePendingWorldMapMarker() {
+  const pending = worldMapState.pendingMarker;
+  if (!pending) return;
+  const name = document.getElementById("world-map-mark-name")?.value.trim() || "";
+  const key = document.getElementById("world-map-mark-key")?.value.trim() || "";
+  const role = document.getElementById("world-map-mark-role")?.value || "place";
+  const terrain = document.getElementById("world-map-mark-terrain")?.value.trim() || pending.terrain || "custom";
+  if (!name || !key) {
+    showToast("标记名称和 key 不能为空", "warn");
+    return;
+  }
+  const important = role === "important_building";
+  worldMapState.pendingMarker = null;
+  await worldAction("place", {
+    key,
+    name,
+    place_type: important ? "building" : "map_marker",
+    region_id: pending.region_id || null,
+    summary: "从世界地图标记创建。",
+    coordinates: {
+      x: pending.x,
+      y: pending.y,
+      terrain,
+      marker_role: role || "place",
+      importance: important ? 85 : 45,
+      important,
+    },
+    traits: { terrain, important },
+  });
+}
+
+// 保存地图设定。输入来自内联设定表单；副作用是更新当前世界档案 rules.map。
+async function saveWorldMapSettings() {
+  const profile = (snapshotData.world_model?.profiles || [])[0];
+  if (!profile) {
+    showToast("需要先创建世界档案", "warn");
+    return;
+  }
+  const title = document.getElementById("world-map-setting-title")?.value.trim() || "世界地图";
+  const baseHref = document.getElementById("world-map-setting-base")?.value.trim() || "";
+  const width = Math.max(10, Math.min(10000, Number(document.getElementById("world-map-setting-width")?.value) || 100));
+  const height = Math.max(10, Math.min(10000, Number(document.getElementById("world-map-setting-height")?.value) || 100));
+  const unit = document.getElementById("world-map-setting-unit")?.value.trim() || "grid";
+  const projection = document.getElementById("world-map-setting-projection")?.value.trim() || "local_grid";
+  const maxZoom = Math.max(1, Math.min(50, Number(document.getElementById("world-map-setting-max-zoom")?.value) || 6));
+  const gridSize = Math.max(0.1, Math.min(Math.max(width, height), Number(document.getElementById("world-map-setting-grid")?.value) || 10));
+  const rules = profile.rules || {};
+  const mapCfg = rules.map || {};
+  const nextMap = {
+    ...mapCfg,
+    title,
+    width,
+    height,
+    unit,
+    projection,
+    viewport: {
+      ...(mapCfg.viewport || {}),
+      max_zoom: maxZoom,
+      default_zoom: Math.max(1, Math.min(maxZoom, Number(mapCfg.viewport?.default_zoom) || 1)),
+    },
+    grid: { ...(mapCfg.grid || {}), visible: true, size: gridSize },
+  };
+  if (baseHref) {
+    nextMap.assets = upsertWorldMapRecord(mapCfg.assets || mapCfg.asset_refs, {
+      id: "base_map",
+      name: "地图底图",
+      kind: "image",
+      href: baseHref,
+      path: baseHref,
+    });
+    nextMap.image_layers = upsertWorldMapRecord(mapCfg.image_layers || mapCfg.layers, {
+      id: "base",
+      name: "底图",
+      asset_id: "base_map",
+      href: baseHref,
+      x: 0,
+      y: 0,
+      width,
+      height,
+      opacity: 1,
+      order: -10,
+    });
+  }
+  worldMapState.settingsOpen = false;
+  await worldAction("profile", {
+    key: profile.key || "default",
+    title: profile.title || profile.key || "世界档案",
+    summary: profile.summary || "",
+    background_text: profile.background_text || "",
+    rules: { ...rules, map: nextMap },
+    evidence: profile.evidence || {},
+  });
+}
+
+// 绑定地图控件事件。调用方是 renderWorldMap；所有监听只作用于刚渲染出的地图 DOM。
+function bindWorldMapEvents(map = {}) {
+  const svg = document.getElementById("world-map-svg");
+  if (!svg) return;
+  const coord = document.getElementById("world-map-coords");
+  document.querySelectorAll("[data-map-action]").forEach(btn => {
+    btn.onclick = () => {
+      const action = btn.dataset.mapAction;
+      if (action === "zoom-in") worldMapZoom(map, mapNum(map.viewport?.zoom_step, 1.25));
+      if (action === "zoom-out") worldMapZoom(map, 1 / mapNum(map.viewport?.zoom_step, 1.25));
+      if (action === "fit") worldMapFit(map);
+      if (action === "home") worldMapHome(map);
+      if (action === "settings") {
+        worldMapState.settingsOpen = !worldMapState.settingsOpen;
+        worldMapState.pendingMarker = null;
+        renderWorldMap(map);
+      }
+      if (action === "mark") {
+        if (map.viewport?.marking_enabled === false) return;
+        worldMapState.markMode = !worldMapState.markMode;
+        worldMapState.settingsOpen = false;
+        renderWorldMap(map);
+      }
+    };
+  });
+  const saveSettingsBtn = document.querySelector("[data-map-save-settings]");
+  if (saveSettingsBtn) saveSettingsBtn.onclick = () => saveWorldMapSettings();
+  const cancelSettingsBtn = document.querySelector("[data-map-cancel-settings]");
+  if (cancelSettingsBtn) {
+    cancelSettingsBtn.onclick = () => {
+      worldMapState.settingsOpen = false;
+      renderWorldMap(map);
+    };
+  }
+  const saveMarkerBtn = document.querySelector("[data-map-save-marker]");
+  if (saveMarkerBtn) saveMarkerBtn.onclick = () => savePendingWorldMapMarker();
+  const cancelMarkerBtn = document.querySelector("[data-map-cancel-marker]");
+  if (cancelMarkerBtn) {
+    cancelMarkerBtn.onclick = () => {
+      worldMapState.pendingMarker = null;
+      renderWorldMap(map);
+    };
+  }
+  svg.querySelectorAll(".map-marker").forEach(marker => {
+    marker.addEventListener("click", event => {
+      event.stopPropagation();
+      worldMapState.selectedMarkerId = marker.dataset.placeId || null;
+      renderWorldMap(map);
+    });
+  });
+  svg.addEventListener("wheel", event => {
+    event.preventDefault();
+    const factor = event.deltaY < 0 ? mapNum(map.viewport?.zoom_step, 1.25) : 1 / mapNum(map.viewport?.zoom_step, 1.25);
+    worldMapZoom(map, factor, svgPointFromEvent(svg, event));
+  }, { passive: false });
+  svg.addEventListener("pointerdown", event => {
+    if (worldMapState.markMode) return;
+    if (map.viewport?.pan_enabled === false) return;
+    svg.setPointerCapture?.(event.pointerId);
+    worldMapState.dragging = true;
+    worldMapState.dragStart = { clientX: event.clientX, clientY: event.clientY, view: { ...worldMapState.viewBox } };
+  });
+  svg.addEventListener("pointermove", event => {
+    const point = svgPointFromEvent(svg, event);
+    if (coord) coord.textContent = `${fmtMapNum(point.x)}, ${fmtMapNum(point.y)}`;
+    if (!worldMapState.dragging || !worldMapState.dragStart) return;
+    const rect = svg.getBoundingClientRect();
+    const start = worldMapState.dragStart;
+    const dx = ((event.clientX - start.clientX) / rect.width) * start.view.width;
+    const dy = ((event.clientY - start.clientY) / rect.height) * start.view.height;
+    worldMapState.viewBox = clampWorldMapViewBox({ ...start.view, x: start.view.x - dx, y: start.view.y - dy }, map);
+    svg.setAttribute("viewBox", `${fmtMapNum(worldMapState.viewBox.x)} ${fmtMapNum(worldMapState.viewBox.y)} ${fmtMapNum(worldMapState.viewBox.width)} ${fmtMapNum(worldMapState.viewBox.height)}`);
+  });
+  const finishDrag = event => {
+    if (worldMapState.dragging) svg.releasePointerCapture?.(event.pointerId);
+    worldMapState.dragging = false;
+    worldMapState.dragStart = null;
+  };
+  svg.addEventListener("pointerup", finishDrag);
+  svg.addEventListener("pointercancel", finishDrag);
+  const createMarkerFromMapClick = event => {
+    if (!worldMapState.markMode || map.viewport?.marking_enabled === false) return;
+    if (event.target?.closest?.(".map-marker")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation?.();
+    createWorldMapMarkerAt(map, svgPointFromEvent(svg, event));
+  };
+  const canvasEl = document.querySelector(".world-map-canvas");
+  canvasEl?.addEventListener("click", createMarkerFromMapClick, true);
+  svg.addEventListener("click", createMarkerFromMapClick, true);
+  svg.querySelectorAll(".map-canvas-bg,.map-image-layer,.map-terrain rect").forEach(target => {
+    target.addEventListener("click", createMarkerFromMapClick);
+  });
+}
+
+// 渲染结构化世界地图；输入来自 world_model.map，输出可缩放、可平移、可标记的 RPG 地图视口。
 function renderWorldMap(map = {}) {
   const el = document.getElementById("world-map");
   if (!el) return;
   const terrain = map.terrain || [];
   const markers = map.markers || [];
-  const actor = map.actor || {};
-  if (!terrain.length && !markers.length) {
-    el.innerHTML = '<div class="empty-state">还没有地图坐标</div>';
+  const imageLayers = map.image_layers || [];
+  const routes = map.routes || [];
+  if (!terrain.length && !markers.length && !imageLayers.length && !routes.length) {
+    el.innerHTML = '<div class="empty-state">还没有地图坐标或底图资源</div>';
     return;
   }
-  const clamp = value => Math.max(0, Math.min(100, Number(value) || 0));
-  const terrainClass = key => `terrain_${String(key || "custom").replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-  const terrainSvg = terrain.map(t => {
-    const x = clamp(t.x), y = clamp(t.y);
-    const w = Math.max(1, Math.min(100 - x, Number(t.width) || 1));
-    const h = Math.max(1, Math.min(100 - y, Number(t.height) || 1));
-    return `<g class="map-terrain ${terrainClass(t.terrain)}">
-      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="1.2"></rect>
-      ${t.name ? `<text x="${x + 2}" y="${y + 5}" class="map-region-label">${escapeHtml(t.name)}</text>` : ""}
-    </g>`;
-  }).join("");
-  const markerSvg = markers.map(m => {
-    const x = clamp(m.x), y = clamp(m.y);
-    const title = `${m.name || m.key || "地点"} · ${m.terrain || ""}`;
-    if (m.marker_role === "important_building" || m.is_important) {
-      return `<g class="map-marker important" transform="translate(${x} ${y})">
-        <path d="M0 -2.8 L2.8 0 L0 2.8 L-2.8 0 Z"></path>
-        <text x="4" y="-3">${escapeHtml(m.name || m.key || "")}</text>
-        <title>${escapeHtml(title)}</title>
-      </g>`;
-    }
-    return `<g class="map-marker" transform="translate(${x} ${y})">
-      <circle r="1.8"></circle>
-      <text x="3.5" y="-2">${escapeHtml(m.name || m.key || "")}</text>
-      <title>${escapeHtml(title)}</title>
-    </g>`;
-  }).join("");
-  const actorSvg = actor.status === "located"
-    ? `<g class="map-actor" transform="translate(${clamp(actor.x)} ${clamp(actor.y)})">
-        <circle r="4.6"></circle><circle r="1.7"></circle>
-        <text x="5.5" y="2">${escapeHtml(actor.label || "明灯")}</text>
-        <title>${escapeHtml((actor.label || "明灯") + " · " + (actor.place_name || ""))}</title>
-      </g>`
-    : "";
-  const legend = [
-    ["map-dot actor", actor.status === "located" ? `${actor.label || "明灯"} · ${actor.place_name || ""}` : "明灯位置未知"],
-    ["map-dot important", "重要建筑"],
-    ["map-dot place", "地点"],
-  ].map(([cls, label]) => `<span><i class="${cls}"></i>${escapeHtml(label)}</span>`).join("");
-  el.innerHTML = `<div class="world-map-canvas">
-    <svg viewBox="0 0 100 100" role="img" aria-label="${escapeHtml(map.canvas?.title || "世界地图")}" preserveAspectRatio="none">
-      ${terrainSvg}${markerSvg}${actorSvg}
-    </svg>
-  </div>
-  <div class="world-map-legend">${legend}</div>`;
+  const canvas = worldMapCanvas(map);
+  const view = ensureWorldMapView(map);
+  const zoom = canvas.width / view.width;
+  const markDisabled = map.viewport?.marking_enabled === false;
+  const svg = [
+    renderWorldMapImageLayers(map),
+    renderWorldMapTerrain(map),
+    renderWorldMapRoutes(map),
+    renderWorldMapGrid(map),
+    renderWorldMapMarkers(map),
+    renderPendingWorldMapMarker(),
+    renderWorldMapActor(map),
+  ].join("");
+  el.innerHTML = `<div class="world-map-shell ${worldMapState.markMode ? "marking" : ""}">
+    <div class="world-map-toolbar">
+      <div class="world-map-title"><span>${escapeHtml(canvas.title)}</span><small>${fmtMapNum(canvas.width)}×${fmtMapNum(canvas.height)} ${escapeHtml(canvas.unit)}</small></div>
+      <div class="world-map-tools">
+        <button class="world-mini-btn" data-map-action="zoom-in" title="放大">＋</button>
+        <button class="world-mini-btn" data-map-action="zoom-out" title="缩小">－</button>
+        <button class="world-mini-btn" data-map-action="home" title="回到默认视角">⌂</button>
+        <button class="world-mini-btn" data-map-action="fit" title="适配整张地图">□</button>
+        <button class="world-mini-btn ${worldMapState.settingsOpen ? "active" : ""}" data-map-action="settings" title="地图画布和底图资源">设定</button>
+        <button class="world-mini-btn ${worldMapState.markMode ? "active" : ""}" data-map-action="mark" title="点击地图新增标记"${markDisabled ? " disabled" : ""}>标记</button>
+      </div>
+      <div class="world-map-readout"><span>${Math.round(zoom * 100)}%</span><span id="world-map-coords">—</span></div>
+    </div>
+    <div class="world-map-canvas" style="--map-bg:${escapeHtml(canvas.backgroundColor)}">
+      <svg id="world-map-svg" viewBox="${fmtMapNum(view.x)} ${fmtMapNum(view.y)} ${fmtMapNum(view.width)} ${fmtMapNum(view.height)}"
+        role="img" aria-label="${escapeHtml(canvas.title)}" preserveAspectRatio="xMidYMid meet">
+        <rect class="map-canvas-bg" x="0" y="0" width="${fmtMapNum(canvas.width)}" height="${fmtMapNum(canvas.height)}"></rect>
+        ${svg}
+      </svg>
+    </div>
+    <div class="world-map-footer">
+      ${renderWorldMapLegend(map)}
+      ${renderWorldMapInspector(map)}
+    </div>
+  </div>`;
+  bindWorldMapEvents(map);
 }
 
 function renderWorldModel() {

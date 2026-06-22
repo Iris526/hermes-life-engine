@@ -59,9 +59,20 @@ def _seed_world(rt: LifeEngineRuntime) -> dict[str, dict]:
                 "width": 100,
                 "height": 100,
                 "unit": "grid",
+                "viewport": {"min_zoom": 0.75, "max_zoom": 8, "default_zoom": 1.4, "default_center": {"x": 45, "y": 42}},
+                "grid": {"visible": True, "size": 10, "major_every": 5},
+                "assets": [
+                    {"id": "base_map", "name": "第七城近郊底图", "kind": "image", "href": "/static/assets/guiming-outskirts-map.svg"},
+                ],
+                "image_layers": [
+                    {"id": "base", "name": "底图", "asset_id": "base_map", "x": 0, "y": 0, "width": 100, "height": 100, "opacity": 0.9},
+                ],
                 "terrain_layers": [
                     {"key": "outer_waste", "name": "城外荒原", "terrain": "wasteland", "x": 0, "y": 0, "width": 100, "height": 100},
                     {"key": "storm_channel", "name": "风暴沟", "terrain": "water", "x": 4, "y": 70, "width": 92, "height": 12},
+                ],
+                "routes": [
+                    {"key": "lantern_road", "name": "明灯路", "role": "road", "points": [[36, 42], [43, 34], [58, 58]]},
                 ],
             },
         },
@@ -261,6 +272,11 @@ def test_world_map_has_terrain_buildings_and_actor_marker(tmp_path: Path) -> Non
     snap = LifeEngineReader(db).snapshot("agent", "default-agent")
     world_map = snap["world_model"]["map"]
     assert world_map["canvas"]["title"] == "第七城近郊图"
+    assert world_map["viewport"]["max_zoom"] == 8
+    assert world_map["grid"]["size"] == 10
+    assert world_map["assets"][0]["href"] == "/static/assets/guiming-outskirts-map.svg"
+    assert world_map["image_layers"][0]["asset_id"] == "base_map"
+    assert world_map["routes"][0]["name"] == "明灯路"
     assert any(t["terrain"] == "wasteland" for t in world_map["terrain"])
     assert any(t["terrain"] == "urban_ruins" and t["name"] == "第七城" for t in world_map["terrain"])
     assert any(m["id"] == seeded["shrine"]["id"] and m["marker_role"] == "important_building" for m in world_map["markers"])
