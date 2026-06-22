@@ -252,6 +252,19 @@ def life_social(args: dict, **kwargs) -> str:
     return _run(lambda rt: rt.social(action, owner_kind, owner_id, session_id, turn_id, **payload))
 
 
+def life_world(args: dict, **kwargs) -> str:
+    """结构化世界本体：档案、区域、地点、知识条目和势力影响。"""
+    owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
+    action = args.get("action", "summary")
+    session_id = kwargs.get("session_id") or args.get("session_id")
+    turn_id = kwargs.get("turn_id") or args.get("turn_id")
+    payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "user_id", "action", "session_id", "turn_id"}}
+    nested = payload.pop("payload", None)
+    if isinstance(nested, dict):
+        payload.update(nested)
+    return _run(lambda rt: rt.world(action, owner_kind, owner_id, session_id, turn_id, **payload))
+
+
 def life_campaign(args: dict, **kwargs) -> str:
     """Campaigns (资料片): register / seed / list / get / cancel a cross-week themed arc."""
     owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))

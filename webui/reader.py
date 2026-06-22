@@ -129,7 +129,20 @@ class LifeEngineReader:
     def owners(self) -> list[dict[str, str]]:
         owners: set[tuple[str, str]] = set()
         with self._connect() as conn:
-            for table in ["engine_control", "events", "schedule_blocks", "agent_realtime_state", "resource_accounts", "memories", "world_entities"]:
+            for table in [
+                "engine_control",
+                "events",
+                "schedule_blocks",
+                "agent_realtime_state",
+                "resource_accounts",
+                "memories",
+                "world_entities",
+                "world_profiles",
+                "world_regions",
+                "world_places",
+                "world_lore_entries",
+                "world_faction_presence",
+            ]:
                 if self._table_exists(conn, table):
                     try:
                         for r in conn.execute(f"SELECT DISTINCT owner_kind, owner_id FROM {table} WHERE owner_kind IS NOT NULL AND owner_id IS NOT NULL LIMIT 200"):
@@ -469,6 +482,139 @@ class LifeEngineReader:
                     "evaluations": len(evaluations),
                     "rumors": len(rumors),
                     "requests": len(requests),
+                },
+            }
+
+    def world_model(self, owner_kind: str, owner_id: str, limit: int = 80) -> dict[str, Any]:
+        """读取结构化世界本体给 WebUI 使用。
+
+        输入是 owner 与条数上限；输出按档案、区域、地点、知识条目和势力影响分组。
+        函数只读 SQLite，不解释世界观文本含义；文本字段作为内容展示，真实生效边界
+        由 key/id/scope/status 等结构字段表达。
+        """
+        empty = {
+            "profiles": [],
+            "regions": [],
+            "places": [],
+            "lore": [],
+            "faction_presence": [],
+            "counts": {
+                "profiles": 0,
+                "regions": 0,
+                "places": 0,
+                "lore": 0,
+                "faction_presence": 0,
+            },
+        }
+        with self._connect() as conn:
+            profiles: list[dict[str, Any]] = []
+            if self._table_exists(conn, "world_profiles"):
+                profiles = self._all(
+                    conn,
+                    """SELECT * FROM world_profiles
+                       WHERE owner_kind=? AND owner_id=? AND status='active'
+                       ORDER BY updated_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for item in profiles:
+                    item["rules"] = _safe_json(item.pop("rules_json", None), {})
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+
+            regions: list[dict[str, Any]] = []
+            if self._table_exists(conn, "world_regions"):
+                regions = self._all(
+                    conn,
+                    """SELECT * FROM world_regions
+                       WHERE owner_kind=? AND owner_id=? AND status='active'
+                       ORDER BY parent_region_id, name LIMIT ?""",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for item in regions:
+                    item["traits"] = _safe_json(item.pop("traits_json", None), {})
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+            region_names = {str(r.get("id")): str(r.get("name") or r.get("key") or r.get("id")) for r in regions if r.get("id")}
+
+            places: list[dict[str, Any]] = []
+            if self._table_exists(conn, "world_places"):
+                places = self._all(
+                    conn,
+                    """SELECT * FROM world_places
+                       WHERE owner_kind=? AND owner_id=? AND status='active'
+                       ORDER BY region_id, name LIMIT ?""",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for item in places:
+                    item["coordinates"] = _safe_json(item.pop("coordinates_json", None), {})
+                    item["traits"] = _safe_json(item.pop("traits_json", None), {})
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+                    item["region_name"] = region_names.get(str(item.get("region_id") or ""))
+            place_names = {str(p.get("id")): str(p.get("name") or p.get("key") or p.get("id")) for p in places if p.get("id")}
+
+            lore: list[dict[str, Any]] = []
+            if self._table_exists(conn, "world_lore_entries"):
+                lore = self._all(
+                    conn,
+                    """SELECT * FROM world_lore_entries
+                       WHERE owner_kind=? AND owner_id=? AND status='active'
+                       ORDER BY updated_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for item in lore:
+                    item["tags"] = _safe_json(item.pop("tags_json", None), [])
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+                    scope_kind = item.get("scope_kind")
+                    scope_id = str(item.get("scope_id") or "")
+                    item["scope_name"] = "世界" if scope_kind == "world" else (
+                        region_names.get(scope_id) if scope_kind == "region" else place_names.get(scope_id)
+                    )
+
+            entity_names: dict[str, dict[str, str | None]] = {}
+            if self._table_exists(conn, "world_entities"):
+                for entity in self._all(
+                    conn,
+                    """SELECT id, display_name, entity_kind FROM world_entities
+                       WHERE owner_kind=? AND owner_id=?""",
+                    (owner_kind, owner_id),
+                ):
+                    entity_names[str(entity.get("id"))] = {
+                        "name": entity.get("display_name"),
+                        "kind": entity.get("entity_kind"),
+                    }
+
+            faction_presence: list[dict[str, Any]] = []
+            if self._table_exists(conn, "world_faction_presence"):
+                faction_presence = self._all(
+                    conn,
+                    """SELECT * FROM world_faction_presence
+                       WHERE owner_kind=? AND owner_id=? AND status='active'
+                       ORDER BY ABS(influence) DESC, updated_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for item in faction_presence:
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+                    faction = entity_names.get(str(item.get("faction_entity_id") or "")) or {}
+                    item["faction_name"] = faction.get("name") or item.get("faction_entity_id")
+                    item["faction_kind"] = faction.get("kind")
+                    scope_kind = item.get("scope_kind")
+                    scope_id = str(item.get("scope_id") or "")
+                    item["scope_name"] = "世界" if scope_kind == "world" else (
+                        region_names.get(scope_id) if scope_kind == "region" else place_names.get(scope_id)
+                    )
+
+            if not any([profiles, regions, places, lore, faction_presence]):
+                return empty
+            return {
+                "profiles": profiles,
+                "regions": regions,
+                "places": places,
+                "lore": lore,
+                "faction_presence": faction_presence,
+                "counts": {
+                    "profiles": len(profiles),
+                    "regions": len(regions),
+                    "places": len(places),
+                    "lore": len(lore),
+                    "faction_presence": len(faction_presence),
                 },
             }
 
@@ -1095,6 +1241,7 @@ class LifeEngineReader:
         campaigns = self.campaigns(owner_kind, owner_id, limit=12)
         inner_life = self.inner_life(owner_kind, owner_id)
         relationship = self.relationship_notes(owner_kind, owner_id, limit=20)
+        world_model = self.world_model(owner_kind, owner_id, limit=80)
         social_world = self.social_world(owner_kind, owner_id, limit=80)
         sprite = map_avatar_state(state, current, sleep_day, review, delayed)
         workspace = self.workspace_docs(limit=20, include_content=False)
@@ -1117,6 +1264,7 @@ class LifeEngineReader:
             "campaigns": campaigns,
             "inner_life": inner_life,
             "relationship": relationship,
+            "world_model": world_model,
             "social_world": social_world,
             "workspace": workspace,
             "doctor": self.doctor_latest(owner_kind, owner_id),

@@ -86,6 +86,7 @@ DEFAULT_MODULE_GATES = {
     # Social World slots: world-specific entity / relationship / reputation /
     # evaluation / rumor primitives. Core stores the slots and ledgers; concrete
     # worldviews decide what each kind/axis/channel means.
+    "world_model": "auto",
     "social_world": "auto",
 }
 

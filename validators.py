@@ -111,6 +111,12 @@ ALLOWED_OPS = {
     # Social World slots: world-specific entities, relationships, reputation,
     # evaluations, and rumors. These are generic social facts; concrete
     # worldviews define the actual kind/axis/channel semantics.
+    "WORLD_UPSERT_PROFILE",
+    "WORLD_UPSERT_REGION",
+    "WORLD_UPSERT_PLACE",
+    "WORLD_UPSERT_LORE",
+    "WORLD_UPSERT_FACTION_PRESENCE",
+    "WORLD_ARCHIVE_OBJECT",
     "SOCIAL_DEFINE_SLOT",
     "SOCIAL_CREATE_ENTITY",
     "SOCIAL_LINK_AFFILIATION",
@@ -143,6 +149,12 @@ USER_WRITE_OPS = {
     "CALL_OVERRIDE",
     "RUN_DREAM", "CREATE_DREAM_ENTRY",
     "SOCIAL_DEFINE_SLOT",
+    "WORLD_UPSERT_PROFILE",
+    "WORLD_UPSERT_REGION",
+    "WORLD_UPSERT_PLACE",
+    "WORLD_UPSERT_LORE",
+    "WORLD_UPSERT_FACTION_PRESENCE",
+    "WORLD_ARCHIVE_OBJECT",
     "SOCIAL_CREATE_ENTITY",
     "SOCIAL_LINK_AFFILIATION",
     "SOCIAL_SET_EDGE",
@@ -512,6 +524,28 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         st = payload.get("status")
         if st is not None and st not in {"active", "paused", "cancelled"}:
             raise ValidationError("status must be active/paused/cancelled")
+    elif op_type == "WORLD_UPSERT_PROFILE":
+        payload.setdefault("key", "default")
+    elif op_type == "WORLD_UPSERT_REGION":
+        _require(payload, "key", "name")
+    elif op_type == "WORLD_UPSERT_PLACE":
+        _require(payload, "key", "name")
+    elif op_type == "WORLD_UPSERT_LORE":
+        _require(payload, "key", "title")
+        payload.setdefault("scope_kind", "world")
+    elif op_type == "WORLD_UPSERT_FACTION_PRESENCE":
+        _require(payload, "faction_entity_id")
+        payload.setdefault("scope_kind", "world")
+        try:
+            float(payload.get("influence", 0))
+        except Exception as exc:
+            raise ValidationError("faction influence must be numeric") from exc
+    elif op_type == "WORLD_ARCHIVE_OBJECT":
+        _require(payload, "object_kind")
+        if payload.get("object_kind") not in {"profile", "region", "place", "lore", "faction_presence"}:
+            raise ValidationError("object_kind must be profile/region/place/lore/faction_presence")
+        if not (payload.get("object_id") or payload.get("key") or payload.get("faction_entity_id")):
+            raise ValidationError("archive requires object_id, key, or faction_entity_id")
     elif op_type == "SOCIAL_DEFINE_SLOT":
         _require(payload, "slot_type", "key")
         if payload.get("slot_type") not in {"entity_kind", "relationship_axis", "reputation_axis", "evaluation_axis", "rumor_channel"}:

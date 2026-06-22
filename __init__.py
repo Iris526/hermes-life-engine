@@ -52,6 +52,7 @@ def register(ctx):
         ("life_meals", schemas.LIFE_MEALS, tools.life_meals, "Meal records (breakfast/lunch/dinner)", "🍱"),
         ("life_mood", schemas.LIFE_MOOD, tools.life_mood, "Emotional reactions: nudge the mood gauge with a reason", "🎭"),
         ("life_relationship", schemas.LIFE_RELATIONSHIP, tools.life_relationship, "Relationship memory: what the user told you about their own life", "💞"),
+        ("life_world", schemas.LIFE_WORLD, tools.life_world, "Structured World Model: profiles, map regions, places, lore, and faction influence", "🗺️"),
         ("life_social", schemas.LIFE_SOCIAL, tools.life_social, "Social World slots: entities, affiliations, reputation, evaluations, and rumors", "🌐"),
         ("life_campaign", schemas.LIFE_CAMPAIGN, tools.life_campaign, "Campaigns (资料片): cross-week themed arcs you work toward", "📜"),
         ("life_opinion", schemas.LIFE_OPINION, tools.life_opinion, "Evolving opinions + self-narrative formed from lived experience", "🌱"),

@@ -816,6 +816,42 @@ class LifeEngineRuntime:
                 self.conn, owner_kind, owner_id, payload["activity_id"], canon_version=canon_version,
                 source=payload.get("source") or source,
                 **{k: v for k, v in payload.items() if k not in {"source", "activity_id"}})
+        elif op_type == "WORLD_UPSERT_PROFILE":
+            from . import world_model as _world
+            return _world.upsert_world_profile(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "WORLD_UPSERT_REGION":
+            from . import world_model as _world
+            return _world.upsert_region(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "WORLD_UPSERT_PLACE":
+            from . import world_model as _world
+            return _world.upsert_place(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "WORLD_UPSERT_LORE":
+            from . import world_model as _world
+            return _world.upsert_lore_entry(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "WORLD_UPSERT_FACTION_PRESENCE":
+            from . import world_model as _world
+            return _world.upsert_faction_presence(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "WORLD_ARCHIVE_OBJECT":
+            from . import world_model as _world
+            return _world.archive_object(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
         elif op_type == "SOCIAL_DEFINE_SLOT":
             from . import social_world as _social
             return _social.upsert_slot_definition(
@@ -2625,6 +2661,92 @@ class LifeEngineRuntime:
             with transaction(self.conn):
                 return {"ok": True, "due": rel.notes_due_for_followup(self.conn, owner_id, user_id, now=payload.get("now"), limit=int(payload.get("limit", 5)))}
         raise ValueError(f"Unknown relationship action: {action}")
+
+    def world(self, action: str = "summary", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+              session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """管理结构化世界本体。
+
+        输入来自 `life_world` 工具、life_interface 或测试；读操作返回世界档案、区域、
+        地点、知识条目和势力影响，写操作全部转换成 LifeOps。文本设定只作为记录
+        内容存在，生效范围必须由 key/id/scope_kind/scope_id/status 等结构字段决定。
+        输出是对应世界对象或摘要；失败由 LifeOps savepoint 回滚并留下 trace。
+        """
+        from . import world_model as _world
+        action_l = str(action or "summary").strip().lower()
+        if action_l in {"summary", "state"}:
+            with transaction(self.conn):
+                return {"ok": True, "world": _world.summary(
+                    self.conn, owner_kind, owner_id,
+                    limit=int(payload.get("limit", 20)),
+                )}
+        if action_l in {"context", "effective_context", "scene_context"}:
+            with transaction(self.conn):
+                return {"ok": True, "world_context": _world.effective_context(
+                    self.conn, owner_kind, owner_id,
+                    region_id=payload.get("region_id"),
+                    region_key=payload.get("region_key"),
+                    place_id=payload.get("place_id"),
+                    place_key=payload.get("place_key"),
+                    location=payload.get("location"),
+                    limit=int(payload.get("limit", 20)),
+                )}
+        if action_l in {"profiles", "profile_list"}:
+            with transaction(self.conn):
+                return {"ok": True, "profiles": _world.list_profiles(
+                    self.conn, owner_kind, owner_id,
+                    status=payload.get("status", "active"),
+                    limit=int(payload.get("limit", 20)),
+                )}
+        if action_l in {"profile", "upsert_profile", "set_profile"}:
+            return self.commit_ops([{"type": "WORLD_UPSERT_PROFILE", "payload": payload}], owner_kind, owner_id, "life_world_tool", session_id, turn_id)
+        if action_l in {"regions", "region_list"}:
+            with transaction(self.conn):
+                return {"ok": True, "regions": _world.list_regions(
+                    self.conn, owner_kind, owner_id,
+                    parent_region_id=payload.get("parent_region_id"),
+                    status=payload.get("status", "active"),
+                    limit=int(payload.get("limit", 100)),
+                )}
+        if action_l in {"region", "upsert_region", "set_region"}:
+            return self.commit_ops([{"type": "WORLD_UPSERT_REGION", "payload": payload}], owner_kind, owner_id, "life_world_tool", session_id, turn_id)
+        if action_l in {"places", "place_list"}:
+            with transaction(self.conn):
+                return {"ok": True, "places": _world.list_places(
+                    self.conn, owner_kind, owner_id,
+                    region_id=payload.get("region_id"),
+                    parent_place_id=payload.get("parent_place_id"),
+                    status=payload.get("status", "active"),
+                    limit=int(payload.get("limit", 100)),
+                )}
+        if action_l in {"place", "upsert_place", "set_place"}:
+            return self.commit_ops([{"type": "WORLD_UPSERT_PLACE", "payload": payload}], owner_kind, owner_id, "life_world_tool", session_id, turn_id)
+        if action_l in {"lore", "lore_entries", "lore_list"}:
+            with transaction(self.conn):
+                return {"ok": True, "lore": _world.list_lore_entries(
+                    self.conn, owner_kind, owner_id,
+                    scope_kind=payload.get("scope_kind"),
+                    scope_id=payload.get("scope_id"),
+                    lore_type=payload.get("lore_type"),
+                    status=payload.get("status", "active"),
+                    limit=int(payload.get("limit", 80)),
+                )}
+        if action_l in {"upsert_lore", "lore_entry", "set_lore"}:
+            return self.commit_ops([{"type": "WORLD_UPSERT_LORE", "payload": payload}], owner_kind, owner_id, "life_world_tool", session_id, turn_id)
+        if action_l in {"faction_presence", "presence", "influence"}:
+            with transaction(self.conn):
+                return {"ok": True, "faction_presence": _world.list_faction_presence(
+                    self.conn, owner_kind, owner_id,
+                    faction_entity_id=payload.get("faction_entity_id"),
+                    scope_kind=payload.get("scope_kind"),
+                    scope_id=payload.get("scope_id"),
+                    status=payload.get("status", "active"),
+                    limit=int(payload.get("limit", 80)),
+                )}
+        if action_l in {"upsert_faction_presence", "set_faction_presence", "set_influence"}:
+            return self.commit_ops([{"type": "WORLD_UPSERT_FACTION_PRESENCE", "payload": payload}], owner_kind, owner_id, "life_world_tool", session_id, turn_id)
+        if action_l in {"archive", "delete", "remove"}:
+            return self.commit_ops([{"type": "WORLD_ARCHIVE_OBJECT", "payload": payload}], owner_kind, owner_id, "life_world_tool", session_id, turn_id)
+        raise ValueError(f"Unknown world action: {action}")
 
     def social(self, action: str = "summary", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
                session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
@@ -4879,6 +5001,15 @@ class LifeEngineRuntime:
                 persona_capsule = _safe(lambda: persona.render_persona_capsule(persona.ensure_persona(self.conn, owner_kind, owner_id, canon)) if owner_kind == "agent" else {}, {})
                 mood_capsule = _safe(lambda: (lambda m: {"value": m, "band": emotion.mood_band(m), "note": emotion.mood_bias(m).get("note")})(emotion.current_mood(self.conn, owner_kind, owner_id)) if owner_kind == "agent" else {}, {})
                 inner_life = _safe(lambda: self._inner_life_capsule(owner_kind, owner_id) if owner_kind == "agent" else {}, {})
+                realtime = _safe(lambda: get_realtime_state(self.conn, owner_kind, owner_id), {})
+                active_event = _safe(lambda: get_event(self.conn, realtime.get("active_event_id")), {}) if realtime.get("active_event_id") else {}
+                from . import world_model as _world_model
+                world_model = _safe(lambda: _world_model.summary(self.conn, owner_kind, owner_id, limit=8), {})
+                world_context = _safe(lambda: _world_model.effective_context(
+                    self.conn, owner_kind, owner_id,
+                    location=(active_event.get("location") or {}),
+                    limit=8,
+                ), {})
                 social_world = inner_life.get("social_world") if isinstance(inner_life, dict) else {}
                 if social_world:
                     inner_life = {k: v for k, v in inner_life.items() if k != "social_world"}
@@ -4890,9 +5021,11 @@ class LifeEngineRuntime:
                     "persona": persona_capsule,
                     "mood": mood_capsule,
                     "inner_life": inner_life,
+                    "world_model": world_model or {},
+                    "world_context": world_context or {},
                     "social_world": social_world or {},
                     "canon_brief": {"identity": (canon or {}).get("identity"), "worldview": (canon or {}).get("worldview"), "truth_sources": (canon or {}).get("truth_sources")},
-                    "realtime": get_realtime_state(self.conn, owner_kind, owner_id),
+                    "realtime": realtime,
                     "resources": [{"resource_key": a["resource_key"], "current_value": a["current_value"], "unit": a.get("unit"), "state": a.get("state")} for a in (resources.get("accounts", [])[:20])],
                     "events": [{"id": e["id"], "title": e["title"], "status": e["status"], "event_category": e.get("event_category"), "event_type": e.get("event_type"), "planned_start": e.get("planned_start"), "planned_end": e.get("planned_end"), "progress": e.get("progress")} for e in events[:8]],
                     "memories": [{"id": m["id"], "type": m["memory_type"], "content": m["content"][:220]} for m in memories[:5]],

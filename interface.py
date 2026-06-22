@@ -84,6 +84,12 @@ DOMAINS: dict[str, dict[str, Any]] = {
         "write": ["define_slot", "create_entity", "link_affiliation", "set_edge", "reputation_event", "evaluate", "rumor", "expose_rumor"],
         "rule": "只存通用槽位和账本；具体世界观解释 entity kind、axis、channel。写入走 LifeOps，流言默认不是事实。",
     },
+    "world": {
+        "label": "世界本体 / World Model",
+        "read": ["summary", "profiles", "regions", "places", "lore", "faction_presence"],
+        "write": ["profile", "region", "place", "upsert_lore", "upsert_faction_presence", "archive"],
+        "rule": "文本设定放在记录内容里；生效范围用 key/id/scope/status 结构保证。写入走 LifeOps。",
+    },
     "trace": {
         "label": "Trace / 审计",
         "read": ["latest", "explain", "verify", "audit"],
@@ -145,6 +151,8 @@ def read(rt: Any, owner_kind: str, owner_id: str, domain: str, view: str | None 
         return rt.living(view if view != "summary" else "summary", owner_kind, owner_id, None, None, **p)
     if domain in {"social", "social_world"}:
         return rt.social(view if view != "summary" else "summary", owner_kind, owner_id, None, None, **p)
+    if domain in {"world", "world_model", "life_world"}:
+        return rt.world(view if view != "summary" else "summary", owner_kind, owner_id, None, None, **p)
     if domain == "trace":
         return rt.traces(view if view != "summary" else "latest", owner_kind, owner_id, **p)
     raise ValueError(f"unknown LifeEngine interface domain: {domain}")
@@ -183,6 +191,8 @@ def write(rt: Any, owner_kind: str, owner_id: str, domain: str, intent: str | No
         return rt.living(intent, owner_kind, owner_id, session_id, turn_id, **p)
     if domain in {"social", "social_world"}:
         return rt.social(intent, owner_kind, owner_id, session_id, turn_id, **p)
+    if domain in {"world", "world_model", "life_world"}:
+        return rt.world(intent, owner_kind, owner_id, session_id, turn_id, **p)
     raise ValueError(f"unknown or read-only LifeEngine interface domain: {domain}")
 
 def run(rt: Any, action: str, owner_kind: str, owner_id: str, session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:

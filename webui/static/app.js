@@ -173,6 +173,7 @@ function render() {
   renderCloset();
   renderDreams();
   renderCampaigns();
+  renderWorldModel();
   renderSocialWorld();
   renderInnerLife();
   renderReview();
@@ -789,7 +790,93 @@ function renderCampaigns() {
   }).join("");
 }
 
-// ── 社会世界 / 社交面板 ───────────────────────
+// ── 世界本体 / 社会世界面板 ─────────────────────
+function renderWorldModel() {
+  const data = snapshotData.world_model || {};
+  const counts = data.counts || {};
+  const overviewEl = document.getElementById("world-overview");
+  if (!overviewEl) return;
+  const stat = (label, value) => `<div class="social-stat world-stat"><span class="social-stat-num">${formatNum(value || 0)}</span><span class="social-stat-label">${label}</span></div>`;
+  overviewEl.innerHTML = [
+    stat("档案", counts.profiles),
+    stat("区域", counts.regions),
+    stat("地点", counts.places),
+    stat("知识", counts.lore),
+    stat("势力", counts.faction_presence),
+  ].join("");
+
+  const profileEl = document.getElementById("world-profiles");
+  if (profileEl) {
+    const profiles = data.profiles || [];
+    profileEl.innerHTML = profiles.length ? profiles.slice(0, 4).map(p => {
+      const rules = Object.entries(p.rules || {}).slice(0, 4)
+        .map(([k, v]) => `<span class="social-chip mini">${escapeHtml(k)}:${escapeHtml(v)}</span>`).join("");
+      return `<div class="social-card world-card profile-card">
+        <div class="social-card-head"><span class="social-title">${escapeHtml(p.title || p.key || "世界档案")}</span><span class="social-tag">${escapeHtml(p.key || "default")}</span></div>
+        ${p.summary ? `<div class="social-desc">${escapeHtml(p.summary)}</div>` : ""}
+        ${p.background_text ? `<div class="world-long-text">${escapeHtml(p.background_text)}</div>` : ""}
+        ${rules ? `<div class="social-chip-list tight">${rules}</div>` : ""}
+      </div>`;
+    }).join("") : '<div class="empty-state">还没有世界档案</div>';
+  }
+
+  const regionEl = document.getElementById("world-regions");
+  if (regionEl) {
+    const regions = data.regions || [];
+    regionEl.innerHTML = regions.length ? regions.slice(0, 18).map(r => {
+      const parent = r.parent_region_id ? `父级 ${r.parent_region_id}` : "根区域";
+      return `<div class="social-row-card world-row">
+        <div><span class="social-name">${escapeHtml(r.name || r.key)}</span><span class="social-tag">${escapeHtml(r.region_type || "region")}</span></div>
+        ${r.summary ? `<div class="social-desc">${escapeHtml(r.summary)}</div>` : ""}
+        <div class="social-row-meta">${escapeHtml(r.key || "")} · ${escapeHtml(parent)}</div>
+      </div>`;
+    }).join("") : '<div class="empty-state">还没有区域/城池</div>';
+  }
+
+  const placeEl = document.getElementById("world-places");
+  if (placeEl) {
+    const places = data.places || [];
+    placeEl.innerHTML = places.length ? places.slice(0, 18).map(p => {
+      const scope = p.region_name || p.region_id || "未绑定区域";
+      return `<div class="social-row-card world-row">
+        <div><span class="social-name">${escapeHtml(p.name || p.key)}</span><span class="social-tag">${escapeHtml(p.place_type || "place")}</span></div>
+        ${p.summary ? `<div class="social-desc">${escapeHtml(p.summary)}</div>` : ""}
+        <div class="social-row-meta">${escapeHtml(p.key || "")} · ${escapeHtml(scope)}</div>
+      </div>`;
+    }).join("") : '<div class="empty-state">还没有地点</div>';
+  }
+
+  const loreEl = document.getElementById("world-lore");
+  if (loreEl) {
+    const lore = data.lore || [];
+    loreEl.innerHTML = lore.length ? lore.slice(0, 16).map(l => {
+      const tags = (l.tags || []).slice(0, 4).map(t => `<span class="social-chip mini">${escapeHtml(t)}</span>`).join("");
+      const scope = [l.scope_kind || "world", l.scope_name || l.scope_id].filter(Boolean).join(" · ");
+      return `<div class="social-card world-card lore-card">
+        <div class="social-card-head"><span class="social-title">${escapeHtml(l.title || l.key)}</span><span class="social-tag">${escapeHtml(l.lore_type || "lore")}</span></div>
+        ${l.content ? `<div class="social-desc">${escapeHtml(l.content)}</div>` : ""}
+        <div class="social-row-meta">${escapeHtml(scope)}</div>
+        ${tags ? `<div class="social-chip-list tight">${tags}</div>` : ""}
+      </div>`;
+    }).join("") : '<div class="empty-state">还没有知识条目</div>';
+  }
+
+  const presenceEl = document.getElementById("world-faction-presence");
+  if (presenceEl) {
+    const presence = data.faction_presence || [];
+    presenceEl.innerHTML = presence.length ? presence.slice(0, 16).map(p => {
+      const influence = Number(p.influence) || 0;
+      const scope = [p.scope_kind || "world", p.scope_name || p.scope_id].filter(Boolean).join(" · ");
+      return `<div class="social-card world-card faction-presence-card">
+        <div class="social-card-head"><span class="social-title">${escapeHtml(p.faction_name || p.faction_entity_id)}</span><span class="social-tag">${escapeHtml(p.stance || "presence")}</span></div>
+        <div class="social-axis-line"><span>${escapeHtml(scope)}</span><span class="${socialValueClass(influence)}">${formatSigned(influence)}</span></div>
+        ${socialMeter(influence)}
+        ${p.summary ? `<div class="social-desc">${escapeHtml(p.summary)}</div>` : ""}
+      </div>`;
+    }).join("") : '<div class="empty-state">还没有势力影响</div>';
+  }
+}
+
 const SOCIAL_SLOT_LABEL = {
   entity_kind: "实体",
   relationship_axis: "关系轴",

@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 62
+_SCHEMA_VERSION = 63
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -318,6 +318,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 62:
         _create_schema_v62(conn)
         _record_schema_migration(conn, 62, "event_driven_social_projection")
+    if current < 63:
+        _create_schema_v63(conn)
+        _record_schema_migration(conn, 63, "structured_world_model")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -4314,4 +4317,139 @@ def _create_schema_v62(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_social_requests_owner ON social_requests(owner_kind, owner_id, status, created_at)"
+    )
+
+
+def _create_schema_v63(conn: sqlite3.Connection) -> None:
+    """Structured World Model: 世界观本体层。
+
+    v61 的 Social World 负责社会关系账本；v63 负责地图、地点、背景知识和势力在
+    世界范围内的影响。文本仍保存在 background/content/summary 字段中，但“何处
+    生效、被谁引用、能否归档/重试”由 key、scope_kind、scope_id、status 和
+    evidence_json 等结构字段保证，避免依赖提示词口头约束。
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS world_profiles (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,                 -- agent/user/relationship；限定世界观归属
+          owner_id TEXT NOT NULL,
+          key TEXT NOT NULL,                        -- 稳定世界观档案 key；默认 default
+          title TEXT NOT NULL,                      -- 面向人/模型的世界名
+          summary TEXT,                             -- 简短摘要；用于列表和 context
+          background_text TEXT,                     -- 世界背景正文；文本内容本身不承担结构约束
+          rules_json TEXT NOT NULL DEFAULT '{}',    -- 世界规则/物理/货币/时间等结构化扩展
+          evidence_json TEXT NOT NULL DEFAULT '{}', -- 来源证据；可指向 setup/import/tool
+          status TEXT NOT NULL DEFAULT 'active',    -- active | archived
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_world_profiles_owner ON world_profiles(owner_kind, owner_id, status, updated_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS world_regions (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          key TEXT NOT NULL,                        -- 稳定地图区域 key；供事件/地点/lore 引用
+          name TEXT NOT NULL,                       -- 区域显示名，如第七城/东市/雨棚巷
+          region_type TEXT NOT NULL DEFAULT 'region', -- continent/city/district/street/custom
+          parent_region_id TEXT,                    -- 父区域 id；结构化地图层级
+          summary TEXT,
+          content TEXT,                             -- 区域文字设定
+          traits_json TEXT NOT NULL DEFAULT '{}',   -- 世界观可解释的标签/气候/治安/资源等
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_world_regions_owner ON world_regions(owner_kind, owner_id, parent_region_id, status)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS world_places (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          key TEXT NOT NULL,                        -- 稳定地点 key；事件 location 可引用
+          name TEXT NOT NULL,
+          place_type TEXT NOT NULL DEFAULT 'place', -- shrine/shop/gate/home/venue/custom
+          region_id TEXT,                           -- 所属区域 id
+          parent_place_id TEXT,                     -- 父地点 id；如城池内的道观/摊位
+          summary TEXT,
+          content TEXT,                             -- 地点文字设定
+          coordinates_json TEXT NOT NULL DEFAULT '{}', -- 可选坐标/网格/相对方位；核心不解释
+          traits_json TEXT NOT NULL DEFAULT '{}',
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_world_places_owner ON world_places(owner_kind, owner_id, region_id, parent_place_id, status)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS world_lore_entries (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          key TEXT NOT NULL,                        -- 稳定知识条目 key；避免重复写同一设定
+          title TEXT NOT NULL,
+          lore_type TEXT NOT NULL DEFAULT 'background', -- background/history/rule/rumor_seed/custom
+          scope_kind TEXT NOT NULL DEFAULT 'world', -- world | region | place
+          scope_id TEXT NOT NULL DEFAULT '__world__', -- world 用 __world__；其它用对应结构 id
+          content TEXT,                             -- lore 正文；作用范围由 scope 字段保证
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_world_lore_scope ON world_lore_entries(owner_kind, owner_id, scope_kind, scope_id, status)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS world_faction_presence (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          faction_entity_id TEXT NOT NULL,          -- 指向 world_entities 中的势力/组织实体
+          scope_kind TEXT NOT NULL DEFAULT 'world', -- world | region | place
+          scope_id TEXT NOT NULL DEFAULT '__world__',
+          influence REAL NOT NULL DEFAULT 0,        -- -100..100；该势力在范围内的影响强度
+          stance TEXT,                              -- allied/hostile/neutral/contested/custom
+          summary TEXT,
+          content TEXT,                             -- 势力影响文字说明
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, faction_entity_id, scope_kind, scope_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_world_faction_presence_scope ON world_faction_presence(owner_kind, owner_id, scope_kind, scope_id, status)"
     )

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>归明观 · 废土观星台</title>
-<link rel="stylesheet" href="/static/styles.css?v=20260622-social">
+<link rel="stylesheet" href="/static/styles.css?v=20260622-world">
 </head>
 <body>
 <div id="app">
@@ -261,13 +261,37 @@
         </div>
       </div>
 
-      <!-- 社会世界面板 -->
+      <!-- 世界 / 社会面板 -->
       <div id="overlay-social" class="overlay-panel">
         <div class="panel-full-header">
-          <span class="panel-title">🌐 社会·声望</span>
+          <span class="panel-title">🌐 世界·社会</span>
           <button class="panel-close" data-close>✕</button>
         </div>
         <div class="panel-full-body social-body">
+          <div id="world-overview" class="social-overview world-overview"></div>
+          <div class="world-grid">
+            <section class="social-section wide">
+              <h3 class="section-label">世界档案</h3>
+              <div id="world-profiles" class="social-card-list"></div>
+            </section>
+            <section class="social-section">
+              <h3 class="section-label">区域 / 城池</h3>
+              <div id="world-regions" class="social-card-list compact"></div>
+            </section>
+            <section class="social-section">
+              <h3 class="section-label">地点</h3>
+              <div id="world-places" class="social-card-list compact"></div>
+            </section>
+            <section class="social-section">
+              <h3 class="section-label">知识条目</h3>
+              <div id="world-lore" class="social-card-list"></div>
+            </section>
+            <section class="social-section">
+              <h3 class="section-label">势力影响</h3>
+              <div id="world-faction-presence" class="social-card-list"></div>
+            </section>
+          </div>
+          <div class="social-divider">社会层</div>
           <div id="social-overview" class="social-overview"></div>
           <div class="social-grid">
             <section class="social-section">
@@ -387,8 +411,8 @@
       <button class="hotbar-btn" data-overlay="campaigns" title="事变·资料片">
         <span class="hotbar-icon">🗺️</span><span class="hotbar-label">事变</span>
       </button>
-      <button class="hotbar-btn" data-overlay="social" title="社会·声望">
-        <span class="hotbar-icon">🌐</span><span class="hotbar-label">社会</span>
+      <button class="hotbar-btn" data-overlay="social" title="世界·社会">
+        <span class="hotbar-icon">🌐</span><span class="hotbar-label">世界</span>
       </button>
       <button class="hotbar-btn" data-overlay="innerlife" title="心相·内境">
         <span class="hotbar-icon">🌱</span><span class="hotbar-label">心相</span>
@@ -409,6 +433,6 @@
 
   </div>
 </div>
-<script src="/static/app.js?v=20260622-social"></script>
+<script src="/static/app.js?v=20260622-world"></script>
 </body>
 </html>

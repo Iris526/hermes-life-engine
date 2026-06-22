@@ -60,6 +60,7 @@ CANONICAL_TOOL_MAP = {
     "truth": "life_truth",
     "goal": "life_goal / life_autonomy",
     "proactive": "life_proactive",
+    "world": "life_world / life_interface(domain=world)",
     "social": "life_social / life_interface(domain=social)",
     "trace": "life_trace / life_doctor",
 }
@@ -74,7 +75,8 @@ INTENT_KEYWORDS = {
     "config": ["设定", "世界观", "人设", "canon", "config", "timezone", "天气", "货币"],
     "resource": ["资源", "钱", "灵铢", "精力", "疲劳", "库存", "账本", "resource"],
     "goal": ["目标", "计划", "推进", "goal", "arc"],
-    "social": ["声望", "评价", "流言", "势力", "社交", "关系网", "world", "social", "reputation", "rumor"],
+    "world": ["世界", "世界观", "地图", "城池", "地点", "区域", "背景", "lore", "world", "map", "city", "place"],
+    "social": ["声望", "评价", "流言", "势力", "社交", "关系网", "social", "reputation", "rumor"],
     "trace": ["trace", "doctor", "审计", "为什么", "解释"],
 }
 
@@ -149,6 +151,49 @@ def _compact_schedule(today_schedule: dict[str, Any] | None, limit: int = 4) -> 
     return {"summary": sched.get("summary") or {}, "next": items}
 
 
+def _compact_world(world: dict[str, Any] | None, limit: int = 6) -> dict[str, Any]:
+    """压缩世界本体给 prompt 使用。
+
+    输入来自 world_model.summary；输出只保留结构 id/key/name/scope 和短摘要。长篇
+    lore 正文不直接注入，避免把提示词当持久化保证；需要全文时由模型调用
+    life_world 读取结构化记录。
+    """
+    data = world or {}
+    profiles = [
+        {"id": p.get("id"), "key": p.get("key"), "title": p.get("title"), "summary": p.get("summary")}
+        for p in (data.get("profiles") or [])[:2]
+    ]
+    regions = [
+        {"id": r.get("id"), "key": r.get("key"), "name": r.get("name"), "region_type": r.get("region_type"), "parent_region_id": r.get("parent_region_id")}
+        for r in (data.get("regions") or [])[:limit]
+    ]
+    places = [
+        {"id": p.get("id"), "key": p.get("key"), "name": p.get("name"), "place_type": p.get("place_type"), "region_id": p.get("region_id")}
+        for p in (data.get("places") or [])[:limit]
+    ]
+    lore = [
+        {"id": l.get("id"), "key": l.get("key"), "title": l.get("title"), "lore_type": l.get("lore_type"), "scope_kind": l.get("scope_kind"), "scope_id": l.get("scope_id"), "content": (l.get("content") or "")[:180]}
+        for l in (data.get("lore") or [])[:limit]
+    ]
+    presence = [
+        {"faction_entity_id": p.get("faction_entity_id"), "faction_name": p.get("faction_name"), "scope_kind": p.get("scope_kind"), "scope_id": p.get("scope_id"), "influence": p.get("influence"), "stance": p.get("stance")}
+        for p in (data.get("faction_presence") or [])[:limit]
+    ]
+    out = {"profiles": profiles, "regions": regions, "places": places, "lore": lore, "faction_presence": presence, "counts": data.get("counts") or {}}
+    if data.get("activation"):
+        out["activation"] = data.get("activation")
+    return out
+
+
+def _has_world_content(world: dict[str, Any] | None) -> bool:
+    """判断世界本体摘要是否有可注入内容。"""
+    data = world or {}
+    if any(data.get(key) for key in ("profiles", "regions", "places", "lore", "faction_presence")):
+        return True
+    counts = data.get("counts") or {}
+    return any(int(v or 0) > 0 for v in counts.values())
+
+
 def _section_for_domain(domain: str, data: dict[str, Any]) -> dict[str, Any]:
     work_compact = is_work_compact_platform(_platform_from_data(data))
     if domain == "schedule":
@@ -170,6 +215,8 @@ def _section_for_domain(domain: str, data: dict[str, Any]) -> dict[str, Any]:
         return {"resources": data.get("resources", [])[:12]}
     if domain == "goal":
         return {"goals": data.get("goals", [])[:5], "life_arcs": data.get("arcs", [])[:3], "autonomy": data.get("autonomy", [])[:3]}
+    if domain == "world":
+        return {"world_context": _compact_world(data.get("world_context") or data.get("world_model"), limit=8)}
     if domain == "trace":
         return {"trace": {"hint": "Use life_trace / life_doctor for explainability; raw trace is not injected by default."}}
     return {}
@@ -227,6 +274,12 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
         # separate from inner_life: reputation/evaluation/rumor shape the world
         # around the agent, and rumors retain their truth_layer warning.
         capsule["social_world"] = social_world
+    world_context = data.get("world_context") if _has_world_content(data.get("world_context")) else {}
+    world_model = data.get("world_model") if _has_world_content(data.get("world_model")) else {}
+    if world_context and not work_compact:
+        capsule["world_context"] = _compact_world(world_context, limit=5)
+    elif world_model and not work_compact:
+        capsule["world_model"] = _compact_world(world_model, limit=5)
     feedback = data.get("final_gate_feedback") or []
     if feedback and not work_compact:
         capsule["internal_feedback"] = feedback[:2]
@@ -246,7 +299,7 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
         # Hard cap by removing progressively less critical sections.
         # sleep/reply_gate are excluded — they are always-on state signals
         # the model needs to decide whether to reply at all.
-        for key in ["persona", "memory_sample", "goals", "behavior", "collection", "dreams", "inner_life", "resources", "active_or_recent_events"]:
+        for key in ["persona", "memory_sample", "goals", "behavior", "collection", "dreams", "inner_life", "world_model", "resources", "active_or_recent_events"]:
             if key in capsule and len(text) > policy.budget_chars:
                 capsule.pop(key, None)
                 text = "\n<LIFEENGINE_CONTEXT mode=\"progressive_slim\">\n" + json.dumps(capsule, ensure_ascii=False, indent=2, sort_keys=True) + "\n</LIFEENGINE_CONTEXT>"
@@ -267,6 +320,8 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
             }
             if social_world and not work_compact:
                 minimal_capsule["social_world"] = social_world
+            if world_context and not work_compact:
+                minimal_capsule["world_context"] = _compact_world(world_context, limit=3)
             if feedback and not work_compact:
                 minimal_capsule["internal_final_gate_feedback"] = feedback[:2]
                 minimal_capsule["internal_feedback"] = feedback[:2]
