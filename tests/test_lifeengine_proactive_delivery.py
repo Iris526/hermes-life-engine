@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import shlex
 import sys
+import threading
+import time
 from pathlib import Path
 
 from lifeengine.heartbeat import run_tick_script_once
@@ -74,6 +76,24 @@ def _failure_command(tmp_path: Path) -> str:
     return " ".join([shlex.quote(sys.executable), shlex.quote(str(script))])
 
 
+def _slow_success_command(tmp_path: Path, sink: Path, delay: float = 0.8) -> str:
+    script = tmp_path / "deliver_slow_success.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, sys, time",
+                "from pathlib import Path",
+                "payload = json.load(sys.stdin)",
+                f"Path({str(sink)!r}).write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')",
+                f"time.sleep({delay!r})",
+                "print(json.dumps({'ok': True, 'external_id': payload['outbox_id']}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return " ".join([shlex.quote(sys.executable), shlex.quote(str(script))])
+
+
 def test_proactive_deliver_command_marks_outbox_sent(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     sink = tmp_path / "payload.json"
@@ -123,6 +143,83 @@ def test_proactive_deliver_failure_keeps_outbox_queued(tmp_path, monkeypatch):
         assert attempt["status"] == "failed"
     finally:
         rt.close()
+
+
+def test_proactive_deliver_dry_run_does_not_reap_stale_claim(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt)
+        rt.conn.execute("UPDATE proactive_outbox SET status='delivering' WHERE id=?", (outbox_id,))
+        rt.conn.execute(
+            """INSERT INTO proactive_deliveries(
+                 id, outbox_id, intent_id, agent_id, target_user_id, status,
+                 delivery_channel, payload_json, created_at
+               ) VALUES(?,?,?,?,?,?,?,?,datetime('now','-60 minutes'))""",
+            ("prodel_stale_dryrun", outbox_id, "intent_dryrun", "default-agent", "u1", "running", "qq", "{}"),
+        )
+
+        result = rt.proactive("deliver", dry_run=True, delivery_mode="command", delivery_command=_failure_command(tmp_path))
+
+        assert result["status"] == "dry_run"
+        assert result["stale_claims"]["skipped"] is True
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        assert outbox[outbox_id]["status"] == "delivering"
+        attempt = rt.conn.execute("SELECT status FROM proactive_deliveries WHERE id='prodel_stale_dryrun'").fetchone()
+        assert attempt["status"] == "running"
+    finally:
+        rt.close()
+
+
+def test_concurrent_delivery_worker_does_not_double_send_same_outbox(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    sink = tmp_path / "slow_payload.json"
+    command = _slow_success_command(tmp_path, sink)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="只能发一次的主动消息。")
+    finally:
+        rt.close()
+
+    results: dict[str, dict] = {}
+
+    def run_first_worker() -> None:
+        worker = LifeEngineRuntime()
+        try:
+            results["first"] = worker.proactive("deliver", delivery_mode="command", delivery_command=command)
+        finally:
+            worker.close()
+
+    thread = threading.Thread(target=run_first_worker)
+    thread.start()
+    deadline = time.time() + 5
+    while not sink.exists() and time.time() < deadline:
+        time.sleep(0.02)
+    assert sink.exists(), "first worker did not reach external adapter"
+
+    rt2 = LifeEngineRuntime()
+    try:
+        second = rt2.proactive("deliver", delivery_mode="command", delivery_command=command)
+    finally:
+        rt2.close()
+    thread.join(timeout=5)
+
+    assert results["first"]["ok"] is True
+    assert results["first"]["delivered"][0]["outbox_id"] == outbox_id
+    assert second["status"] == "noop"
+    assert second["candidate_count"] == 0
+
+    rt3 = LifeEngineRuntime()
+    try:
+        attempts = rt3.conn.execute("SELECT * FROM proactive_deliveries WHERE outbox_id=?", (outbox_id,)).fetchall()
+        outbox = {o["id"]: o for o in rt3.proactive("outbox")["outbox"]}
+        assert len(attempts) == 1
+        assert attempts[0]["status"] == "done"
+        assert outbox[outbox_id]["status"] == "sent"
+    finally:
+        rt3.close()
 
 
 def test_generated_heartbeat_script_runs_delivery_after_tick(tmp_path, monkeypatch):

@@ -87,8 +87,8 @@ def _due_outbox(conn, agent_id: str, limit: int) -> list[dict[str, Any]]:
     """读取当前可投递的 queued outbox。
 
     输入是 Agent id 和批量上限；只返回 ``send_after`` 已到期或未设置的 queued
-    消息。函数只读数据库，不声明占用消息；生产环境需通过单 worker 或外部
-    outbox_id 幂等来避免并发重复发送。
+    消息。函数只读数据库，主要服务 dry-run 预览；真实投递必须走
+    ``_claim_due_outbox`` 的原子占用，避免多个 worker 同时外发同一条消息。
     """
     rows = conn.execute(
         """SELECT * FROM proactive_outbox
@@ -99,6 +99,43 @@ def _due_outbox(conn, agent_id: str, limit: int) -> list[dict[str, Any]]:
         (agent_id, int(limit)),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _reap_stale_delivery_claims(conn, agent_id: str, stale_minutes: float = 30.0) -> dict[str, Any]:
+    """回收卡在 delivering 的旧投递占用。
+
+    输入是 Agent id 与过期分钟数，调用方是 delivery worker。它只回收超过
+    command/webhook 超时上限许多倍的 running attempt：把 attempt 标 failed，
+    并把 outbox 从 delivering 放回 queued 以便后续重试。这个补偿路径处理进程
+    崩溃或服务器重启后的半占用；活跃发送不应超过默认 30 分钟。
+    """
+    stale = f"-{max(1.0, float(stale_minutes)):g} minutes"
+    error = "delivery claim timed out before completion"
+    with transaction(conn):
+        rows = conn.execute(
+            """SELECT o.id AS outbox_id, d.id AS attempt_id
+                 FROM proactive_outbox o
+                 JOIN proactive_deliveries d ON d.outbox_id=o.id
+                WHERE o.agent_id=? AND o.status='delivering'
+                  AND d.status='running' AND d.created_at <= datetime('now', ?)
+                ORDER BY d.created_at ASC""",
+            (agent_id, stale),
+        ).fetchall()
+        outbox_ids = [r["outbox_id"] for r in rows]
+        attempt_ids = [r["attempt_id"] for r in rows]
+        for attempt_id in attempt_ids:
+            conn.execute(
+                """UPDATE proactive_deliveries
+                      SET status='failed', error=?, completed_at=datetime('now')
+                    WHERE id=? AND status='running'""",
+                (error, attempt_id),
+            )
+        for outbox_id in outbox_ids:
+            conn.execute(
+                "UPDATE proactive_outbox SET status='queued', error=? WHERE id=? AND status='delivering'",
+                (error, outbox_id),
+            )
+    return {"requeued_count": len(outbox_ids), "outbox_ids": outbox_ids, "attempt_ids": attempt_ids}
 
 
 def _intent_summary(conn, intent_id: str | None) -> str | None:
@@ -134,32 +171,61 @@ def _payload_for(conn, row: dict[str, Any], channel: str) -> dict[str, Any]:
     }
 
 
-def _record_attempt(conn, row: dict[str, Any], channel: str, payload: dict[str, Any]) -> str:
-    """创建一次外部投递尝试记录。
+def _claim_due_outbox(conn, agent_id: str, limit: int, channel_override: str | None = None) -> list[dict[str, Any]]:
+    """原子占用一批待投递 outbox。
 
-    输入为 outbox 行、渠道和将交给外部适配器的 JSON 载荷；输出 attempt id。
-    副作用是写入 ``proactive_deliveries(status='running')``，供 doctor 和运维
-    回溯。该记录不代表已送达，只有后续 ``done`` 才会触发 mark sent。
+    输入为 Agent id、批量上限和可选渠道覆盖。函数在一个 SQLite 写事务内读取
+    queued outbox、写入 ``proactive_deliveries(status='running')``，并把 outbox
+    更新为 ``delivering``。只有成功占用的调用方才允许进行外部 command/webhook
+    副作用；并发 worker 会被 BEGIN IMMEDIATE 串行化，后到者不会重复发送。
     """
-    attempt_id = new_id("prodel")
+    claimed: list[dict[str, Any]] = []
     with transaction(conn):
-        conn.execute(
-            """INSERT INTO proactive_deliveries(
-                 id, outbox_id, intent_id, agent_id, target_user_id, status,
-                 delivery_channel, payload_json
-               ) VALUES(?,?,?,?,?,?,?,?)""",
-            (
-                attempt_id,
-                row.get("id"),
-                row.get("intent_id"),
-                row.get("agent_id"),
-                row.get("target_user_id"),
-                "running",
-                channel,
-                dumps(payload),
-            ),
-        )
-    return attempt_id
+        rows = conn.execute(
+            """SELECT * FROM proactive_outbox
+                  WHERE agent_id=? AND status='queued'
+                    AND (send_after IS NULL OR send_after <= datetime('now'))
+                  ORDER BY created_at ASC
+                  LIMIT ?""",
+            (agent_id, int(limit)),
+        ).fetchall()
+        for raw in rows:
+            row = dict(raw)
+            channel = str(channel_override or row.get("delivery_channel") or "command")
+            msg_payload = _payload_for(conn, row, channel)
+            attempt_id = new_id("prodel")
+            conn.execute(
+                """INSERT INTO proactive_deliveries(
+                     id, outbox_id, intent_id, agent_id, target_user_id, status,
+                     delivery_channel, payload_json
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    attempt_id,
+                    row.get("id"),
+                    row.get("intent_id"),
+                    row.get("agent_id"),
+                    row.get("target_user_id"),
+                    "running",
+                    channel,
+                    dumps(msg_payload),
+                ),
+            )
+            updated = conn.execute(
+                """UPDATE proactive_outbox
+                      SET status='delivering', delivery_channel=?, error=NULL
+                    WHERE id=? AND agent_id=? AND status='queued'""",
+                (channel, row["id"], agent_id),
+            ).rowcount
+            if updated:
+                claimed.append({"row": row, "attempt_id": attempt_id, "channel": channel, "payload": msg_payload})
+            else:
+                conn.execute(
+                    """UPDATE proactive_deliveries
+                          SET status='skipped', error=?, completed_at=datetime('now')
+                        WHERE id=?""",
+                    ("outbox was claimed by another worker", attempt_id),
+                )
+    return claimed
 
 
 def _finish_attempt(conn, attempt_id: str, *, status: str, result: dict[str, Any] | None = None, error: str | None = None) -> None:
@@ -250,17 +316,19 @@ def deliver_queued_outbox(
     ``delivery_mode`` / ``delivery_command`` / ``webhook_url`` 覆盖；默认读取
     服务器环境变量。函数由 heartbeat 脚本、CLI、tool handler 或测试调用。
     输出包含候选数、成功/失败 attempt 和配置摘要。副作用是：非 dry-run 时
-    调用外部 command/webhook/stdout；成功后在数据库中 mark sent，失败时只写
-    delivery attempt 和 outbox.error，保留 queued 以便下次重试。为避免重复外推，
-    生产环境应只运行一个 delivery worker 或保证外部适配器按 outbox_id 幂等。
+    先把 outbox 原子 claim 为 delivering，再调用外部 command/webhook/stdout；
+    成功后在数据库中 mark sent，失败时写 delivery attempt 并把 outbox 放回
+    queued 以便下次重试。外部适配器仍应按 outbox_id 幂等，以覆盖进程崩溃后
+    “外部已发但本地未标 sent”的极端场景。
     """
     cfg = delivery_config_status(payload)
-    rows = _due_outbox(conn, agent_id, max(1, int(limit)))
     if dry_run or not cfg.get("enabled"):
+        rows = _due_outbox(conn, agent_id, max(1, int(limit)))
         return {
             "ok": True,
             "status": "dry_run" if dry_run else "disabled",
             "config": cfg,
+            "stale_claims": {"requeued_count": 0, "outbox_ids": [], "attempt_ids": [], "skipped": True},
             "candidate_count": len(rows),
             "candidates": [
                 {"id": r.get("id"), "intent_id": r.get("intent_id"), "target_user_id": r.get("target_user_id"), "draft_text": r.get("draft_text")}
@@ -271,15 +339,18 @@ def deliver_queued_outbox(
         }
 
     mode = cfg["mode"]
+    stale = _reap_stale_delivery_claims(conn, agent_id, float(payload.get("claim_ttl_minutes") or 30))
     command = str(payload.get("delivery_command") or os.getenv("LIFEENGINE_PROACTIVE_DELIVERY_COMMAND") or "").strip()
     webhook_url = str(payload.get("webhook_url") or os.getenv("LIFEENGINE_PROACTIVE_DELIVERY_WEBHOOK_URL") or "").strip()
     timeout = float(cfg["timeout_seconds"])
     delivered: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
-    for row in rows:
-        channel = str(payload.get("delivery_channel") or row.get("delivery_channel") or mode)
-        msg_payload = _payload_for(conn, row, channel)
-        attempt_id = _record_attempt(conn, row, channel, msg_payload)
+    claimed = _claim_due_outbox(conn, agent_id, max(1, int(limit)), str(payload.get("delivery_channel") or mode))
+    for item in claimed:
+        row = item["row"]
+        channel = item["channel"]
+        msg_payload = item["payload"]
+        attempt_id = item["attempt_id"]
         try:
             result = _dispatch(msg_payload, mode=mode, command=command, webhook_url=webhook_url, timeout=timeout)
             result = {**result, "delivery_attempt_id": attempt_id, "delivery_mode": mode, "delivery_channel": channel}
@@ -302,13 +373,14 @@ def deliver_queued_outbox(
             error = f"{type(exc).__name__}: {exc}"
             _finish_attempt(conn, attempt_id, status="failed", error=error)
             with transaction(conn):
-                conn.execute("UPDATE proactive_outbox SET error=? WHERE id=?", (error, row["id"]))
+                conn.execute("UPDATE proactive_outbox SET status='queued', error=? WHERE id=? AND status='delivering'", (error, row["id"]))
             failed.append({"outbox_id": row["id"], "delivery_attempt_id": attempt_id, "error": error})
     return {
         "ok": not failed,
         "status": "delivered" if delivered and not failed else ("partial" if delivered else ("failed" if failed else "noop")),
         "config": cfg,
-        "candidate_count": len(rows),
+        "stale_claims": stale,
+        "candidate_count": len(claimed),
         "delivered": delivered,
         "failed": failed,
     }

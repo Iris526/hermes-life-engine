@@ -3510,11 +3510,22 @@ class LifeEngineRuntime:
                         "SELECT COUNT(*) FROM proactive_outbox WHERE agent_id=? AND status='queued'",
                         (owner_id,),
                     ).fetchone()[0]
+                    delivering_outbox = self.conn.execute(
+                        "SELECT COUNT(*) FROM proactive_outbox WHERE agent_id=? AND status='delivering'",
+                        (owner_id,),
+                    ).fetchone()[0]
                     pending_intents = self.conn.execute(
                         "SELECT COUNT(*) FROM proactive_intents WHERE agent_id=? AND status IN ('generated','queued')",
                         (owner_id,),
                     ).fetchone()[0]
-                    add("proactive_queue", "warn" if queued_outbox > 20 else "ok", f"pending_intents={pending_intents}, queued_outbox={queued_outbox}", pending_intents=pending_intents, queued_outbox=queued_outbox)
+                    add(
+                        "proactive_queue",
+                        "warn" if queued_outbox > 20 or delivering_outbox else "ok",
+                        f"pending_intents={pending_intents}, queued_outbox={queued_outbox}, delivering_outbox={delivering_outbox}",
+                        pending_intents=pending_intents,
+                        queued_outbox=queued_outbox,
+                        delivering_outbox=delivering_outbox,
+                    )
                     delivery_cfg = delivery_config_status()
                     recent_failed_deliveries = self.conn.execute(
                         "SELECT COUNT(*) FROM proactive_deliveries WHERE agent_id=? AND status='failed' AND created_at >= datetime('now','-24 hours')",
@@ -3535,6 +3546,7 @@ class LifeEngineRuntime:
                         delivery_msg,
                         config=delivery_cfg,
                         queued_outbox=queued_outbox,
+                        delivering_outbox=delivering_outbox,
                         recent_failed_deliveries=recent_failed_deliveries,
                     )
 
