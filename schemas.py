@@ -531,7 +531,7 @@ LIFE_WORLD = {
         "properties": {
             **OWNER_PROPS,
             "action": {"type": "string", "enum": [
-                "summary", "context", "effective_context", "scene_context",
+                "summary", "map", "world_map", "context", "effective_context", "scene_context",
                 "profile", "upsert_profile", "profiles",
                 "region", "upsert_region", "regions",
                 "place", "upsert_place", "places",

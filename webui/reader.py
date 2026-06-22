@@ -485,19 +485,24 @@ class LifeEngineReader:
                 },
             }
 
-    def world_model(self, owner_kind: str, owner_id: str, limit: int = 80) -> dict[str, Any]:
+    def world_model(self, owner_kind: str, owner_id: str, limit: int = 80,
+                    current_location: dict[str, Any] | None = None,
+                    actor_label: str | None = "明灯") -> dict[str, Any]:
         """读取结构化世界本体给 WebUI 使用。
 
-        输入是 owner 与条数上限；输出按档案、区域、地点、知识条目和势力影响分组。
-        函数只读 SQLite，不解释世界观文本含义；文本字段作为内容展示，真实生效边界
-        由 key/id/scope/status 等结构字段表达。
+        输入是 owner、条数上限和可选当前 location；输出按档案、区域、地点、知识条目、
+        势力影响和 map 分组。函数只读 SQLite，不解释世界观文本含义；地图坐标和地形
+        来自 profile.rules.map、region.traits.map、place.coordinates，明灯位置只从
+        当前事件 location 的结构化地点引用或唯一地点名解析。
         """
+        from .. import world_model as _world_model
         empty = {
             "profiles": [],
             "regions": [],
             "places": [],
             "lore": [],
             "faction_presence": [],
+            "map": _world_model.map_state([], [], [], current_location=current_location, actor_label=actor_label),
             "counts": {
                 "profiles": 0,
                 "regions": 0,
@@ -603,12 +608,18 @@ class LifeEngineReader:
 
             if not any([profiles, regions, places, lore, faction_presence]):
                 return empty
+            world_map = _world_model.map_state(
+                profiles, regions, places,
+                current_location=current_location,
+                actor_label=actor_label or "明灯",
+            )
             return {
                 "profiles": profiles,
                 "regions": regions,
                 "places": places,
                 "lore": lore,
                 "faction_presence": faction_presence,
+                "map": world_map,
                 "counts": {
                     "profiles": len(profiles),
                     "regions": len(regions),
@@ -1241,7 +1252,12 @@ class LifeEngineReader:
         campaigns = self.campaigns(owner_kind, owner_id, limit=12)
         inner_life = self.inner_life(owner_kind, owner_id)
         relationship = self.relationship_notes(owner_kind, owner_id, limit=20)
-        world_model = self.world_model(owner_kind, owner_id, limit=80)
+        identity = self.identity(owner_kind, owner_id)
+        world_model = self.world_model(
+            owner_kind, owner_id, limit=80,
+            current_location=(current or {}).get("location") if current else None,
+            actor_label=identity.get("name") or "明灯",
+        )
         social_world = self.social_world(owner_kind, owner_id, limit=80)
         sprite = map_avatar_state(state, current, sleep_day, review, delayed)
         workspace = self.workspace_docs(limit=20, include_content=False)
@@ -1249,7 +1265,7 @@ class LifeEngineReader:
             "meta": self.meta(),
             "owners": self.owners(),
             "owner": {"owner_kind": owner_kind, "owner_id": owner_id},
-            "identity": self.identity(owner_kind, owner_id),
+            "identity": identity,
             "control": self.control(owner_kind, owner_id),
             "state": state,
             "current_event": current,

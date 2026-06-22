@@ -86,7 +86,7 @@ DOMAINS: dict[str, dict[str, Any]] = {
     },
     "world": {
         "label": "世界本体 / World Model",
-        "read": ["summary", "context", "effective_context", "scene_context", "profiles", "regions", "places", "lore", "faction_presence"],
+        "read": ["summary", "map", "world_map", "context", "effective_context", "scene_context", "profiles", "regions", "places", "lore", "faction_presence"],
         "write": ["profile", "region", "place", "upsert_lore", "upsert_faction_presence", "archive", "delete", "remove"],
         "rule": "文本设定放在记录内容里；生效范围用 key/id/scope/status 结构保证。写入走 LifeOps。",
     },

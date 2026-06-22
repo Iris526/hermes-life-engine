@@ -838,6 +838,28 @@ function promptWorldValue(label, fallback = "", required = false) {
   return value;
 }
 
+// 读取地图坐标输入；空值保留为空，数字值限制在 0..100 画布内。
+function promptWorldNumber(label, fallback = "", required = false) {
+  const raw = promptWorldValue(label, fallback == null ? "" : String(fallback), required);
+  if (raw === null) return null;
+  if (!raw && !required) return "";
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    showToast(`${label} 必须是数字`, "warn");
+    return null;
+  }
+  return Math.max(0, Math.min(100, value));
+}
+
+// 把用户输入合并回原有结构字段，避免编辑世界地图时擦掉其它 worldview 扩展。
+function mergeMapFields(base = {}, fields = {}) {
+  const map = { ...(base.map || {}) };
+  Object.entries(fields).forEach(([key, value]) => {
+    if (value !== "" && value != null) map[key] = value;
+  });
+  return { ...base, map };
+}
+
 function promptWorldScope(item = {}) {
   const scopeKind = promptWorldValue("作用域 world / region / place", item.scope_kind || "world", true);
   if (scopeKind === null) return null;
@@ -870,8 +892,22 @@ async function worldEdit(kind, objectId = null) {
     if (summary === null) return;
     const background = promptWorldValue("背景正文", item.background_text || "");
     if (background === null) return;
+    const mapTitle = promptWorldValue("地图标题", item.rules?.map?.title || title || "世界地图");
+    if (mapTitle === null) return;
     action = "profile";
-    payload = { key, title, summary, background_text: background };
+    payload = {
+      key,
+      title,
+      summary,
+      background_text: background,
+      rules: mergeMapFields(item.rules || {}, {
+        title: mapTitle || title,
+        width: item.rules?.map?.width || 100,
+        height: item.rules?.map?.height || 100,
+        unit: item.rules?.map?.unit || "grid",
+      }),
+      evidence: item.evidence || {},
+    };
   } else if (kind === "region") {
     const key = promptWorldValue("区域 key", item.key || "", true);
     if (key === null) return;
@@ -885,8 +921,27 @@ async function worldEdit(kind, objectId = null) {
     if (summary === null) return;
     const content = promptWorldValue("正文", item.content || "");
     if (content === null) return;
+    const terrain = promptWorldValue("地形 terrain", item.traits?.map?.terrain || item.traits?.terrain || "urban");
+    if (terrain === null) return;
+    const x = promptWorldNumber("地图 x 0..100", item.traits?.map?.x ?? 18, true);
+    if (x === null) return;
+    const y = promptWorldNumber("地图 y 0..100", item.traits?.map?.y ?? 18, true);
+    if (y === null) return;
+    const width = promptWorldNumber("地图宽度 0..100", item.traits?.map?.width ?? 50, true);
+    if (width === null) return;
+    const height = promptWorldNumber("地图高度 0..100", item.traits?.map?.height ?? 36, true);
+    if (height === null) return;
     action = "region";
-    payload = { key, name, region_type: regionType || "region", parent_region_id: parentRegionId || null, summary, content };
+    payload = {
+      key,
+      name,
+      region_type: regionType || "region",
+      parent_region_id: parentRegionId || null,
+      summary,
+      content,
+      traits: mergeMapFields({ ...(item.traits || {}), terrain: terrain || "custom" }, { terrain, x, y, width, height }),
+      evidence: item.evidence || {},
+    };
   } else if (kind === "place") {
     const firstRegion = (snapshotData.world_model?.regions || [])[0];
     const key = promptWorldValue("地点 key", item.key || "", true);
@@ -903,8 +958,33 @@ async function worldEdit(kind, objectId = null) {
     if (summary === null) return;
     const content = promptWorldValue("正文", item.content || "");
     if (content === null) return;
+    const terrain = promptWorldValue("地形 terrain", item.coordinates?.terrain || item.traits?.terrain || "urban");
+    if (terrain === null) return;
+    const x = promptWorldNumber("地图 x 0..100", item.coordinates?.x ?? 50, true);
+    if (x === null) return;
+    const y = promptWorldNumber("地图 y 0..100", item.coordinates?.y ?? 50, true);
+    if (y === null) return;
+    const importance = promptWorldNumber("重要度 0..100", item.coordinates?.importance ?? item.traits?.importance ?? 50, true);
+    if (importance === null) return;
+    const defaultImportant = item.traits?.important || item.traits?.landmark || item.coordinates?.important || importance >= 70;
+    const importantRaw = promptWorldValue("重要建筑/地标？y/n", defaultImportant ? "y" : "n", true);
+    if (importantRaw === null) return;
+    const isImportant = /^(y|yes|true|1|是|重要)$/i.test(importantRaw);
+    const markerRole = promptWorldValue("地图标记 role", item.coordinates?.marker_role || (isImportant ? "important_building" : "place"));
+    if (markerRole === null) return;
     action = "place";
-    payload = { key, name, place_type: placeType || "place", region_id: regionId || null, parent_place_id: parentPlaceId || null, summary, content };
+    payload = {
+      key,
+      name,
+      place_type: placeType || "place",
+      region_id: regionId || null,
+      parent_place_id: parentPlaceId || null,
+      summary,
+      content,
+      coordinates: mergeMapFields({ ...(item.coordinates || {}), x, y, terrain, importance, important: isImportant, marker_role: markerRole || "place" }, {}),
+      traits: { ...(item.traits || {}), terrain, important: isImportant || Boolean(item.traits?.important) },
+      evidence: item.evidence || {},
+    };
   } else if (kind === "lore") {
     const key = promptWorldValue("知识 key", item.key || "", true);
     if (key === null) return;
@@ -919,7 +999,7 @@ async function worldEdit(kind, objectId = null) {
     const tagsRaw = promptWorldValue("标签，逗号分隔", (item.tags || []).join(","));
     if (tagsRaw === null) return;
     action = "upsert_lore";
-    payload = { key, title, lore_type: loreType || "background", ...scope, content, tags: tagsRaw.split(",").map(s => s.trim()).filter(Boolean) };
+    payload = { key, title, lore_type: loreType || "background", ...scope, content, tags: tagsRaw.split(",").map(s => s.trim()).filter(Boolean), evidence: item.evidence || {} };
   } else if (kind === "faction_presence") {
     const socialEntities = snapshotData.social_world?.entities || [];
     const fallbackFaction = socialEntities.find(e => ["faction", "organization", "club"].includes(e.entity_kind)) || socialEntities[0];
@@ -941,7 +1021,7 @@ async function worldEdit(kind, objectId = null) {
     const content = promptWorldValue("正文", item.content || "");
     if (content === null) return;
     action = "upsert_faction_presence";
-    payload = { faction_entity_id: factionEntityId, ...scope, influence, stance, summary, content };
+    payload = { faction_entity_id: factionEntityId, ...scope, influence, stance, summary, content, evidence: item.evidence || {} };
   } else {
     showToast("未知世界对象类型", "warn");
     return;
@@ -961,6 +1041,64 @@ async function archiveWorldObject(kind, objectId, label, cascade = false) {
   const hint = cascade ? "，并级联归档子项和作用域条目" : "";
   if (!window.confirm(`归档 ${label || kind}${hint}？`)) return;
   await worldAction("archive", { object_kind: kind, object_id: objectId, cascade });
+}
+
+// 渲染结构化世界地图；输入来自 world_model.map，输出 SVG 地形、地点和当前位置标记。
+function renderWorldMap(map = {}) {
+  const el = document.getElementById("world-map");
+  if (!el) return;
+  const terrain = map.terrain || [];
+  const markers = map.markers || [];
+  const actor = map.actor || {};
+  if (!terrain.length && !markers.length) {
+    el.innerHTML = '<div class="empty-state">还没有地图坐标</div>';
+    return;
+  }
+  const clamp = value => Math.max(0, Math.min(100, Number(value) || 0));
+  const terrainClass = key => `terrain_${String(key || "custom").replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  const terrainSvg = terrain.map(t => {
+    const x = clamp(t.x), y = clamp(t.y);
+    const w = Math.max(1, Math.min(100 - x, Number(t.width) || 1));
+    const h = Math.max(1, Math.min(100 - y, Number(t.height) || 1));
+    return `<g class="map-terrain ${terrainClass(t.terrain)}">
+      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="1.2"></rect>
+      ${t.name ? `<text x="${x + 2}" y="${y + 5}" class="map-region-label">${escapeHtml(t.name)}</text>` : ""}
+    </g>`;
+  }).join("");
+  const markerSvg = markers.map(m => {
+    const x = clamp(m.x), y = clamp(m.y);
+    const title = `${m.name || m.key || "地点"} · ${m.terrain || ""}`;
+    if (m.marker_role === "important_building" || m.is_important) {
+      return `<g class="map-marker important" transform="translate(${x} ${y})">
+        <path d="M0 -2.8 L2.8 0 L0 2.8 L-2.8 0 Z"></path>
+        <text x="4" y="-3">${escapeHtml(m.name || m.key || "")}</text>
+        <title>${escapeHtml(title)}</title>
+      </g>`;
+    }
+    return `<g class="map-marker" transform="translate(${x} ${y})">
+      <circle r="1.8"></circle>
+      <text x="3.5" y="-2">${escapeHtml(m.name || m.key || "")}</text>
+      <title>${escapeHtml(title)}</title>
+    </g>`;
+  }).join("");
+  const actorSvg = actor.status === "located"
+    ? `<g class="map-actor" transform="translate(${clamp(actor.x)} ${clamp(actor.y)})">
+        <circle r="4.6"></circle><circle r="1.7"></circle>
+        <text x="5.5" y="2">${escapeHtml(actor.label || "明灯")}</text>
+        <title>${escapeHtml((actor.label || "明灯") + " · " + (actor.place_name || ""))}</title>
+      </g>`
+    : "";
+  const legend = [
+    ["map-dot actor", actor.status === "located" ? `${actor.label || "明灯"} · ${actor.place_name || ""}` : "明灯位置未知"],
+    ["map-dot important", "重要建筑"],
+    ["map-dot place", "地点"],
+  ].map(([cls, label]) => `<span><i class="${cls}"></i>${escapeHtml(label)}</span>`).join("");
+  el.innerHTML = `<div class="world-map-canvas">
+    <svg viewBox="0 0 100 100" role="img" aria-label="${escapeHtml(map.canvas?.title || "世界地图")}" preserveAspectRatio="none">
+      ${terrainSvg}${markerSvg}${actorSvg}
+    </svg>
+  </div>
+  <div class="world-map-legend">${legend}</div>`;
 }
 
 function renderWorldModel() {
@@ -986,6 +1124,7 @@ function renderWorldModel() {
     stat("知识", counts.lore),
     stat("势力", counts.faction_presence),
   ].join("");
+  renderWorldMap(data.map || {});
 
   const profileEl = document.getElementById("world-profiles");
   if (profileEl) {

@@ -51,7 +51,20 @@ def _seed_world(rt: LifeEngineRuntime) -> dict[str, dict]:
         title="归明观世界",
         summary="废土边城里的修补者日常。",
         background_text="世界背景可以是文字，但不会靠提示词承诺生效。",
-        rules={"time_flow": "real_time", "currency": "灵铢"},
+        rules={
+            "time_flow": "real_time",
+            "currency": "灵铢",
+            "map": {
+                "title": "第七城近郊图",
+                "width": 100,
+                "height": 100,
+                "unit": "grid",
+                "terrain_layers": [
+                    {"key": "outer_waste", "name": "城外荒原", "terrain": "wasteland", "x": 0, "y": 0, "width": 100, "height": 100},
+                    {"key": "storm_channel", "name": "风暴沟", "terrain": "water", "x": 4, "y": 70, "width": 92, "height": 12},
+                ],
+            },
+        },
     ))
     region = _result(rt.world(
         "region",
@@ -59,7 +72,7 @@ def _seed_world(rt: LifeEngineRuntime) -> dict[str, dict]:
         name="第七城",
         region_type="city",
         summary="雨棚巷所在的边城。",
-        traits={"security": "contested"},
+        traits={"security": "contested", "terrain": "urban_ruins", "map": {"x": 18, "y": 18, "width": 58, "height": 48}},
     ))
     place = _result(rt.world(
         "place",
@@ -68,6 +81,7 @@ def _seed_world(rt: LifeEngineRuntime) -> dict[str, dict]:
         place_type="street",
         region_id=region["id"],
         summary="旧雨棚和符线节点密集的街巷。",
+        coordinates={"x": 36, "y": 42, "terrain": "street", "importance": 55},
     ))
     other_place = _result(rt.world(
         "place",
@@ -76,6 +90,17 @@ def _seed_world(rt: LifeEngineRuntime) -> dict[str, dict]:
         place_type="market",
         region_id=region["id"],
         summary="另一处市场。",
+        coordinates={"x": 58, "y": 58, "terrain": "market", "importance": 64},
+    ))
+    shrine = _result(rt.world(
+        "place",
+        key="place.guiming_shrine",
+        name="归明观",
+        place_type="shrine",
+        region_id=region["id"],
+        summary="明灯常去修补符线的道观。",
+        coordinates={"x": 43, "y": 34, "terrain": "urban_ruins", "importance": 92, "marker_role": "important_building"},
+        traits={"important": True, "building_type": "shrine"},
     ))
     world_lore = _result(rt.world(
         "upsert_lore",
@@ -126,6 +151,7 @@ def _seed_world(rt: LifeEngineRuntime) -> dict[str, dict]:
         "region": region,
         "place": place,
         "other_place": other_place,
+        "shrine": shrine,
         "world_lore": world_lore,
         "place_lore": place_lore,
         "other_lore": other_lore,
@@ -214,6 +240,35 @@ def test_effective_context_prioritizes_specific_scope_over_global_limit(tmp_path
         rt.close()
 
 
+def test_world_map_has_terrain_buildings_and_actor_marker(tmp_path: Path) -> None:
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        seeded = _seed_world(rt)
+        event = _result(rt.event_tool(
+            "create",
+            title="雨棚巷值守",
+            location={"name": "雨棚巷"},
+        ))
+        tool_map = rt.world("map", location={"name": "雨棚巷"})["world_map"]
+        assert tool_map["actor"]["status"] == "located"
+        rt.event_tool("update_state", mode="busy", active_event_id=event["id"])
+        db = str(db_path())
+    finally:
+        rt.close()
+
+    snap = LifeEngineReader(db).snapshot("agent", "default-agent")
+    world_map = snap["world_model"]["map"]
+    assert world_map["canvas"]["title"] == "第七城近郊图"
+    assert any(t["terrain"] == "wasteland" for t in world_map["terrain"])
+    assert any(t["terrain"] == "urban_ruins" and t["name"] == "第七城" for t in world_map["terrain"])
+    assert any(m["id"] == seeded["shrine"]["id"] and m["marker_role"] == "important_building" for m in world_map["markers"])
+    assert world_map["actor"]["status"] == "located"
+    assert world_map["actor"]["place_id"] == seeded["place"]["id"]
+    assert world_map["actor"]["label"] == "明灯"
+
+
 def test_archive_blocks_or_cascades_dependents(tmp_path: Path) -> None:
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
@@ -257,11 +312,13 @@ def test_webui_reader_and_endpoint_include_world_model(tmp_path: Path) -> None:
     assert any(p["name"] == "雨棚巷" and p["region_name"] == "第七城" for p in world["places"])
     assert any(l["scope_name"] == "雨棚巷" for l in world["lore"])
     assert any(p["faction_name"] == "巡城司" for p in world["faction_presence"])
+    assert world["map"]["counts"]["important_markers"] >= 1
 
     client = TestClient(create_app(db))
     endpoint = client.get("/api/world_model").json()
     assert endpoint["counts"]["places"] >= 2
     assert any(p["id"] == seeded["place"]["id"] for p in endpoint["places"])
+    assert any(m["id"] == seeded["shrine"]["id"] for m in endpoint["map"]["markers"])
 
 
 def test_webui_world_action_can_write_and_archive(tmp_path: Path) -> None:

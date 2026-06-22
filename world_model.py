@@ -17,6 +17,21 @@ WORLD_SCOPE_ID = "__world__"
 
 _SCOPE_KINDS = {"world", "region", "place"}
 
+_DEFAULT_MAP_CANVAS = {"width": 100, "height": 100, "unit": "grid", "projection": "local_grid"}
+_BUILDING_PLACE_TYPES = {"building", "home", "shop", "market", "shrine", "temple", "gate", "venue", "station"}
+_TERRAIN_LABELS = {
+    "urban": "城区",
+    "urban_ruins": "城区废墟",
+    "street": "街巷",
+    "market": "集市",
+    "wasteland": "荒原",
+    "water": "水域",
+    "forest": "林地",
+    "mountain": "山地",
+    "plain": "平原",
+    "custom": "地形",
+}
+
 def _row(row) -> dict[str, Any]:
     """把 SQLite row 安全转成普通 dict。"""
     return dict(row) if row else {}
@@ -66,6 +81,263 @@ def _clean_key(value: Any, fallback: str | None = None) -> str:
     if not key:
         raise ValueError("world key is required")
     return key
+
+
+def _as_float(value: Any, default: float) -> float:
+    """把地图坐标字段规整成浮点数。
+
+    输入来自 rules/traits/coordinates 中的用户可编辑字段；输出用于地图派生结构。
+    调用方是 map_state 的内部归一化流程。非数字值回落到 default，避免坏坐标让
+    整个世界地图不可读。
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _clamp_map_value(value: Any, default: float, minimum: float = 0.0, maximum: float = 100.0) -> float:
+    """限制地图坐标/尺寸范围。
+
+    输入是外部可编辑坐标；输出是画布范围内的数值。调用方是地图 region/place
+    派生逻辑。这里不抛错，保持旧数据兼容；严格校验留给更高层工具或测试。
+    """
+    return max(minimum, min(maximum, _as_float(value, default)))
+
+
+def _nested_map_config(value: dict[str, Any] | None) -> dict[str, Any]:
+    """读取记录中的 map 子结构。
+
+    输入通常是 profile.rules、region.traits 或 place.coordinates；输出是可编辑
+    地图配置字典。调用方只读返回值，不修改原对象，避免 reader/WebUI 间共享状态
+    被意外污染。
+    """
+    if not isinstance(value, dict):
+        return {}
+    nested = value.get("map")
+    return dict(nested) if isinstance(nested, dict) else {}
+
+
+def _coord_value(data: dict[str, Any], key: str, default: float) -> float:
+    """从多种兼容坐标字段中取值。
+
+    输入是 coordinates/traits.map；输出是地图数值。支持 `x/y`、`map.x/map.y`、
+    `position.x/position.y` 和 `grid_x/grid_y`，让旧数据和人工输入都能落到同一张
+    地图上。
+    """
+    nested = _nested_map_config(data)
+    position = data.get("position") if isinstance(data.get("position"), dict) else {}
+    aliases = {
+        "x": ["x", "grid_x", "lng", "longitude"],
+        "y": ["y", "grid_y", "lat", "latitude"],
+        "width": ["width", "w"],
+        "height": ["height", "h"],
+    }.get(key, [key])
+    for source in (data, nested, position):
+        for alias in aliases:
+            if isinstance(source, dict) and source.get(alias) is not None:
+                return _as_float(source.get(alias), default)
+    return float(default)
+
+
+def _terrain_from_record(record: dict[str, Any], fallback: str = "custom") -> str:
+    """从 region/place 记录解析地形类型。
+
+    输入是解码后的 region/place；输出是稳定 terrain key。地形可以来自 traits.terrain、
+    traits.map.terrain、coordinates.terrain 或记录类型。调用方是 map_state 和 WebUI
+    reader，用于给地图层上色和生成图例。
+    """
+    traits = record.get("traits") if isinstance(record.get("traits"), dict) else {}
+    coordinates = record.get("coordinates") if isinstance(record.get("coordinates"), dict) else {}
+    for source in (traits, _nested_map_config(traits), coordinates, _nested_map_config(coordinates)):
+        if isinstance(source, dict) and source.get("terrain"):
+            return str(source.get("terrain")).strip() or fallback
+    type_key = str(record.get("region_type") or record.get("place_type") or "").strip()
+    if type_key in {"street", "market"}:
+        return type_key
+    if type_key in {"city", "district", "gate"}:
+        return "urban"
+    return fallback
+
+
+def _region_shape(region: dict[str, Any], index: int, total: int) -> dict[str, Any]:
+    """把区域记录转换为地图地形块。
+
+    输入是解码后的 region 及其列表序号；输出包含 x/y/width/height/terrain 的绘图
+    结构。显式坐标来自 traits.map 或 traits；缺省时按序号生成稳定布局，保证
+    WebUI 仍有实际地图可显示，同时通过 explicit_position 标明是否人工定位。
+    """
+    traits = region.get("traits") if isinstance(region.get("traits"), dict) else {}
+    map_cfg = _nested_map_config(traits)
+    explicit = any(key in traits or key in map_cfg for key in {"x", "y", "width", "height", "w", "h"})
+    columns = max(1, min(3, total or 1))
+    col = index % columns
+    row = index // columns
+    default_w = 88.0 / columns
+    default_h = 28.0
+    default_x = 6.0 + col * (default_w + 3.0)
+    default_y = 8.0 + row * (default_h + 5.0)
+    width = _clamp_map_value(_coord_value(traits, "width", default_w), default_w, 8.0, 96.0)
+    height = _clamp_map_value(_coord_value(traits, "height", default_h), default_h, 8.0, 96.0)
+    x = _clamp_map_value(_coord_value(traits, "x", default_x), default_x, 0.0, max(0.0, 100.0 - width))
+    y = _clamp_map_value(_coord_value(traits, "y", default_y), default_y, 0.0, max(0.0, 100.0 - height))
+    terrain = _terrain_from_record(region, "urban")
+    return {
+        "id": region.get("id"),
+        "key": region.get("key"),
+        "name": region.get("name") or region.get("key"),
+        "region_type": region.get("region_type"),
+        "terrain": terrain,
+        "terrain_label": _TERRAIN_LABELS.get(terrain, terrain),
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "explicit_position": explicit,
+        "source": "region",
+    }
+
+
+def _marker_from_place(place: dict[str, Any], index: int,
+                       region_shapes: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """把地点记录转换为地图标记。
+
+    输入是解码后的 place 和所属区域形状；输出是可绘制 marker。坐标优先来自
+    coordinates.x/y，其次从所属 region 的矩形内稳定派生。调用方是 map_state；
+    副作用为无。
+    """
+    coordinates = place.get("coordinates") if isinstance(place.get("coordinates"), dict) else {}
+    traits = place.get("traits") if isinstance(place.get("traits"), dict) else {}
+    region = region_shapes.get(str(place.get("region_id") or "")) or {}
+    explicit = any(key in coordinates or key in _nested_map_config(coordinates) for key in {"x", "y", "grid_x", "grid_y"})
+    if explicit:
+        x = _clamp_map_value(_coord_value(coordinates, "x", 50.0), 50.0)
+        y = _clamp_map_value(_coord_value(coordinates, "y", 50.0), 50.0)
+    elif region:
+        slot = index % 9
+        x = _clamp_map_value(region.get("x", 8) + 5 + (slot % 3) * max(5.0, float(region.get("width", 25)) / 3), 50.0)
+        y = _clamp_map_value(region.get("y", 8) + 6 + (slot // 3) * max(5.0, float(region.get("height", 18)) / 3), 50.0)
+    else:
+        x = _clamp_map_value(12 + (index % 8) * 10, 50.0)
+        y = _clamp_map_value(18 + (index // 8) * 12, 50.0)
+    importance = _as_float(coordinates.get("importance", traits.get("importance", 50)), 50.0)
+    place_type = str(place.get("place_type") or "place")
+    is_building = place_type in _BUILDING_PLACE_TYPES or bool(traits.get("building_type") or coordinates.get("building_type"))
+    is_important = bool(traits.get("important") or traits.get("landmark") or coordinates.get("important") or coordinates.get("landmark") or importance >= 70)
+    marker_role = str(coordinates.get("marker_role") or traits.get("marker_role") or ("important_building" if is_building and is_important else "place"))
+    terrain = _terrain_from_record(place, str(region.get("terrain") or "custom"))
+    return {
+        "id": place.get("id"),
+        "key": place.get("key"),
+        "name": place.get("name") or place.get("key"),
+        "place_type": place_type,
+        "region_id": place.get("region_id"),
+        "region_name": place.get("region_name"),
+        "terrain": terrain,
+        "x": x,
+        "y": y,
+        "importance": importance,
+        "is_building": is_building,
+        "is_important": is_important,
+        "marker_role": marker_role,
+        "explicit_position": explicit,
+        "source": "place",
+    }
+
+
+def _actor_marker(markers: list[dict[str, Any]], current_location: dict[str, Any] | None,
+                  actor_label: str | None) -> dict[str, Any]:
+    """根据当前事件 location 生成明灯位置标记。
+
+    输入是地图 markers 和当前事件/状态 location；输出位于某个地点上的 actor 标记，
+    或 status=unknown 的空标记。调用方是 map_state 和 WebUI reader。这里只使用
+    结构化 world_place_id/key 或唯一名称匹配，不根据文本猜位置。
+    """
+    loc = current_location if isinstance(current_location, dict) else {}
+    label = actor_label or "明灯"
+    marker = None
+    if loc.get("world_place_id"):
+        marker = next((m for m in markers if m.get("id") == loc.get("world_place_id")), None)
+    if not marker and loc.get("world_place_key"):
+        marker = next((m for m in markers if m.get("key") == loc.get("world_place_key")), None)
+    name = str(loc.get("name") or loc.get("display_name") or "").strip()
+    if not marker and name:
+        matched = [m for m in markers if m.get("name") == name or m.get("key") == name]
+        marker = matched[0] if len(matched) == 1 else None
+    if not marker:
+        return {"label": label, "status": "unknown", "source": "current_location"}
+    return {
+        "label": label,
+        "status": "located",
+        "place_id": marker.get("id"),
+        "place_key": marker.get("key"),
+        "place_name": marker.get("name"),
+        "x": marker.get("x"),
+        "y": marker.get("y"),
+        "source": "current_location",
+    }
+
+
+def map_state(profiles: list[dict[str, Any]], regions: list[dict[str, Any]], places: list[dict[str, Any]],
+              *, current_location: dict[str, Any] | None = None,
+              actor_label: str | None = "明灯") -> dict[str, Any]:
+    """生成结构化世界地图。
+
+    输入是已解码的世界档案、区域、地点，以及可选当前 location；输出是 WebUI 和
+    context 可共享的地图对象，包括画布、地形层、区域形状、地点/建筑标记和明灯
+    当前位置标记。函数不写数据库；地形与坐标来自结构字段：
+    profile.rules.map、region.traits.map、place.coordinates。
+    """
+    profile_rules = profiles[0].get("rules") if profiles and isinstance(profiles[0].get("rules"), dict) else {}
+    map_cfg = _nested_map_config(profile_rules)
+    canvas = {
+        **_DEFAULT_MAP_CANVAS,
+        **{k: map_cfg.get(k) for k in ("width", "height", "unit", "projection", "title") if map_cfg.get(k) is not None},
+    }
+    terrain_layers: list[dict[str, Any]] = []
+    for idx, layer in enumerate(map_cfg.get("terrain_layers") or []):
+        if not isinstance(layer, dict):
+            continue
+        terrain = str(layer.get("terrain") or layer.get("key") or "custom")
+        terrain_layers.append({
+            "id": layer.get("id") or layer.get("key") or f"terrain.{idx}",
+            "name": layer.get("name") or layer.get("label") or _TERRAIN_LABELS.get(terrain, terrain),
+            "terrain": terrain,
+            "terrain_label": _TERRAIN_LABELS.get(terrain, terrain),
+            "x": _clamp_map_value(layer.get("x"), 0.0),
+            "y": _clamp_map_value(layer.get("y"), 0.0),
+            "width": _clamp_map_value(layer.get("width"), 100.0, 1.0, 100.0),
+            "height": _clamp_map_value(layer.get("height"), 100.0, 1.0, 100.0),
+            "source": "profile.rules.map.terrain_layers",
+        })
+
+    region_shapes = [_region_shape(region, i, len(regions)) for i, region in enumerate(regions)]
+    region_shape_by_id = {str(r.get("id")): r for r in region_shapes if r.get("id")}
+    markers = [_marker_from_place(place, i, region_shape_by_id) for i, place in enumerate(places)]
+    terrains = terrain_layers + region_shapes
+    actor = _actor_marker(markers, current_location, actor_label)
+    return {
+        "canvas": canvas,
+        "terrain": terrains,
+        "regions": region_shapes,
+        "markers": markers,
+        "actor": actor,
+        "legend": {
+            "terrain": [
+                {"terrain": terrain, "label": label}
+                for terrain, label in sorted({t.get("terrain"): t.get("terrain_label") for t in terrains}.items())
+            ],
+            "marker_roles": {
+                "place": "地点",
+                "important_building": "重要建筑",
+            },
+        },
+        "counts": {
+            "terrain": len(terrains),
+            "markers": len(markers),
+            "important_markers": len([m for m in markers if m.get("is_important")]),
+        },
+    }
 
 
 _ARCHIVE_TABLES = {
@@ -788,6 +1060,7 @@ def summary(conn, owner_kind: str, owner_id: str, *, limit: int = 20) -> dict[st
         "places": places,
         "lore": lore,
         "faction_presence": presence,
+        "map": map_state(profiles, regions, places),
         "counts": {
             "profiles": len(profiles),
             "regions": len(regions),

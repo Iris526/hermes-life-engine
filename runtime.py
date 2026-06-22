@@ -2679,6 +2679,18 @@ class LifeEngineRuntime:
                     self.conn, owner_kind, owner_id,
                     limit=int(payload.get("limit", 20)),
                 )}
+        if action_l in {"map", "world_map"}:
+            with transaction(self.conn):
+                summary = _world.summary(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 100)))
+                if payload.get("location") or payload.get("actor_label"):
+                    summary["map"] = _world.map_state(
+                        summary.get("profiles") or [],
+                        summary.get("regions") or [],
+                        summary.get("places") or [],
+                        current_location=payload.get("location"),
+                        actor_label=payload.get("actor_label") or "明灯",
+                    )
+                return {"ok": True, "world_map": summary.get("map") or {}}
         if action_l in {"context", "effective_context", "scene_context"}:
             with transaction(self.conn):
                 return {"ok": True, "world_context": _world.effective_context(
