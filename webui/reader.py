@@ -144,6 +144,7 @@ class LifeEngineReader:
                 "world_faction_presence",
                 "world_routes",
                 "world_conditions",
+                "world_chronicle_events",
             ]:
                 if self._table_exists(conn, table):
                     try:
@@ -533,6 +534,7 @@ class LifeEngineReader:
             "faction_presence": [],
             "routes": [],
             "conditions": [],
+            "chronicle_events": [],
             "map": _world_model.map_state([], [], [], current_location=current_location, actor_label=actor_label),
             "counts": {
                 "profiles": 0,
@@ -542,6 +544,7 @@ class LifeEngineReader:
                 "faction_presence": 0,
                 "routes": 0,
                 "conditions": 0,
+                "chronicle_events": 0,
             },
         }
         with self._connect() as conn:
@@ -682,7 +685,22 @@ class LifeEngineReader:
                     item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
                     item["scope_name"] = _scope_name(item.get("scope_kind"), item.get("scope_id"))
 
-            if not any([profiles, regions, places, lore, faction_presence, routes, conditions]):
+            chronicle_events: list[dict[str, Any]] = []
+            if self._table_exists(conn, "world_chronicle_events"):
+                chronicle_events = self._all(
+                    conn,
+                    """SELECT * FROM world_chronicle_events
+                       WHERE owner_kind=? AND owner_id=? AND status='active'
+                       ORDER BY sort_order ASC, COALESCE(occurred_at, '') ASC, created_at ASC LIMIT ?""",
+                    (owner_kind, owner_id, max(int(limit), 80)),
+                )
+                for item in chronicle_events:
+                    item["tags"] = _safe_json(item.pop("tags_json", None), [])
+                    item["related"] = _safe_json(item.pop("related_json", None), {})
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+                    item["scope_name"] = _scope_name(item.get("scope_kind"), item.get("scope_id"))
+
+            if not any([profiles, regions, places, lore, faction_presence, routes, conditions, chronicle_events]):
                 return empty
             world_map = _world_model.map_state(
                 profiles, regions, places, routes, conditions,
@@ -697,6 +715,7 @@ class LifeEngineReader:
                 "faction_presence": faction_presence,
                 "routes": routes,
                 "conditions": conditions,
+                "chronicle_events": chronicle_events,
                 "map": world_map,
                 "counts": {
                     "profiles": len(profiles),
@@ -706,6 +725,7 @@ class LifeEngineReader:
                     "faction_presence": len(faction_presence),
                     "routes": len(routes),
                     "conditions": len(conditions),
+                    "chronicle_events": len(chronicle_events),
                 },
             }
 

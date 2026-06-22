@@ -535,7 +535,7 @@ LIFE_WORLD = {
     "description": (
         "Structured World Model for worldview content that must actually take effect. "
         "Stores world profiles, map regions, places/cities, lore/background text, faction influence, "
-        "first-class travel routes, and dynamic regional/place conditions. "
+        "first-class travel routes, dynamic regional/place conditions, and expandable chronicle events. "
         "Text lives in summary/content/background_text, but activation and reuse are controlled by structured "
         "keys, ids, scope_kind/scope_id, status, and LifeOps receipts rather than prompt-only promises."
     ),
@@ -552,16 +552,17 @@ LIFE_WORLD = {
                 "upsert_faction_presence", "faction_presence",
                 "route", "upsert_route", "routes", "travel_edges",
                 "condition", "upsert_condition", "conditions", "world_conditions",
+                "chronicle_event", "upsert_chronicle_event", "chronicles", "chronicle_events", "timeline", "history",
                 "archive", "delete", "remove",
             ], "description": "世界本体操作。写操作走 LifeOps；读操作查询结构化世界状态。"},
-            "object_kind": {"type": "string", "enum": ["profile", "region", "place", "lore", "faction_presence", "route", "condition"], "description": "For archive/delete/remove."},
+            "object_kind": {"type": "string", "enum": ["profile", "region", "place", "lore", "faction_presence", "route", "condition", "chronicle_event"], "description": "For archive/delete/remove."},
             "object_id": {"type": "string", "description": "Stable row id for archive/delete/remove."},
             "key": {"type": "string", "description": "Stable key for profile/region/place/lore. Required for upserts."},
-            "title": {"type": "string", "description": "Profile or lore title."},
+            "title": {"type": "string", "description": "Profile, lore, condition, or chronicle event title."},
             "name": {"type": "string", "description": "Region/place display name."},
             "summary": {"type": "string", "description": "Short human/model-facing summary text."},
             "background_text": {"type": "string", "description": "World profile background text; structure still comes from fields."},
-            "content": {"type": "string", "description": "Long text body for region/place/lore/presence."},
+            "content": {"type": "string", "description": "Long text body for region/place/lore/presence/chronicle."},
             "rules": {"type": "object", "description": "Structured world rules such as time, currency, physics, permissions."},
             "region_type": {"type": "string", "description": "continent/city/district/street/custom."},
             "place_type": {"type": "string", "description": "shrine/shop/gate/home/venue/custom."},
@@ -599,6 +600,13 @@ LIFE_WORLD = {
             "intensity": {"type": "number", "description": "0..100 dynamic condition intensity."},
             "starts_at": {"type": "string"},
             "ends_at": {"type": "string"},
+            "event_type": {"type": "string", "description": "Chronicle category such as milestone/background/war/disaster/expansion/custom."},
+            "era_key": {"type": "string", "description": "Worldview-defined era/chapter key for chronicle grouping."},
+            "expansion_key": {"type": "string", "description": "Expansion/update key for later chronicle synchronization."},
+            "campaign_id": {"type": "string", "description": "Optional campaigns.id link for expansion/campaign-driven chronicle updates."},
+            "occurred_at": {"type": "string", "description": "In-world date text or ISO timestamp; core stores it but does not interpret calendar rules."},
+            "sort_order": {"type": "number", "description": "Manual chronological ordering when occurred_at is textual or absent."},
+            "related": {"type": "object", "description": "Structured chronicle links to places, factions, resources, external references, or prior events."},
             "evidence": {"type": "object", "description": "Structured source evidence linking to setup/import/event/tool."},
             "cascade": {"type": "boolean", "description": "For archive/delete/remove: also archive active child regions/places and scoped lore/presence."},
             "status": {"type": "string", "description": "active/archived filter or upsert status."},

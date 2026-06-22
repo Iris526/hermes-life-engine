@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 64
+_SCHEMA_VERSION = 65
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -324,6 +324,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 64:
         _create_schema_v64(conn)
         _record_schema_migration(conn, 64, "world_routes_conditions_and_social_request_lifecycle")
+    if current < 65:
+        _create_schema_v65(conn)
+        _record_schema_migration(conn, 65, "world_chronicle_events")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -4561,4 +4564,52 @@ def _create_schema_v64(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_world_conditions_scope ON world_conditions(owner_kind, owner_id, scope_kind, scope_id, status, severity)"
+    )
+
+
+def _create_schema_v65(conn: sqlite3.Connection) -> None:
+    """World chronicles: 可展开的大事记与编年史。
+
+    编年史是世界本体层的历史账本：用户可以手动填入系统上线前的背景事件，后续
+    资料片/campaign 也能按 expansion_key 或 campaign_id 追加。正文仍是文字，
+    但排序、作用域、资料片归属、状态和证据由结构字段维护，供 WebUI 展开阅读、
+    场景上下文和资料片更新复用。
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS world_chronicle_events (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          key TEXT NOT NULL,                        -- 稳定史事 key；供资料片更新幂等覆盖
+          title TEXT NOT NULL,                      -- 大事记标题；列表与展开摘要使用
+          event_type TEXT NOT NULL DEFAULT 'milestone', -- milestone/background/war/disaster/expansion/custom
+          era_key TEXT,                             -- 世界观纪元/阶段 key；由具体世界解释
+          expansion_key TEXT,                       -- 资料片/版本 key；后续资料片更新按它联动
+          campaign_id TEXT,                         -- 可选 life_campaign/campaigns.id 引用
+          scope_kind TEXT NOT NULL DEFAULT 'world', -- world | region | place
+          scope_id TEXT NOT NULL DEFAULT '__world__',
+          occurred_at TEXT,                         -- 世界内时间文本或 ISO 时间；核心不解释历法
+          sort_order REAL NOT NULL DEFAULT 0,       -- 无精确日期时的人工排序
+          summary TEXT,
+          content TEXT,                             -- 可展开正文，描述发生了什么
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          related_json TEXT NOT NULL DEFAULT '{}',  -- 关联地点/势力/资源/外部资料等结构引用
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',    -- active | archived
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_world_chronicle_owner ON world_chronicle_events(owner_kind, owner_id, status, sort_order, occurred_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_world_chronicle_scope ON world_chronicle_events(owner_kind, owner_id, scope_kind, scope_id, status)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_world_chronicle_expansion ON world_chronicle_events(owner_kind, owner_id, expansion_key, campaign_id, status)"
     )

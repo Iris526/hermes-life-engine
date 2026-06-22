@@ -594,6 +594,12 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .phase-chip.done { color: var(--good); border-color: var(--good); }
 .phase-chip.now { color: var(--bg-0); background: var(--gold); border-color: var(--gold); font-weight: 600; box-shadow: 0 0 8px var(--gold-glow); }
 .phase-arrow { color: var(--text-faint); font-size: 11px; }
+.chronicle-card summary { display: grid; grid-template-columns: auto minmax(74px,auto) minmax(0,1fr) auto; gap: 8px; align-items: baseline; cursor: pointer; list-style: none; }
+.chronicle-card summary::-webkit-details-marker { display: none; }
+.chronicle-card summary::before { content: "+"; color: var(--gold); font-family: var(--font-mono); }
+.chronicle-card[open] summary::before { content: "-"; }
+.chronicle-time { color: var(--cyan-dim); font: 11px var(--font-mono); white-space: nowrap; }
+.chronicle-card summary .social-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ══════════ 社会世界 / 声望 ══════════ */
 .social-body { display: flex; flex-direction: column; gap: 14px; }

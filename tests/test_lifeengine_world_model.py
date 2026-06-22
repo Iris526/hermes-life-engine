@@ -171,12 +171,12 @@ def _seed_world(rt: LifeEngineRuntime) -> dict[str, dict]:
     }
 
 
-def test_schema_v64_and_world_model_tables(tmp_path: Path) -> None:
+def test_schema_v65_and_world_model_tables(tmp_path: Path) -> None:
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
-        assert _SCHEMA_VERSION >= 64
-        assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 64
+        assert _SCHEMA_VERSION >= 65
+        assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 65
         tables = {r[0] for r in rt.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         assert {
             "world_profiles",
@@ -186,6 +186,7 @@ def test_schema_v64_and_world_model_tables(tmp_path: Path) -> None:
             "world_faction_presence",
             "world_routes",
             "world_conditions",
+            "world_chronicle_events",
         }.issubset(tables)
     finally:
         rt.close()
@@ -336,6 +337,69 @@ def test_world_routes_and_conditions_feed_map_and_context(tmp_path: Path) -> Non
     assert world["map"]["counts"]["conditions"] >= 1
 
 
+def test_world_chronicles_are_expandable_and_scope_bound(tmp_path: Path) -> None:
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        seeded = _seed_world(rt)
+        world_event = _result(rt.world(
+            "chronicle_event",
+            key="chronicle.before.lightburst",
+            title="灵子爆发",
+            event_type="disaster",
+            era_key="prelude",
+            expansion_key="core.background",
+            occurred_at="旧历 0 年",
+            sort_order=1,
+            summary="灵子爆发改变了世界运行规则。",
+            content="城市、荒原和异常区域在这一年重新划界。",
+            tags=["背景", "灾变"],
+        ))
+        place_event = _result(rt.world(
+            "upsert_chronicle_event",
+            key="chronicle.rain_shelter.node",
+            title="雨棚巷符线重铺",
+            event_type="local_history",
+            scope_kind="place",
+            scope_id=seeded["place"]["id"],
+            occurred_at="新历 12 年春",
+            sort_order=12,
+            summary="雨棚巷符线节点被重铺。",
+            content="这件事解释了雨棚巷为什么有密集旧符线。",
+            related={"places": [seeded["place"]["id"]]},
+            tags=["地点史"],
+        ))
+        other_event = _result(rt.world(
+            "chronicle_event",
+            key="chronicle.south_gate.trade",
+            title="南门集商规成形",
+            event_type="local_history",
+            scope_kind="place",
+            scope_id=seeded["other_place"]["id"],
+            occurred_at="新历 10 年",
+            sort_order=10,
+            content="南门集自己的商规不该进入雨棚巷。",
+        ))
+
+        listed = rt.world("chronicles", expansion_key="core.background")["chronicle_events"]
+        assert [item["key"] for item in listed] == [world_event["key"]]
+        scoped = rt.world("context", place_id=seeded["place"]["id"])["world_context"]
+        scoped_keys = [item["key"] for item in scoped["chronicle_events"]]
+        assert world_event["key"] in scoped_keys
+        assert place_event["key"] in scoped_keys
+        assert other_event["key"] not in scoped_keys
+        assert scoped["counts"]["chronicle_events"] == 2
+
+        db = str(db_path())
+    finally:
+        rt.close()
+
+    world = LifeEngineReader(db).snapshot("agent", "default-agent")["world_model"]
+    assert any(c["key"] == "chronicle.rain_shelter.node" and c["scope_name"] == "雨棚巷" for c in world["chronicle_events"])
+    assert any(c["content"] == "城市、荒原和异常区域在这一年重新划界。" for c in world["chronicle_events"])
+
+
 def test_archive_blocks_or_cascades_dependents(tmp_path: Path) -> None:
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
@@ -381,6 +445,7 @@ def test_webui_reader_and_endpoint_include_world_model(tmp_path: Path) -> None:
     assert any(p["faction_name"] == "巡城司" for p in world["faction_presence"])
     assert "routes" in world
     assert "conditions" in world
+    assert "chronicle_events" in world
     assert world["map"]["counts"]["important_markers"] >= 1
 
     client = TestClient(create_app(db))
@@ -423,3 +488,17 @@ def test_webui_world_action_can_write_and_archive(tmp_path: Path) -> None:
     assert route_created["ok"] is True
     endpoint = client.get("/api/world_model").json()
     assert any(r["key"] == "web.route" for r in endpoint["routes"])
+
+    chronicle_created = client.post("/api/action", json={
+        "action": "world",
+        "payload": {
+            "world_action": "chronicle_event",
+            "key": "web.chronicle",
+            "title": "网页大事",
+            "content": "网页写入的大事记正文。",
+            "sort_order": 2,
+        },
+    }).json()
+    assert chronicle_created["ok"] is True
+    endpoint = client.get("/api/world_model").json()
+    assert any(c["key"] == "web.chronicle" and c["content"] == "网页写入的大事记正文。" for c in endpoint["chronicle_events"])

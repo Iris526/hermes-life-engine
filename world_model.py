@@ -114,6 +114,14 @@ def _decode_condition(row) -> dict[str, Any]:
     return _decode_json_fields(_row(row), ["payload_json", "evidence_json"])
 
 
+def _decode_chronicle_event(row) -> dict[str, Any]:
+    """解码世界编年史事件行。"""
+    item = _decode_json_fields(_row(row), ["related_json", "evidence_json"])
+    if "tags_json" in item:
+        item["tags"] = loads(item.pop("tags_json"), [])
+    return item
+
+
 def _clean_key(value: Any, fallback: str | None = None) -> str:
     """规整外部传入的稳定 key。"""
     key = str(value or fallback or "").strip()
@@ -733,6 +741,7 @@ _ARCHIVE_TABLES = {
     "faction_presence": ("world_faction_presence", _decode_presence),
     "route": ("world_routes", _decode_route),
     "condition": ("world_conditions", _decode_condition),
+    "chronicle_event": ("world_chronicle_events", _decode_chronicle_event),
 }
 
 
@@ -1284,6 +1293,74 @@ def upsert_condition(conn, owner_kind: str, owner_id: str, *, key: str, title: s
     return _decode_condition(conn.execute("SELECT * FROM world_conditions WHERE id=?", (condition_id,)).fetchone())
 
 
+def upsert_chronicle_event(conn, owner_kind: str, owner_id: str, *, key: str, title: str,
+                           event_type: str = "milestone", era_key: str | None = None,
+                           expansion_key: str | None = None, campaign_id: str | None = None,
+                           scope_kind: str = "world", scope_id: str | None = None,
+                           occurred_at: str | None = None, sort_order: float = 0.0,
+                           summary: str | None = None, content: str | None = None,
+                           tags: list[str] | None = None,
+                           related: dict[str, Any] | None = None,
+                           evidence: dict[str, Any] | None = None,
+                           status: str = "active", source: str = "life_world") -> dict[str, Any]:
+    """创建或更新一条世界大事记/编年史事件。
+
+    输入来自 life_world 的 chronicle_event/upsert_chronicle_event 写操作；输出是
+    持久化史事记录。它用于记录系统上线前背景、资料片更新、世界大事件和地点史，
+    生命周期随 owner 本地 DB 持久化。正文 content 可展开阅读，但生效范围由
+    scope_kind/scope_id 控制；资料片联动按 expansion_key/campaign_id 幂等维护。
+    """
+    key = _clean_key(key)
+    title = str(title or "").strip()
+    if not title:
+        raise ValueError("chronicle event title is required")
+    if status not in {"active", "archived"}:
+        raise ValueError("chronicle event status must be active/archived")
+    scope_kind, scope_id = _validate_scope(conn, owner_kind, owner_id, scope_kind, scope_id)
+    try:
+        sort_value = float(sort_order or 0.0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("chronicle event sort_order must be numeric") from exc
+    existing = conn.execute(
+        "SELECT id FROM world_chronicle_events WHERE owner_kind=? AND owner_id=? AND key=?",
+        (owner_kind, owner_id, key),
+    ).fetchone()
+    if existing:
+        event_id = existing["id"]
+        conn.execute(
+            """UPDATE world_chronicle_events
+               SET title=?, event_type=?, era_key=?, expansion_key=?, campaign_id=?,
+                   scope_kind=?, scope_id=?, occurred_at=?, sort_order=?, summary=?,
+                   content=?, tags_json=?, related_json=?, evidence_json=?,
+                   status=?, source=?, updated_at=datetime('now')
+               WHERE id=?""",
+            (title, event_type or "milestone", era_key, expansion_key, campaign_id,
+             scope_kind, scope_id, occurred_at, sort_value, summary, content,
+             dumps(tags or []), dumps(related or {}), dumps(evidence or {}),
+             status, source, event_id),
+        )
+        event_kind = "world_chronicle_event_updated"
+    else:
+        event_id = new_id("worldchron")
+        conn.execute(
+            """INSERT INTO world_chronicle_events(
+                 id, owner_kind, owner_id, key, title, event_type, era_key,
+                 expansion_key, campaign_id, scope_kind, scope_id, occurred_at,
+                 sort_order, summary, content, tags_json, related_json,
+                 evidence_json, status, source
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (event_id, owner_kind, owner_id, key, title, event_type or "milestone",
+             era_key, expansion_key, campaign_id, scope_kind, scope_id, occurred_at,
+             sort_value, summary, content, dumps(tags or []), dumps(related or {}),
+             dumps(evidence or {}), status, source),
+        )
+        event_kind = "world_chronicle_event_created"
+    append_journal(conn, owner_kind, owner_id, event_kind,
+                   {"chronicle_event_id": event_id, "key": key, "scope_kind": scope_kind,
+                    "scope_id": scope_id, "expansion_key": expansion_key}, source)
+    return _decode_chronicle_event(conn.execute("SELECT * FROM world_chronicle_events WHERE id=?", (event_id,)).fetchone())
+
+
 def _active_dependents(conn, owner_kind: str, owner_id: str, kind: str, object_id: str) -> list[dict[str, Any]]:
     """查询归档对象的 active 依赖。
 
@@ -1298,6 +1375,7 @@ def _active_dependents(conn, owner_kind: str, owner_id: str, kind: str, object_i
             ("lore", "world_lore_entries", None),
             ("faction_presence", "world_faction_presence", None),
             ("condition", "world_conditions", None),
+            ("chronicle_event", "world_chronicle_events", None),
         ]
         for dep_kind, table, column in checks:
             if column:
@@ -1325,6 +1403,7 @@ def _active_dependents(conn, owner_kind: str, owner_id: str, kind: str, object_i
             ("lore", "world_lore_entries", None),
             ("faction_presence", "world_faction_presence", None),
             ("condition", "world_conditions", None),
+            ("chronicle_event", "world_chronicle_events", None),
         ]
         for dep_kind, table, column in checks:
             if column:
@@ -1389,7 +1468,7 @@ def archive_object(conn, owner_kind: str, owner_id: str, *, object_kind: str,
     """
     kind = str(object_kind or "").strip().lower()
     if kind not in _ARCHIVE_TABLES:
-        raise ValueError("object_kind must be profile/region/place/lore/faction_presence/route/condition")
+        raise ValueError("object_kind must be profile/region/place/lore/faction_presence/route/condition/chronicle_event")
     table, decoder = _ARCHIVE_TABLES[kind]
     params: list[Any] = [owner_kind, owner_id]
     where = "owner_kind=? AND owner_id=?"
@@ -1587,6 +1666,51 @@ def list_conditions(conn, owner_kind: str, owner_id: str, *,
     return [_decode_condition(r) for r in rows]
 
 
+def list_chronicle_events(conn, owner_kind: str, owner_id: str, *,
+                          scope_kind: str | None = None, scope_id: str | None = None,
+                          event_type: str | None = None, era_key: str | None = None,
+                          expansion_key: str | None = None, campaign_id: str | None = None,
+                          status: str | None = "active", limit: int = 120) -> list[dict[str, Any]]:
+    """列出世界大事记/编年史事件。
+
+    输入可按作用域、纪元、资料片或 campaign 过滤；输出按人工排序和世界内时间升序
+    返回。调用方是 life_world 读操作、effective_context 和 WebUI。函数只读数据库，
+    不把历史事件解释成现实事件，也不自动回填旧设定。
+    """
+    params: list[Any] = [owner_kind, owner_id]
+    where = "WHERE owner_kind=? AND owner_id=?"
+    if scope_kind:
+        where += " AND scope_kind=?"
+        params.append(scope_kind)
+    if scope_id:
+        where += " AND scope_id=?"
+        params.append(scope_id)
+    if event_type:
+        where += " AND event_type=?"
+        params.append(event_type)
+    if era_key:
+        where += " AND era_key=?"
+        params.append(era_key)
+    if expansion_key:
+        where += " AND expansion_key=?"
+        params.append(expansion_key)
+    if campaign_id:
+        where += " AND campaign_id=?"
+        params.append(campaign_id)
+    if status:
+        where += " AND status=?"
+        params.append(status)
+    else:
+        where += " AND status!='archived'"
+    rows = conn.execute(
+        f"""SELECT * FROM world_chronicle_events {where}
+            ORDER BY sort_order ASC, COALESCE(occurred_at, '') ASC, created_at ASC
+            LIMIT ?""",
+        tuple(params + [int(limit)]),
+    ).fetchall()
+    return [_decode_chronicle_event(r) for r in rows]
+
+
 def effective_context(conn, owner_kind: str, owner_id: str, *, region_id: str | None = None,
                       region_key: str | None = None, place_id: str | None = None,
                       place_key: str | None = None, location: dict[str, Any] | None = None,
@@ -1618,6 +1742,7 @@ def effective_context(conn, owner_kind: str, owner_id: str, *, region_id: str | 
     lore = _collect_effective_entries(conn, owner_kind, owner_id, effective_scopes, list_lore_entries, limit_v)
     presence = _collect_effective_entries(conn, owner_kind, owner_id, effective_scopes, list_faction_presence, limit_v)
     conditions = _collect_effective_entries(conn, owner_kind, owner_id, effective_scopes, list_conditions, limit_v)
+    chronicle_events = _collect_effective_entries(conn, owner_kind, owner_id, effective_scopes, list_chronicle_events, limit_v)
     route_by_id: dict[str, dict[str, Any]] = {}
     for scope_kind, scope_id in effective_scopes:
         for route in list_routes(conn, owner_kind, owner_id, scope_kind=scope_kind, scope_id=scope_id, limit=limit_v):
@@ -1641,6 +1766,7 @@ def effective_context(conn, owner_kind: str, owner_id: str, *, region_id: str | 
         "faction_presence": presence,
         "routes": list(route_by_id.values())[:limit_v],
         "conditions": conditions,
+        "chronicle_events": chronicle_events,
         "counts": {
             "profiles": len(profiles),
             "regions": 1 if region else 0,
@@ -1649,6 +1775,7 @@ def effective_context(conn, owner_kind: str, owner_id: str, *, region_id: str | 
             "faction_presence": len(presence),
             "routes": min(len(route_by_id), limit_v),
             "conditions": len(conditions),
+            "chronicle_events": len(chronicle_events),
         },
     }
 
@@ -1667,6 +1794,7 @@ def summary(conn, owner_kind: str, owner_id: str, *, limit: int = 20) -> dict[st
     presence = list_faction_presence(conn, owner_kind, owner_id, limit=limit)
     routes = list_routes(conn, owner_kind, owner_id, limit=limit)
     conditions = list_conditions(conn, owner_kind, owner_id, limit=limit)
+    chronicle_events = list_chronicle_events(conn, owner_kind, owner_id, limit=max(limit, 40))
     return {
         "profiles": profiles,
         "regions": regions,
@@ -1675,6 +1803,7 @@ def summary(conn, owner_kind: str, owner_id: str, *, limit: int = 20) -> dict[st
         "faction_presence": presence,
         "routes": routes,
         "conditions": conditions,
+        "chronicle_events": chronicle_events,
         "map": map_state(profiles, regions, places, routes, conditions),
         "counts": {
             "profiles": len(profiles),
@@ -1684,5 +1813,6 @@ def summary(conn, owner_kind: str, owner_id: str, *, limit: int = 20) -> dict[st
             "faction_presence": len(presence),
             "routes": len(routes),
             "conditions": len(conditions),
+            "chronicle_events": len(chronicle_events),
         },
     }

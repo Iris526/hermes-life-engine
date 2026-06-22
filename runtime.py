@@ -858,6 +858,12 @@ class LifeEngineRuntime:
                 self.conn, owner_kind, owner_id,
                 source=payload.get("source") or source,
                 **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "WORLD_UPSERT_CHRONICLE_EVENT":
+            from . import world_model as _world
+            return _world.upsert_chronicle_event(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
         elif op_type == "WORLD_ARCHIVE_OBJECT":
             from . import world_model as _world
             return _world.archive_object(
@@ -2691,9 +2697,10 @@ class LifeEngineRuntime:
         """管理结构化世界本体。
 
         输入来自 `life_world` 工具、life_interface 或测试；读操作返回世界档案、区域、
-        地点、知识条目和势力影响，写操作全部转换成 LifeOps。文本设定只作为记录
-        内容存在，生效范围必须由 key/id/scope_kind/scope_id/status 等结构字段决定。
-        输出是对应世界对象或摘要；失败由 LifeOps savepoint 回滚并留下 trace。
+        地点、知识条目、势力影响、路线、动态状态和编年史，写操作全部转换成
+        LifeOps。文本设定只作为记录内容存在，生效范围必须由
+        key/id/scope_kind/scope_id/status 等结构字段决定。输出是对应世界对象或摘要；
+        失败由 LifeOps savepoint 回滚并留下 trace。
         """
         from . import world_model as _world
         action_l = str(action or "summary").strip().lower()
@@ -2805,6 +2812,21 @@ class LifeEngineRuntime:
                 )}
         if action_l in {"condition", "upsert_condition", "set_condition", "hazard", "opportunity"}:
             return self.commit_ops([{"type": "WORLD_UPSERT_CONDITION", "payload": payload}], owner_kind, owner_id, "life_world_tool", session_id, turn_id)
+        if action_l in {"chronicles", "chronicle_events", "timeline", "history", "major_events"}:
+            with transaction(self.conn):
+                return {"ok": True, "chronicle_events": _world.list_chronicle_events(
+                    self.conn, owner_kind, owner_id,
+                    scope_kind=payload.get("scope_kind"),
+                    scope_id=payload.get("scope_id"),
+                    event_type=payload.get("event_type"),
+                    era_key=payload.get("era_key"),
+                    expansion_key=payload.get("expansion_key"),
+                    campaign_id=payload.get("campaign_id"),
+                    status=payload.get("status", "active"),
+                    limit=int(payload.get("limit", 120)),
+                )}
+        if action_l in {"chronicle_event", "upsert_chronicle_event", "set_chronicle_event", "milestone"}:
+            return self.commit_ops([{"type": "WORLD_UPSERT_CHRONICLE_EVENT", "payload": payload}], owner_kind, owner_id, "life_world_tool", session_id, turn_id)
         if action_l in {"archive", "delete", "remove"}:
             return self.commit_ops([{"type": "WORLD_ARCHIVE_OBJECT", "payload": payload}], owner_kind, owner_id, "life_world_tool", session_id, turn_id)
         raise ValueError(f"Unknown world action: {action}")

@@ -826,6 +826,7 @@ function worldList(kind) {
   if (kind === "faction_presence") return data.faction_presence || [];
   if (kind === "route") return data.routes || [];
   if (kind === "condition") return data.conditions || [];
+  if (kind === "chronicle_event") return data.chronicle_events || [];
   return [];
 }
 
@@ -1108,6 +1109,49 @@ async function worldEdit(kind, objectId = null) {
     if (tagsRaw === null) return;
     action = "upsert_lore";
     payload = { key, title, lore_type: loreType || "background", ...scope, content, tags: tagsRaw.split(",").map(s => s.trim()).filter(Boolean), evidence: item.evidence || {} };
+  } else if (kind === "chronicle_event") {
+    const key = promptWorldValue("史事 key", item.key || "", true);
+    if (key === null) return;
+    const title = promptWorldValue("大事标题", item.title || key, true);
+    if (title === null) return;
+    const eventType = promptWorldValue("事件类型", item.event_type || "milestone");
+    if (eventType === null) return;
+    const eraKey = promptWorldValue("纪元/阶段 key，可空", item.era_key || "");
+    if (eraKey === null) return;
+    const expansionKey = promptWorldValue("资料片/版本 key，可空", item.expansion_key || "");
+    if (expansionKey === null) return;
+    const campaignId = promptWorldValue("关联 campaign id，可空", item.campaign_id || "");
+    if (campaignId === null) return;
+    const scope = promptWorldScope(item);
+    if (!scope) return;
+    const occurredAt = promptWorldValue("发生时间，可写世界内纪年", item.occurred_at || "");
+    if (occurredAt === null) return;
+    const sortOrder = promptWorldNumber("排序值，越小越早", item.sort_order ?? 0, true, -1000000, 1000000);
+    if (sortOrder === null) return;
+    const summary = promptWorldValue("摘要", item.summary || "");
+    if (summary === null) return;
+    const content = promptWorldValue("展开正文：发生了什么", item.content || "");
+    if (content === null) return;
+    const tagsRaw = promptWorldValue("标签，逗号分隔", (item.tags || []).join(","));
+    if (tagsRaw === null) return;
+    action = "chronicle_event";
+    payload = {
+      key,
+      title,
+      event_type: eventType || "milestone",
+      era_key: eraKey || null,
+      expansion_key: expansionKey || null,
+      campaign_id: campaignId || null,
+      ...scope,
+      occurred_at: occurredAt || null,
+      sort_order: sortOrder,
+      summary,
+      content,
+      tags: tagsRaw.split(",").map(s => s.trim()).filter(Boolean),
+      related: item.related || {},
+      evidence: item.evidence || {},
+      status: item.status || "active",
+    };
   } else if (kind === "faction_presence") {
     const socialEntities = snapshotData.social_world?.entities || [];
     const fallbackFaction = socialEntities.find(e => ["faction", "organization", "club"].includes(e.entity_kind)) || socialEntities[0];
@@ -1833,6 +1877,7 @@ function renderWorldModel() {
       <button class="world-mini-btn create" onclick="worldQuickCreate('region')">新区域</button>
       <button class="world-mini-btn create" onclick="worldQuickCreate('place')">新地点</button>
       <button class="world-mini-btn create" onclick="worldQuickCreate('lore')">新知识</button>
+      <button class="world-mini-btn create" onclick="worldQuickCreate('chronicle_event')">新大事记</button>
       <button class="world-mini-btn create" onclick="worldQuickCreate('faction_presence')">新势力影响</button>
       <button class="world-mini-btn create" onclick="worldQuickCreate('route')">新路线</button>
       <button class="world-mini-btn create" onclick="worldQuickCreate('condition')">新状态</button>
@@ -1844,6 +1889,7 @@ function renderWorldModel() {
     stat("区域", counts.regions),
     stat("地点", counts.places),
     stat("知识", counts.lore),
+    stat("大事", counts.chronicle_events),
     stat("势力", counts.faction_presence),
     stat("路线", counts.routes),
     stat("状态", counts.conditions),
@@ -1904,6 +1950,29 @@ function renderWorldModel() {
         ${tags ? `<div class="social-chip-list tight">${tags}</div>` : ""}
       </div>`;
     }).join("") : '<div class="empty-state">还没有知识条目</div>';
+  }
+
+  const chroniclesEl = document.getElementById("world-chronicles");
+  if (chroniclesEl) {
+    const chronicles = data.chronicle_events || [];
+    chroniclesEl.innerHTML = chronicles.length ? chronicles.slice(0, 40).map(c => {
+      const tags = (c.tags || []).slice(0, 5).map(t => `<span class="social-chip mini">${escapeHtml(t)}</span>`).join("");
+      const scope = [c.scope_kind || "world", c.scope_name || c.scope_id].filter(Boolean).join(" · ");
+      const meta = [c.era_key, c.occurred_at, c.expansion_key ? `资料片 ${c.expansion_key}` : "", scope].filter(Boolean).join(" · ");
+      const body = c.content || c.summary || "没有展开正文";
+      return `<details class="social-card world-card chronicle-card">
+        <summary>
+          <span class="chronicle-time">${escapeHtml(c.occurred_at || c.era_key || "未定时")}</span>
+          <span class="social-title">${escapeHtml(c.title || c.key)}</span>
+          <span class="social-tag">${escapeHtml(c.event_type || "milestone")}</span>
+        </summary>
+        ${c.summary ? `<div class="social-desc">${escapeHtml(c.summary)}</div>` : ""}
+        <div class="world-long-text">${escapeHtml(body)}</div>
+        <div class="social-row-meta">${escapeHtml(meta || c.key || "")}</div>
+        ${tags ? `<div class="social-chip-list tight">${tags}</div>` : ""}
+        ${worldActionButtons("chronicle_event", c, c.title || c.key)}
+      </details>`;
+    }).join("") : '<div class="empty-state">还没有大事记</div>';
   }
 
   const presenceEl = document.getElementById("world-faction-presence");

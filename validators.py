@@ -118,6 +118,7 @@ ALLOWED_OPS = {
     "WORLD_UPSERT_FACTION_PRESENCE",
     "WORLD_UPSERT_ROUTE",
     "WORLD_UPSERT_CONDITION",
+    "WORLD_UPSERT_CHRONICLE_EVENT",
     "WORLD_ARCHIVE_OBJECT",
     "SOCIAL_DEFINE_SLOT",
     "SOCIAL_CREATE_ENTITY",
@@ -160,6 +161,7 @@ USER_WRITE_OPS = {
     "WORLD_UPSERT_FACTION_PRESENCE",
     "WORLD_UPSERT_ROUTE",
     "WORLD_UPSERT_CONDITION",
+    "WORLD_UPSERT_CHRONICLE_EVENT",
     "WORLD_ARCHIVE_OBJECT",
     "SOCIAL_CREATE_ENTITY",
     "SOCIAL_LINK_AFFILIATION",
@@ -564,10 +566,20 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         for key in ("severity", "intensity"):
             if payload.get(key) is not None:
                 _validate_0_100(f"condition {key}", payload.get(key))
+    elif op_type == "WORLD_UPSERT_CHRONICLE_EVENT":
+        _require(payload, "key", "title")
+        payload.setdefault("scope_kind", "world")
+        if payload.get("sort_order") is not None:
+            try:
+                float(payload.get("sort_order"))
+            except Exception as exc:
+                raise ValidationError("chronicle sort_order must be numeric") from exc
+        if payload.get("status") is not None and payload.get("status") not in {"active", "archived"}:
+            raise ValidationError("chronicle status must be active/archived")
     elif op_type == "WORLD_ARCHIVE_OBJECT":
         _require(payload, "object_kind")
-        if payload.get("object_kind") not in {"profile", "region", "place", "lore", "faction_presence", "route", "condition"}:
-            raise ValidationError("object_kind must be profile/region/place/lore/faction_presence/route/condition")
+        if payload.get("object_kind") not in {"profile", "region", "place", "lore", "faction_presence", "route", "condition", "chronicle_event"}:
+            raise ValidationError("object_kind must be profile/region/place/lore/faction_presence/route/condition/chronicle_event")
         if payload.get("object_kind") == "faction_presence":
             if not (payload.get("object_id") or payload.get("faction_entity_id")):
                 raise ValidationError("faction_presence archive requires object_id or faction_entity_id")
