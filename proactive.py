@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
+from . import life_author
 from .jsonutil import dumps, loads
 from .trace import append_audit, append_journal, new_id
 from .time_utils import parse_datetime, to_epoch
@@ -23,6 +24,26 @@ from .time_utils import parse_datetime, to_epoch
 ACTIVE_INTENT_STATUSES = {"generated", "queued"}
 TERMINAL_INTENT_STATUSES = {"sent", "suppressed", "expired", "cancelled", "merged"}
 PROACTIVE_MODES = {"off", "pending_only", "manual_send", "auto_send"}
+_OUTBOX_AUTHOR_KIND = "proactive_outbox"
+# 主动消息写作的旧机械开场：用于清理历史模板和模型偶发复述，作用域仅限
+# proactive outbox 文案落库前的轻量保护，不参与策略判定。
+_MECHANICAL_OUTBOX_PREFIXES = (
+    "我有件事想跟你说",
+    "我有一件事想跟你说",
+    "有件事想跟你说",
+)
+# LifeAuthor 为 outbox 生成最终消息时使用的结构化输出合同。调用方只读取
+# message_text 写入 proactive_outbox.draft_text，emotional_tone 仅供审计和
+# 后续扩展，不改变当前发送状态机。
+_OUTBOX_MESSAGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "message_text": {"type": "string"},
+        "emotional_tone": {"type": "string"},
+    },
+    "required": ["message_text"],
+}
 
 # Default time-to-live (hours) per intent kind — so a proactive thought goes
 # stale on its own instead of waiting forever to be said. A dream loses its
@@ -320,6 +341,101 @@ def _create_outbox(conn, agent_id: str, user_id: str, intent: dict[str, Any], dr
     return get_outbox_message(conn, outbox_id)
 
 
+def _trim_message_text(text: str) -> str:
+    """清理主动消息文本，供 outbox 写入前做最后一道轻量保护。
+
+    输入来自 LifeAuthor 返回值或确定性兜底文案；返回值是可直接持久化
+    到 proactive_outbox.draft_text 的短消息。它不访问外部服务，只做空白、
+    引号和旧模板前缀的规整；如果最终为空，调用方继续走兜底。
+    """
+    msg = str(text or "").strip().strip("\"'“”")
+    for prefix in _MECHANICAL_OUTBOX_PREFIXES:
+        if msg.startswith(prefix):
+            msg = msg[len(prefix):].lstrip("：:，,。 ")
+            break
+    return msg.strip()
+
+
+def _fallback_outbox_text(intent: dict[str, Any]) -> str:
+    """生成无模型时的主动消息兜底文案。
+
+    作用域限定在 proactive evaluate 的 outbox 创建流程；调用方是
+    ``evaluate_proactive_intent``。它不能理解具体角色，只负责不再暴露
+    “我有件事想跟你说/资源不足/重新规划”这类系统播报腔；失败或空摘要
+    时返回一条短而保守的中文消息。
+    """
+    summary = _trim_message_text(str(intent.get("summary") or ""))
+    if not summary:
+        return "这边有点卡住，我想先缓一缓，换个更稳的做法。"
+    summary = summary.replace("遇到资源不足，想重新规划", "这边手头有点不够，我想先缓一下，重新盘算个稳一点的做法")
+    summary = summary.replace("遇到资源不足", "这边手头有点不够")
+    summary = summary.replace("资源不足", "手头有点不够")
+    summary = summary.replace("重新规划", "重新盘算一下")
+    if not summary.endswith(("。", "！", "？", "…", ".", "!", "?")):
+        summary += "。"
+    return summary
+
+
+def _author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any], *,
+                        trace_id: str | None = None) -> str | None:
+    """把主动意图改写成符合角色语气的可发送消息。
+
+    输入是已通过策略、隐私和节奏检查的 proactive intent；输出是一条将
+    写入 proactive_outbox 的自然语言消息，或在 host 模型不可用、门控关闭、
+    预算耗尽、模型返回无效时返回 ``None``。调用方式是同步 best-effort：
+    它只请求 LifeAuthor 生成内容，不修改资源账本、不提交事务、不绕过现有
+    发送策略；失败由调用方使用确定性兜底，用户可见影响是语气退回保守模板。
+    """
+    context = {
+        "主动意图": {
+            "类型": intent.get("intent_type"),
+            "原始摘要": intent.get("summary"),
+            "情绪倾向": intent.get("emotional_tone"),
+            "重要性": intent.get("importance"),
+            "紧急度": intent.get("urgency"),
+            "新鲜度": intent.get("novelty"),
+            "关系相关度": intent.get("relationship_relevance"),
+            "生成来源": intent.get("generated_by"),
+        },
+        "收件人": {"target_user_id": user_id},
+        "写作目标": "把主动意图写成一条你会直接发给对方的聊天消息。",
+        "不要出现": [
+            "我有件事想跟你说",
+            "我有一件事想跟你说",
+            "LifeEngine",
+            "outbox",
+            "调度",
+            "资源不足",
+            "重新规划",
+        ],
+    }
+    instructions = (
+        "你准备主动给对方发一条消息。请把上下文里的主动意图改写成你本人会发出的"
+        "一句短消息：自然、有性格、有一点当下的情绪，但不要表演腔，也不要像系统播报。"
+        "如果原始摘要里有工程或资源账本味道的词，只转成生活里的说法，不要照抄。"
+        "不要使用“我有件事想跟你说”这类开场。"
+        "输出 message_text=最终可发送消息；emotional_tone=语气标签。"
+    )
+    parsed = life_author.author(
+        conn,
+        "agent",
+        agent_id,
+        kind=_OUTBOX_AUTHOR_KIND,
+        instructions=instructions,
+        context=context,
+        schema=_OUTBOX_MESSAGE_SCHEMA,
+        max_tokens=220,
+        temperature=0.75,
+        trace_id=trace_id,
+    )
+    if not parsed:
+        return None
+    msg = _trim_message_text(str(parsed.get("message_text") or ""))
+    if not msg or "资源不足" in msg or "LifeEngine" in msg or "outbox" in msg:
+        return None
+    return msg
+
+
 def evaluate_proactive_intent(
     conn,
     agent_id: str,
@@ -390,7 +506,11 @@ def evaluate_proactive_intent(
                 _update_state_pending(conn, agent_id, user_id, intent["id"], "has_something_to_share")
                 decision, reason = "queue_pending", "score below auto-send threshold"
             else:
-                msg = draft_text or f"我有件事想跟你说：{intent.get('summary','')}"
+                msg = (
+                    draft_text
+                    or _author_outbox_text(conn, agent_id, user_id, intent, trace_id=trace_id)
+                    or _fallback_outbox_text(intent)
+                )
                 outbox = _create_outbox(conn, agent_id, user_id, intent, msg, status="queued", delivery_channel="hermes")
                 conn.execute("UPDATE proactive_intents SET status='queued', queued_at=COALESCE(queued_at, datetime('now')), result_outbox_id=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?", (outbox.get("id"), dumps(score), dumps({"decision": "outbox_queued", "reason": "delivery allowed", "policy": policy}), intent["id"]))
                 _update_state_pending(conn, agent_id, user_id, intent["id"], "waiting_for_user_reply")
