@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 61
+_SCHEMA_VERSION = 62
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -315,6 +315,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 61:
         _create_schema_v61(conn)
         _record_schema_migration(conn, 61, "social_world_slots")
+    if current < 62:
+        _create_schema_v62(conn)
+        _record_schema_migration(conn, 62, "event_driven_social_projection")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -4158,6 +4161,7 @@ def _create_schema_v61(conn: sqlite3.Connection) -> None:
           reason TEXT,                              -- 人类可读原因
           evidence_kind TEXT,                       -- event/memory/rumor/evaluation/tool 等
           evidence_id TEXT,
+          evidence_json TEXT NOT NULL DEFAULT '{}',
           source TEXT,
           created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
@@ -4208,6 +4212,7 @@ def _create_schema_v61(conn: sqlite3.Connection) -> None:
           sentiment TEXT,                           -- positive/neutral/negative/concern 等
           visibility TEXT NOT NULL DEFAULT 'local',
           truth_layer TEXT NOT NULL DEFAULT 'rumor_unverified',
+          evidence_json TEXT NOT NULL DEFAULT '{}',
           status TEXT NOT NULL DEFAULT 'active',    -- active | faded | disproved | confirmed | archived
           source TEXT,
           created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -4237,4 +4242,76 @@ def _create_schema_v61(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_rumor_exposures_rumor ON rumor_exposures(owner_kind, owner_id, rumor_id, entity_id)"
+    )
+
+
+def _create_schema_v62(conn: sqlite3.Connection) -> None:
+    """Event-driven social projection for completed events and venture sales.
+
+    `social_projection_runs` is the idempotency ledger. `social_requests` stores
+    wishes, purchase needs, and commission/fieldwork requests without requiring a
+    worldview-specific request table up front. Existing social facts remain in
+    the v61 tables; reputation events gain evidence_json for parity with edges
+    and evaluations.
+    """
+    rep_cols = {r[1] for r in conn.execute("PRAGMA table_info(reputation_events)")}
+    if "evidence_json" not in rep_cols:
+        conn.execute("ALTER TABLE reputation_events ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'")
+    rumor_cols = {r[1] for r in conn.execute("PRAGMA table_info(rumors)")}
+    if "evidence_json" not in rumor_cols:
+        conn.execute("ALTER TABLE rumors ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS social_projection_runs (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          projection_kind TEXT NOT NULL,
+          projection_key TEXT NOT NULL,
+          source TEXT,
+          status TEXT NOT NULL DEFAULT 'applied',
+          event_id TEXT,
+          schedule_block_id TEXT,
+          activity_id TEXT,
+          occurrence_id TEXT,
+          fact_counts_json TEXT NOT NULL DEFAULT '{}',
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, projection_kind, projection_key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_social_projection_runs_owner ON social_projection_runs(owner_kind, owner_id, created_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS social_requests (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          requester_entity_id TEXT,
+          target_entity_id TEXT,
+          request_type TEXT NOT NULL,
+          topic TEXT NOT NULL DEFAULT 'unknown',
+          summary TEXT,
+          details_json TEXT NOT NULL DEFAULT '{}',
+          privacy_level TEXT NOT NULL DEFAULT 'local',
+          linked_event_id TEXT,
+          linked_schedule_block_id TEXT,
+          linked_activity_id TEXT,
+          linked_occurrence_id TEXT,
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'open',
+          source TEXT,
+          idempotency_key TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, idempotency_key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_social_requests_owner ON social_requests(owner_kind, owner_id, status, created_at)"
     )

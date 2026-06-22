@@ -246,6 +246,7 @@ class LifeEngineReader:
             "evaluations": [],
             "rumors": [],
             "rumor_exposures": [],
+            "requests": [],
             "counts": {
                 "slots": 0,
                 "entities": 0,
@@ -254,6 +255,7 @@ class LifeEngineReader:
                 "reputation": 0,
                 "evaluations": 0,
                 "rumors": 0,
+                "requests": 0,
             },
         }
         with self._connect() as conn:
@@ -369,6 +371,7 @@ class LifeEngineReader:
                     (owner_kind, owner_id, min(int(limit), 30)),
                 )
                 for item in reputation_events:
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
                     item["subject_name"] = item.get("subject_name") or _label(item.get("subject_entity_id"))
                     item["audience_name"] = item.get("audience_name") or _label(item.get("audience_entity_id"))
 
@@ -409,8 +412,27 @@ class LifeEngineReader:
                     (owner_kind, owner_id, int(limit)),
                 )
                 for item in rumors:
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
                     item["subject_name"] = item.get("subject_name") or _label(item.get("subject_entity_id"))
                     item["exposure_count"] = exposure_counts.get(str(item.get("id")), 0)
+
+            requests: list[dict[str, Any]] = []
+            if self._table_exists(conn, "social_requests"):
+                requests = self._all(
+                    conn,
+                    """SELECT q.*, r.display_name AS requester_name, t.display_name AS target_name
+                       FROM social_requests q
+                       LEFT JOIN world_entities r ON r.id=q.requester_entity_id
+                       LEFT JOIN world_entities t ON t.id=q.target_entity_id
+                       WHERE q.owner_kind=? AND q.owner_id=?
+                       ORDER BY q.created_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for item in requests:
+                    item["details"] = _safe_json(item.pop("details_json", None), {})
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+                    item["requester_name"] = item.get("requester_name") or _label(item.get("requester_entity_id"))
+                    item["target_name"] = item.get("target_name") or _label(item.get("target_entity_id"))
 
             rumor_exposures: list[dict[str, Any]] = []
             if self._table_exists(conn, "rumor_exposures"):
@@ -437,6 +459,7 @@ class LifeEngineReader:
                 "evaluations": evaluations,
                 "rumors": rumors,
                 "rumor_exposures": rumor_exposures,
+                "requests": requests,
                 "counts": {
                     "slots": len(slots),
                     "entities": len(entities),
@@ -445,6 +468,7 @@ class LifeEngineReader:
                     "reputation": len(reputation),
                     "evaluations": len(evaluations),
                     "rumors": len(rumors),
+                    "requests": len(requests),
                 },
             }
 

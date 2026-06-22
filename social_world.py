@@ -64,6 +64,18 @@ def _decode_evaluation(row) -> dict[str, Any]:
     return _decode_json_fields(_row(row), ["evidence_json"])
 
 
+def _decode_request(row) -> dict[str, Any]:
+    return _decode_json_fields(_row(row), ["details_json", "evidence_json"])
+
+
+def _decode_reputation_event(row) -> dict[str, Any]:
+    return _decode_json_fields(_row(row), ["evidence_json"])
+
+
+def _decode_rumor(row) -> dict[str, Any]:
+    return _decode_json_fields(_row(row), ["evidence_json"])
+
+
 def _slot_entries_from_value(slot_type: str, value: Any) -> list[dict[str, Any]]:
     """把 Canon 里的槽定义规整成统一记录。
 
@@ -108,6 +120,80 @@ def _slot_entries_from_value(slot_type: str, value: Any) -> list[dict[str, Any]]
             "origin": "canon",
         })
     return entries
+
+
+_GUIMINGGUAN_DEFAULT_SOCIAL_SLOTS = {
+    "entity_kind": {
+        "shrine": ("道观/宫观", "供香客、常客与委托人形成社会关系的场所或经营主体。"),
+        "agent": ("生活主体", "当前 LifeEngine 主体在社会世界中的实体。"),
+        "visitor_group": ("访客群体", "香客、常客或本地顾客等群体实体。"),
+        "client": ("委托人", "提出上门、外勤或勘察需求的个人或未具名委托实体。"),
+        "patron": ("香客/主顾", "持续来访、供奉或购买服务的人。"),
+        "merchant": ("商户", "商业圈层或商户身份。"),
+        "neighborhood": ("本地圈层", "邻里、街坊、商户圈等非地图枚举的社会圈层。"),
+        "venue": ("场所", "可被事件 freeform location 指向的地点实体。"),
+    },
+    "relationship_axis": {
+        "trust": ("信任", "一方对另一方可靠性的判断。"),
+        "familiarity": ("熟悉", "重复接触积累的熟悉度。"),
+        "gratitude": ("感谢", "因帮助、服务或交付产生的感谢。"),
+        "suspicion": ("怀疑", "失败、延期或不透明带来的疑虑。"),
+        "obligation": ("人情/义务", "未结清的人情、承诺或后续责任。"),
+    },
+    "reputation_axis": {
+        "trustworthy": ("可信", "在相关 audience 中被认为可靠可信。"),
+        "approachable": ("亲近可问", "让人愿意上门、询问或求助。"),
+        "efficacious": ("灵验/有效", "服务、符箓或处理结果被认为有效。"),
+        "fieldwork_reliability": ("外勤可靠", "上门、勘察、处理委托时的稳定交付。"),
+        "price_fairness": ("价钱公道", "价格是否被认为合理。"),
+    },
+    "evaluation_axis": {
+        "satisfaction": ("满意度", "评价者对服务或结果的满意度。"),
+        "professionalism": ("专业度", "处理过程是否显得专业、有章法。"),
+        "kindness": ("待人温和", "待人是否温和、愿意解释。"),
+        "perceived_effectiveness": ("感知效果", "评价者感知到的效果。"),
+        "price_acceptance": ("价格接受度", "评价者是否接受价格。"),
+    },
+    "rumor_channel": {
+        "visitor_word_of_mouth": ("香客口碑", "香客、常客之间的低热度口碑。"),
+        "east_market_gossip": ("东市闲谈", "东市或相近商业环境中的闲谈渠道；不是地图枚举。"),
+        "commission_backchannel": ("委托人私下反馈", "委托人与中间人之间的私下评价。"),
+        "neighborhood_talk": ("邻里闲话", "本地圈层里的低热度传播。"),
+    },
+}
+
+
+def ensure_default_guimingguan_social_slots(conn, owner_kind: str, owner_id: str,
+                                           source: str = "social_projector") -> list[dict[str, Any]]:
+    """Ensure the generic slots used by the Guimingguan social projector exist.
+
+    These slots describe social primitives only. They intentionally do not
+    declare concrete origin, faction, or map-location enums; generated entities
+    keep those attributes as unknown/freeform/pending metadata until a worldview
+    package defines the relevant slots.
+    """
+    out: list[dict[str, Any]] = []
+    existing = {
+        (row["slot_type"], row["key"])
+        for row in conn.execute(
+            "SELECT slot_type, key FROM worldview_slot_definitions WHERE owner_kind=? AND owner_id=? AND status='active'",
+            (owner_kind, owner_id),
+        ).fetchall()
+    }
+    for slot_type, entries in _GUIMINGGUAN_DEFAULT_SOCIAL_SLOTS.items():
+        for key, (label, description) in entries.items():
+            if (slot_type, key) in existing:
+                continue
+            out.append(upsert_slot_definition(
+                conn, owner_kind, owner_id,
+                slot_type=slot_type,
+                key=key,
+                label=label,
+                description=description,
+                config={"default_for": "guimingguan_social_projection"},
+                source=source,
+            ))
+    return out
 
 
 def slots_from_canon(canon: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -395,6 +481,7 @@ def apply_reputation_event(conn, owner_kind: str, owner_id: str, *, subject_enti
                            axis: str, delta: float, audience_entity_id: str | None = None,
                            reason: str | None = None, evidence_kind: str | None = None,
                            evidence_id: str | None = None,
+                           evidence: dict[str, Any] | None = None,
                            source: str = "life_social") -> dict[str, Any]:
     """把一次社会后果写入声望账本。
 
@@ -415,10 +502,10 @@ def apply_reputation_event(conn, owner_kind: str, owner_id: str, *, subject_enti
     conn.execute(
         """INSERT INTO reputation_events(
              id, owner_kind, owner_id, subject_entity_id, audience_entity_id, axis,
-             delta, reason, evidence_kind, evidence_id, source
-           ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+             delta, reason, evidence_kind, evidence_id, evidence_json, source
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
         (event_id, owner_kind, owner_id, subject_entity_id, audience, axis,
-         delta_value, reason, evidence_kind, evidence_id, source),
+         delta_value, reason, evidence_kind, evidence_id, dumps(evidence or {}), source),
     )
     existing = conn.execute(
         """SELECT * FROM reputation_accounts
@@ -447,7 +534,7 @@ def apply_reputation_event(conn, owner_kind: str, owner_id: str, *, subject_enti
                    {"event_id": event_id, "account_id": account_id, "subject_entity_id": subject_entity_id,
                     "audience_entity_id": audience, "axis": axis, "delta": delta_value}, source)
     return {
-        "event": _row(conn.execute("SELECT * FROM reputation_events WHERE id=?", (event_id,)).fetchone()),
+        "event": _decode_reputation_event(conn.execute("SELECT * FROM reputation_events WHERE id=?", (event_id,)).fetchone()),
         "account": _row(conn.execute("SELECT * FROM reputation_accounts WHERE id=?", (account_id,)).fetchone()),
     }
 
@@ -496,7 +583,7 @@ def list_reputation_events(conn, owner_kind: str, owner_id: str, *,
         f"SELECT * FROM reputation_events {where} ORDER BY created_at DESC LIMIT ?",
         tuple(params + [int(limit)]),
     ).fetchall()
-    return [_row(r) for r in rows]
+    return [_decode_reputation_event(r) for r in rows]
 
 
 def record_evaluation(conn, owner_kind: str, owner_id: str, *, subject_entity_id: str,
@@ -566,6 +653,7 @@ def record_rumor(conn, owner_kind: str, owner_id: str, *, content: str,
                  heat: float = 0.5, credibility: float = 0.3,
                  sentiment: str | None = None, visibility: str = "local",
                  truth_layer: str = "rumor_unverified",
+                 evidence: dict[str, Any] | None = None,
                  source: str = "life_social") -> dict[str, Any]:
     """记录一条流言或未证实社会叙事。
 
@@ -585,15 +673,16 @@ def record_rumor(conn, owner_kind: str, owner_id: str, *, content: str,
     conn.execute(
         """INSERT INTO rumors(
              id, owner_kind, owner_id, subject_entity_id, target_kind, target_id,
-             content, channel, heat, credibility, sentiment, visibility, truth_layer, source
-           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             content, channel, heat, credibility, sentiment, visibility, truth_layer,
+             evidence_json, source
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (rumor_id, owner_kind, owner_id, subject_entity_id, target_kind or "entity", target_id,
          content, channel, _clamp_float(heat, 0.0, 1.0, 0.5), _clamp_float(credibility, 0.0, 1.0, 0.3),
-         sentiment, visibility, truth_layer, source),
+         sentiment, visibility, truth_layer, dumps(evidence or {}), source),
     )
     append_journal(conn, owner_kind, owner_id, "rumor_recorded",
                    {"rumor_id": rumor_id, "channel": channel, "truth_layer": truth_layer}, source)
-    return _row(conn.execute("SELECT * FROM rumors WHERE id=?", (rumor_id,)).fetchone())
+    return _decode_rumor(conn.execute("SELECT * FROM rumors WHERE id=?", (rumor_id,)).fetchone())
 
 
 def list_rumors(conn, owner_kind: str, owner_id: str, *, channel: str | None = None,
@@ -616,7 +705,7 @@ def list_rumors(conn, owner_kind: str, owner_id: str, *, channel: str | None = N
         f"SELECT * FROM rumors {where} ORDER BY heat DESC, updated_at DESC LIMIT ?",
         tuple(params + [int(limit)]),
     ).fetchall()
-    return [_row(r) for r in rows]
+    return [_decode_rumor(r) for r in rows]
 
 
 def record_rumor_exposure(conn, owner_kind: str, owner_id: str, *, rumor_id: str,
@@ -683,6 +772,99 @@ def list_rumor_exposures(conn, owner_kind: str, owner_id: str, *, rumor_id: str 
     return [_row(r) for r in rows]
 
 
+def record_social_request(conn, owner_kind: str, owner_id: str, *, requester_entity_id: str | None,
+                          target_entity_id: str | None, request_type: str,
+                          topic: str = "unknown", summary: str | None = None,
+                          details: dict[str, Any] | None = None,
+                          privacy_level: str = "local",
+                          linked_event_id: str | None = None,
+                          linked_schedule_block_id: str | None = None,
+                          linked_activity_id: str | None = None,
+                          linked_occurrence_id: str | None = None,
+                          evidence: dict[str, Any] | None = None,
+                          status: str = "open",
+                          idempotency_key: str | None = None,
+                          source: str = "life_social") -> dict[str, Any]:
+    """Record a visitor/client request or wish in the social world.
+
+    The table is intentionally generic: a worldview can later specialize wishes,
+    blessings, purchase needs, and commission inquiries without losing the
+    event-linked evidence captured here.
+    """
+    if requester_entity_id and not _entity_belongs(conn, owner_kind, owner_id, requester_entity_id):
+        raise ValueError(f"requester entity not found: {requester_entity_id}")
+    if target_entity_id and not _entity_belongs(conn, owner_kind, owner_id, target_entity_id):
+        raise ValueError(f"target entity not found: {target_entity_id}")
+    request_type = str(request_type or "").strip()
+    if not request_type:
+        raise ValueError("request_type is required")
+    topic = str(topic or "unknown").strip() or "unknown"
+    idem = str(idempotency_key or f"{source}:{linked_event_id or 'none'}:{linked_occurrence_id or 'none'}:{request_type}:{topic}").strip()
+    existing = conn.execute(
+        "SELECT id FROM social_requests WHERE owner_kind=? AND owner_id=? AND idempotency_key=?",
+        (owner_kind, owner_id, idem),
+    ).fetchone()
+    if existing:
+        request_id = existing["id"]
+        conn.execute(
+            """UPDATE social_requests
+               SET requester_entity_id=?, target_entity_id=?, request_type=?, topic=?, summary=?,
+                   details_json=?, privacy_level=?, linked_event_id=?, linked_schedule_block_id=?,
+                   linked_activity_id=?, linked_occurrence_id=?, evidence_json=?, status=?,
+                   source=?, updated_at=datetime('now')
+               WHERE id=?""",
+            (requester_entity_id, target_entity_id, request_type, topic, summary,
+             dumps(details or {}), privacy_level or "local", linked_event_id, linked_schedule_block_id,
+             linked_activity_id, linked_occurrence_id, dumps(evidence or {}), status or "open",
+             source, request_id),
+        )
+    else:
+        request_id = new_id("socreq")
+        conn.execute(
+            """INSERT INTO social_requests(
+                 id, owner_kind, owner_id, requester_entity_id, target_entity_id,
+                 request_type, topic, summary, details_json, privacy_level,
+                 linked_event_id, linked_schedule_block_id, linked_activity_id,
+                 linked_occurrence_id, evidence_json, status, source, idempotency_key
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (request_id, owner_kind, owner_id, requester_entity_id, target_entity_id,
+             request_type, topic, summary, dumps(details or {}), privacy_level or "local",
+             linked_event_id, linked_schedule_block_id, linked_activity_id, linked_occurrence_id,
+             dumps(evidence or {}), status or "open", source, idem),
+        )
+    append_journal(conn, owner_kind, owner_id, "social_request_recorded",
+                   {"request_id": request_id, "request_type": request_type, "topic": topic,
+                    "event_id": linked_event_id, "occurrence_id": linked_occurrence_id}, source)
+    return _decode_request(conn.execute("SELECT * FROM social_requests WHERE id=?", (request_id,)).fetchone())
+
+
+def list_social_requests(conn, owner_kind: str, owner_id: str, *,
+                         requester_entity_id: str | None = None,
+                         target_entity_id: str | None = None,
+                         request_type: str | None = None,
+                         status: str | None = None,
+                         limit: int = 50) -> list[dict[str, Any]]:
+    params: list[Any] = [owner_kind, owner_id]
+    where = "WHERE owner_kind=? AND owner_id=?"
+    if requester_entity_id:
+        where += " AND requester_entity_id=?"
+        params.append(requester_entity_id)
+    if target_entity_id:
+        where += " AND target_entity_id=?"
+        params.append(target_entity_id)
+    if request_type:
+        where += " AND request_type=?"
+        params.append(request_type)
+    if status:
+        where += " AND status=?"
+        params.append(status)
+    rows = conn.execute(
+        f"SELECT * FROM social_requests {where} ORDER BY created_at DESC LIMIT ?",
+        tuple(params + [int(limit)]),
+    ).fetchall()
+    return [_decode_request(r) for r in rows]
+
+
 def summary(conn, owner_kind: str, owner_id: str, *, canon: dict[str, Any] | None = None) -> dict[str, Any]:
     """生成社会世界层的紧凑摘要。
 
@@ -695,6 +877,7 @@ def summary(conn, owner_kind: str, owner_id: str, *, canon: dict[str, Any] | Non
         "reputation": list_reputation_accounts(conn, owner_kind, owner_id, limit=12),
         "evaluations": list_evaluations(conn, owner_kind, owner_id, limit=8),
         "rumors": list_rumors(conn, owner_kind, owner_id, limit=8),
+        "requests": list_social_requests(conn, owner_kind, owner_id, limit=8),
     }
 
 

@@ -650,6 +650,12 @@ class LifeEngineRuntime:
         elif op_type == "COMPLETE_EVENT":
             result = complete_event(self.conn, owner_kind, owner_id, payload["event_id"], payload.get("summary", "completed"), payload.get("resource_deltas"), source)
             result["goal_updates"] = apply_event_goal_contributions(self.conn, owner_kind, owner_id, payload["event_id"], source)
+            from .social_projector import project_completed_event
+            result["social_projection"] = project_completed_event(
+                self.conn, owner_kind, owner_id, payload["event_id"],
+                summary=payload.get("summary", "completed"),
+                source=f"social_projector:{source}",
+            )
             return result
         elif op_type == "CREATE_SLEEP_PLAN":
             return create_sleep_plan(self.conn, owner_kind, owner_id, canon_version=canon_version, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
@@ -1875,6 +1881,7 @@ class LifeEngineRuntime:
             sold_total = 0.0
             income_total = 0.0
             restocks = 0
+            social_projections = 0
             for act in recurring.list_recurring_activities(self.conn, owner_kind, owner_id, status="active"):
                 op = act.get("operation_model") or "active"
                 passive = op in {"self_service", "staffed"}
@@ -1931,6 +1938,13 @@ class LifeEngineRuntime:
                         "UPDATE recurring_activity_occurrences SET sale_settled=1, sold_quantity=?, income=? WHERE id=?",
                         (sold, income, occ["id"]),
                     )
+                    from .social_projector import project_venture_sale_settlement
+                    projection = project_venture_sale_settlement(
+                        self.conn, owner_kind, owner_id, occ["id"],
+                        source="social_projector:venture_sale",
+                    )
+                    if projection.get("projected"):
+                        social_projections += 1
                     sold_total += sold
                     income_total += income
                 # 2) mark restock orders received once their procurement event completes
@@ -1996,7 +2010,8 @@ class LifeEngineRuntime:
                                     title=f"进货：{sc.get('goods_name') or goods}", desc=f"为「{act['title']}」补货（库存 {stock:g} 低于 {threshold:g}）。",
                                     dur=60, unit_cost=uc, tag="进货"):
                                 restocks += 1
-            return {"status": "ok", "sold": sold_total, "income": income_total, "restocks_ordered": restocks}
+            return {"status": "ok", "sold": sold_total, "income": income_total,
+                    "restocks_ordered": restocks, "social_projections": social_projections}
         except Exception as exc:
             append_audit(self.conn, owner_kind, owner_id, "venture_supply_settle_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
@@ -2614,6 +2629,16 @@ class LifeEngineRuntime:
                     self.conn, owner_kind, owner_id,
                     rumor_id=payload.get("rumor_id"),
                     entity_id=payload.get("entity_id"),
+                    limit=int(payload.get("limit", 50)),
+                )}
+        if action_l in {"requests", "social_requests", "visitor_requests"}:
+            with transaction(self.conn):
+                return {"ok": True, "requests": _social.list_social_requests(
+                    self.conn, owner_kind, owner_id,
+                    requester_entity_id=payload.get("requester_entity_id"),
+                    target_entity_id=payload.get("target_entity_id"),
+                    request_type=payload.get("request_type"),
+                    status=payload.get("status"),
                     limit=int(payload.get("limit", 50)),
                 )}
         raise ValueError(f"Unknown social action: {action}")
