@@ -37,7 +37,7 @@ def test_schema_v61_and_social_world_tables(tmp_path):
     rt = LifeEngineRuntime()
     try:
         assert _SCHEMA_VERSION >= 61
-        assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 61
+        assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 64
         tables = {r[0] for r in rt.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         assert {
             "worldview_slot_definitions",
@@ -49,6 +49,8 @@ def test_schema_v61_and_social_world_tables(tmp_path):
             "social_evaluations",
             "rumors",
             "rumor_exposures",
+            "social_requests",
+            "social_request_transitions",
         }.issubset(tables)
     finally:
         rt.close()
@@ -68,10 +70,14 @@ def test_social_slots_are_worldview_defined_not_core_enums(tmp_path):
         axis = _result(rt.social("define_slot", slot_type="reputation_axis", key="craft_credit",
                                  label="手作信用"))
         assert axis["key"] == "craft_credit"
+        request_type = _result(rt.social("define_slot", slot_type="request_type", key="commission",
+                                         label="委托请求"))
+        assert request_type["key"] == "commission"
 
         slots = rt.social("slots")["slots"]
         assert any(s["slot_type"] == "entity_kind" and s["key"] == "club" for s in slots)
         assert any(s["slot_type"] == "reputation_axis" and s["key"] == "craft_credit" for s in slots)
+        assert any(s["slot_type"] == "request_type" and s["key"] == "commission" for s in slots)
     finally:
         rt.close()
 
@@ -145,6 +151,62 @@ def test_social_graph_reputation_evaluation_and_rumor_flow(tmp_path):
             "SELECT COUNT(*) FROM life_ops WHERE op_type LIKE 'SOCIAL_%'"
         ).fetchone()[0]
         assert tx_count >= 8
+    finally:
+        rt.close()
+
+
+def test_social_request_lifecycle_and_slot_advisories(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        requester = _result(rt.social("create_entity", entity_kind="client", display_name="委托人甲"))
+        target = _result(rt.social("create_entity", entity_kind="shrine", display_name="归明观"))
+        request = _result(rt.social(
+            "record_request",
+            requester_entity_id=requester["id"],
+            target_entity_id=target["id"],
+            request_type="fieldwork_request",
+            topic="night_patrol",
+            summary="想请明灯夜间巡查一处异常。",
+            details={"preferred_time": "night"},
+        ))
+        assert request["status"] == "open"
+        assert request["details"]["preferred_time"] == "night"
+
+        accepted = _result(rt.social(
+            "request_transition",
+            request_id=request["id"],
+            transition_action="accept",
+            quote={"amount": 60, "currency": "灵铢"},
+            reason="报价后接受",
+        ))
+        assert accepted["request"]["status"] == "accepted"
+        assert accepted["request"]["quote"]["amount"] == 60
+
+        converted = _result(rt.social(
+            "request_transition",
+            request_id=request["id"],
+            transition_action="convert_event",
+            linked_event_id="event-night-patrol",
+        ))
+        assert converted["request"]["status"] == "in_progress"
+        assert converted["request"]["linked_event_id"] == "event-night-patrol"
+
+        completed = _result(rt.social(
+            "request_transition",
+            request_id=request["id"],
+            transition_action="complete",
+            billing={"paid": 60, "currency": "灵铢"},
+        ))
+        assert completed["request"]["status"] == "completed"
+        assert completed["request"]["billing"]["paid"] == 60
+
+        transitions = rt.social("request_transitions", request_id=request["id"])["transitions"]
+        assert [t["to_status"] for t in transitions][:3] == ["completed", "in_progress", "accepted"]
+        advisories = rt.social("advisories")["advisories"]
+        assert any(a["slot_type"] == "request_type" and a["key"] == "fieldwork_request" for a in advisories)
+        assert any(a["slot_type"] == "entity_kind" and a["key"] == "client" for a in advisories)
     finally:
         rt.close()
 

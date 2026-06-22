@@ -846,6 +846,18 @@ class LifeEngineRuntime:
                 self.conn, owner_kind, owner_id,
                 source=payload.get("source") or source,
                 **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "WORLD_UPSERT_ROUTE":
+            from . import world_model as _world
+            return _world.upsert_route(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "WORLD_UPSERT_CONDITION":
+            from . import world_model as _world
+            return _world.upsert_condition(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
         elif op_type == "WORLD_ARCHIVE_OBJECT":
             from . import world_model as _world
             return _world.archive_object(
@@ -897,6 +909,18 @@ class LifeEngineRuntime:
         elif op_type == "SOCIAL_RECORD_RUMOR_EXPOSURE":
             from . import social_world as _social
             return _social.record_rumor_exposure(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "SOCIAL_RECORD_REQUEST":
+            from . import social_world as _social
+            return _social.record_social_request(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "SOCIAL_REQUEST_TRANSITION":
+            from . import social_world as _social
+            return _social.transition_social_request(
                 self.conn, owner_kind, owner_id,
                 source=payload.get("source") or source,
                 **{k: v for k, v in payload.items() if k != "source"})
@@ -2687,6 +2711,8 @@ class LifeEngineRuntime:
                         summary.get("profiles") or [],
                         summary.get("regions") or [],
                         summary.get("places") or [],
+                        summary.get("routes") or [],
+                        summary.get("conditions") or [],
                         current_location=payload.get("location"),
                         actor_label=payload.get("actor_label") or "明灯",
                     )
@@ -2756,6 +2782,29 @@ class LifeEngineRuntime:
                 )}
         if action_l in {"upsert_faction_presence", "set_faction_presence", "set_influence"}:
             return self.commit_ops([{"type": "WORLD_UPSERT_FACTION_PRESENCE", "payload": payload}], owner_kind, owner_id, "life_world_tool", session_id, turn_id)
+        if action_l in {"routes", "route_list", "travel_edges"}:
+            with transaction(self.conn):
+                return {"ok": True, "routes": _world.list_routes(
+                    self.conn, owner_kind, owner_id,
+                    scope_kind=payload.get("scope_kind"),
+                    scope_id=payload.get("scope_id"),
+                    status=payload.get("status"),
+                    limit=int(payload.get("limit", 80)),
+                )}
+        if action_l in {"route", "upsert_route", "set_route", "travel_edge"}:
+            return self.commit_ops([{"type": "WORLD_UPSERT_ROUTE", "payload": payload}], owner_kind, owner_id, "life_world_tool", session_id, turn_id)
+        if action_l in {"conditions", "world_conditions", "regional_state", "place_status", "hazards", "opportunities"}:
+            with transaction(self.conn):
+                return {"ok": True, "conditions": _world.list_conditions(
+                    self.conn, owner_kind, owner_id,
+                    scope_kind=payload.get("scope_kind"),
+                    scope_id=payload.get("scope_id"),
+                    condition_type=payload.get("condition_type"),
+                    status=payload.get("status", "active"),
+                    limit=int(payload.get("limit", 80)),
+                )}
+        if action_l in {"condition", "upsert_condition", "set_condition", "hazard", "opportunity"}:
+            return self.commit_ops([{"type": "WORLD_UPSERT_CONDITION", "payload": payload}], owner_kind, owner_id, "life_world_tool", session_id, turn_id)
         if action_l in {"archive", "delete", "remove"}:
             return self.commit_ops([{"type": "WORLD_ARCHIVE_OBJECT", "payload": payload}], owner_kind, owner_id, "life_world_tool", session_id, turn_id)
         raise ValueError(f"Unknown world action: {action}")
@@ -2782,6 +2831,13 @@ class LifeEngineRuntime:
                 return {"ok": True, "slots": _social.list_slot_definitions(
                     self.conn, owner_kind, owner_id, slot_type=payload.get("slot_type"),
                     canon=get_active_canon(self.conn, owner_kind, owner_id),
+                )}
+        if action_l in {"advisories", "validate_slots", "slot_advisories"}:
+            with transaction(self.conn):
+                return {"ok": True, "advisories": _social.slot_advisories(
+                    self.conn, owner_kind, owner_id,
+                    canon=get_active_canon(self.conn, owner_kind, owner_id),
+                    limit=int(payload.get("limit", 80)),
                 )}
         if action_l in {"define_slot", "slot", "configure_slot"}:
             return self.commit_ops([{"type": "SOCIAL_DEFINE_SLOT", "payload": payload}], owner_kind, owner_id, "life_social_tool", session_id, turn_id)
@@ -2877,6 +2933,30 @@ class LifeEngineRuntime:
                     target_entity_id=payload.get("target_entity_id"),
                     request_type=payload.get("request_type"),
                     status=payload.get("status"),
+                    limit=int(payload.get("limit", 50)),
+                )}
+        if action_l in {"record_request", "request", "social_request"}:
+            return self.commit_ops([{"type": "SOCIAL_RECORD_REQUEST", "payload": payload}], owner_kind, owner_id, "life_social_tool", session_id, turn_id)
+        if action_l in {"request_transition", "transition_request", "accept_request", "reject_request", "complete_request", "expire_request", "convert_request"}:
+            p = dict(payload)
+            if "action" not in p and p.get("transition_action"):
+                p["action"] = p.pop("transition_action")
+            if action_l == "accept_request":
+                p.setdefault("action", "accept")
+            elif action_l == "reject_request":
+                p.setdefault("action", "reject")
+            elif action_l == "complete_request":
+                p.setdefault("action", "complete")
+            elif action_l == "expire_request":
+                p.setdefault("action", "expire")
+            elif action_l == "convert_request":
+                p.setdefault("action", "convert_event" if p.get("linked_event_id") else "convert_commission")
+            return self.commit_ops([{"type": "SOCIAL_REQUEST_TRANSITION", "payload": p}], owner_kind, owner_id, "life_social_tool", session_id, turn_id)
+        if action_l in {"request_transitions", "social_request_transitions"}:
+            with transaction(self.conn):
+                return {"ok": True, "transitions": _social.list_social_request_transitions(
+                    self.conn, owner_kind, owner_id,
+                    request_id=payload.get("request_id"),
                     limit=int(payload.get("limit", 50)),
                 )}
         raise ValueError(f"Unknown social action: {action}")

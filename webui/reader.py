@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..social_world import WORLD_AUDIENCE, slots_from_canon
+from ..social_world import WORLD_AUDIENCE, slot_advisories, slots_from_canon
 
 
 def _now() -> _dt.datetime:
@@ -142,6 +142,8 @@ class LifeEngineReader:
                 "world_places",
                 "world_lore_entries",
                 "world_faction_presence",
+                "world_routes",
+                "world_conditions",
             ]:
                 if self._table_exists(conn, table):
                     try:
@@ -260,6 +262,8 @@ class LifeEngineReader:
             "rumors": [],
             "rumor_exposures": [],
             "requests": [],
+            "request_transitions": [],
+            "advisories": [],
             "counts": {
                 "slots": 0,
                 "entities": 0,
@@ -269,6 +273,7 @@ class LifeEngineReader:
                 "evaluations": 0,
                 "rumors": 0,
                 "requests": 0,
+                "advisories": 0,
             },
         }
         with self._connect() as conn:
@@ -295,10 +300,13 @@ class LifeEngineReader:
                     slot.setdefault("origin", "db")
                     merged_slots[(slot.get("slot_type"), slot.get("key"))] = slot
             slots = list(merged_slots.values())
+            advisories = slot_advisories(conn, owner_kind, owner_id, canon=canon, limit=int(limit))
 
             if not self._table_exists(conn, "world_entities"):
                 empty["slots"] = slots
                 empty["counts"]["slots"] = len(slots)
+                empty["advisories"] = advisories
+                empty["counts"]["advisories"] = len(advisories)
                 return empty
 
             entities = self._all(
@@ -443,9 +451,27 @@ class LifeEngineReader:
                 )
                 for item in requests:
                     item["details"] = _safe_json(item.pop("details_json", None), {})
+                    item["quote"] = _safe_json(item.pop("quote_json", None), {})
+                    item["billing"] = _safe_json(item.pop("billing_json", None), {})
                     item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
                     item["requester_name"] = item.get("requester_name") or _label(item.get("requester_entity_id"))
                     item["target_name"] = item.get("target_name") or _label(item.get("target_entity_id"))
+
+            request_transitions: list[dict[str, Any]] = []
+            if self._table_exists(conn, "social_request_transitions"):
+                request_transitions = self._all(
+                    conn,
+                    """SELECT x.*, q.topic AS request_topic, q.request_type
+                       FROM social_request_transitions x
+                       LEFT JOIN social_requests q ON q.id=x.request_id
+                       WHERE x.owner_kind=? AND x.owner_id=?
+                       ORDER BY x.created_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, min(int(limit), 40)),
+                )
+                for item in request_transitions:
+                    item["quote"] = _safe_json(item.pop("quote_json", None), {})
+                    item["billing"] = _safe_json(item.pop("billing_json", None), {})
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
 
             rumor_exposures: list[dict[str, Any]] = []
             if self._table_exists(conn, "rumor_exposures"):
@@ -473,6 +499,8 @@ class LifeEngineReader:
                 "rumors": rumors,
                 "rumor_exposures": rumor_exposures,
                 "requests": requests,
+                "request_transitions": request_transitions,
+                "advisories": advisories,
                 "counts": {
                     "slots": len(slots),
                     "entities": len(entities),
@@ -482,6 +510,7 @@ class LifeEngineReader:
                     "evaluations": len(evaluations),
                     "rumors": len(rumors),
                     "requests": len(requests),
+                    "advisories": len(advisories),
                 },
             }
 
@@ -502,6 +531,8 @@ class LifeEngineReader:
             "places": [],
             "lore": [],
             "faction_presence": [],
+            "routes": [],
+            "conditions": [],
             "map": _world_model.map_state([], [], [], current_location=current_location, actor_label=actor_label),
             "counts": {
                 "profiles": 0,
@@ -509,6 +540,8 @@ class LifeEngineReader:
                 "places": 0,
                 "lore": 0,
                 "faction_presence": 0,
+                "routes": 0,
+                "conditions": 0,
             },
         }
         with self._connect() as conn:
@@ -606,10 +639,53 @@ class LifeEngineReader:
                         region_names.get(scope_id) if scope_kind == "region" else place_names.get(scope_id)
                     )
 
-            if not any([profiles, regions, places, lore, faction_presence]):
+            def _scope_name(scope_kind: Any, scope_id: Any) -> str | None:
+                kind = str(scope_kind or "")
+                sid = str(scope_id or "")
+                if kind == "world":
+                    return "世界"
+                if kind == "region":
+                    return region_names.get(sid) or sid
+                if kind == "place":
+                    return place_names.get(sid) or sid
+                return sid or None
+
+            routes: list[dict[str, Any]] = []
+            if self._table_exists(conn, "world_routes"):
+                routes = self._all(
+                    conn,
+                    """SELECT * FROM world_routes
+                       WHERE owner_kind=? AND owner_id=? AND status!='archived'
+                       ORDER BY risk_level DESC, updated_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for item in routes:
+                    item["cost"] = _safe_json(item.pop("cost_json", None), {})
+                    item["schedule"] = _safe_json(item.pop("schedule_json", None), {})
+                    item["points"] = _safe_json(item.pop("points_json", None), [])
+                    item["traits"] = _safe_json(item.pop("traits_json", None), {})
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+                    item["from_scope_name"] = _scope_name(item.get("from_scope_kind"), item.get("from_scope_id"))
+                    item["to_scope_name"] = _scope_name(item.get("to_scope_kind"), item.get("to_scope_id"))
+
+            conditions: list[dict[str, Any]] = []
+            if self._table_exists(conn, "world_conditions"):
+                conditions = self._all(
+                    conn,
+                    """SELECT * FROM world_conditions
+                       WHERE owner_kind=? AND owner_id=? AND status='active'
+                       ORDER BY severity DESC, updated_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for item in conditions:
+                    item["payload"] = _safe_json(item.pop("payload_json", None), {})
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+                    item["scope_name"] = _scope_name(item.get("scope_kind"), item.get("scope_id"))
+
+            if not any([profiles, regions, places, lore, faction_presence, routes, conditions]):
                 return empty
             world_map = _world_model.map_state(
-                profiles, regions, places,
+                profiles, regions, places, routes, conditions,
                 current_location=current_location,
                 actor_label=actor_label or "明灯",
             )
@@ -619,6 +695,8 @@ class LifeEngineReader:
                 "places": places,
                 "lore": lore,
                 "faction_presence": faction_presence,
+                "routes": routes,
+                "conditions": conditions,
                 "map": world_map,
                 "counts": {
                     "profiles": len(profiles),
@@ -626,6 +704,8 @@ class LifeEngineReader:
                     "places": len(places),
                     "lore": len(lore),
                     "faction_presence": len(faction_presence),
+                    "routes": len(routes),
+                    "conditions": len(conditions),
                 },
             }
 

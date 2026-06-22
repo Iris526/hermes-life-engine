@@ -813,6 +813,10 @@ function worldAction(worldActionName, payload = {}) {
   return doAction("world", { world_action: worldActionName, ...payload });
 }
 
+function socialAction(socialActionName, payload = {}) {
+  return doAction("social", { social_action: socialActionName, ...payload });
+}
+
 function worldList(kind) {
   const data = snapshotData.world_model || {};
   if (kind === "profile") return data.profiles || [];
@@ -820,6 +824,8 @@ function worldList(kind) {
   if (kind === "place") return data.places || [];
   if (kind === "lore") return data.lore || [];
   if (kind === "faction_presence") return data.faction_presence || [];
+  if (kind === "route") return data.routes || [];
+  if (kind === "condition") return data.conditions || [];
   return [];
 }
 
@@ -1124,6 +1130,89 @@ async function worldEdit(kind, objectId = null) {
     if (content === null) return;
     action = "upsert_faction_presence";
     payload = { faction_entity_id: factionEntityId, ...scope, influence, stance, summary, content, evidence: item.evidence || {} };
+  } else if (kind === "route") {
+    const key = promptWorldValue("路线 key", item.key || "", true);
+    if (key === null) return;
+    const name = promptWorldValue("路线名称", item.name || key, true);
+    if (name === null) return;
+    const routeType = promptWorldValue("路线类型", item.route_type || "road");
+    if (routeType === null) return;
+    const fromKind = promptWorldValue("起点 scope_kind，可空", item.from_scope_kind || "place");
+    if (fromKind === null) return;
+    const fromId = fromKind ? promptWorldValue("起点 scope_id", item.from_scope_id || "") : "";
+    if (fromId === null) return;
+    const toKind = promptWorldValue("终点 scope_kind，可空", item.to_scope_kind || "place");
+    if (toKind === null) return;
+    const toId = toKind ? promptWorldValue("终点 scope_id", item.to_scope_id || "") : "";
+    if (toId === null) return;
+    const travelMode = promptWorldValue("交通方式", item.travel_mode || "walk");
+    if (travelMode === null) return;
+    const durationMinutes = promptWorldNumber("耗时分钟，可空", item.duration_minutes ?? "", false, 0, 100000);
+    if (durationMinutes === null) return;
+    const riskLevel = promptWorldNumber("风险 0..100", item.risk_level ?? 0, true, 0, 100);
+    if (riskLevel === null) return;
+    const pointsRaw = promptWorldValue("折线点 x,y;x,y，可空", (item.points || []).map(p => `${p.x},${p.y}`).join(";"));
+    if (pointsRaw === null) return;
+    const points = pointsRaw.split(";").map(pair => {
+      const [x, y] = pair.split(",").map(v => Number(v.trim()));
+      return Number.isFinite(x) && Number.isFinite(y) ? { x: Math.max(0, Math.min(mapWidth, x)), y: Math.max(0, Math.min(mapHeight, y)) } : null;
+    }).filter(Boolean);
+    action = "route";
+    payload = {
+      key,
+      name,
+      route_type: routeType || "road",
+      from_scope_kind: fromKind || null,
+      from_scope_id: fromId || null,
+      to_scope_kind: toKind || null,
+      to_scope_id: toId || null,
+      travel_mode: travelMode || null,
+      duration_minutes: durationMinutes === "" ? null : durationMinutes,
+      risk_level: riskLevel,
+      points,
+      traits: item.traits || {},
+      evidence: item.evidence || {},
+      status: item.status || "active",
+    };
+  } else if (kind === "condition") {
+    const key = promptWorldValue("状态 key", item.key || "", true);
+    if (key === null) return;
+    const title = promptWorldValue("状态标题", item.title || key, true);
+    if (title === null) return;
+    const conditionType = promptWorldValue("状态类型", item.condition_type || "state");
+    if (conditionType === null) return;
+    const scope = promptWorldScope(item);
+    if (!scope) return;
+    const severity = promptWorldNumber("严重度 0..100", item.severity ?? 0, true, 0, 100);
+    if (severity === null) return;
+    const intensity = promptWorldNumber("强度 0..100", item.intensity ?? 0, true, 0, 100);
+    if (intensity === null) return;
+    const summary = promptWorldValue("摘要", item.summary || "");
+    if (summary === null) return;
+    const content = promptWorldValue("正文", item.content || "");
+    if (content === null) return;
+    const startsAt = promptWorldValue("开始时间，可空", item.starts_at || "");
+    if (startsAt === null) return;
+    const endsAt = promptWorldValue("结束时间，可空", item.ends_at || "");
+    if (endsAt === null) return;
+    const status = promptWorldValue("状态 active/resolved/expired/archived", item.status || "active", true);
+    if (status === null) return;
+    action = "condition";
+    payload = {
+      key,
+      title,
+      condition_type: conditionType || "state",
+      ...scope,
+      severity,
+      intensity,
+      summary,
+      content,
+      starts_at: startsAt || null,
+      ends_at: endsAt || null,
+      payload: item.payload || {},
+      evidence: item.evidence || {},
+      status,
+    };
   } else {
     showToast("未知世界对象类型", "warn");
     return;
@@ -1745,6 +1834,8 @@ function renderWorldModel() {
       <button class="world-mini-btn create" onclick="worldQuickCreate('place')">新地点</button>
       <button class="world-mini-btn create" onclick="worldQuickCreate('lore')">新知识</button>
       <button class="world-mini-btn create" onclick="worldQuickCreate('faction_presence')">新势力影响</button>
+      <button class="world-mini-btn create" onclick="worldQuickCreate('route')">新路线</button>
+      <button class="world-mini-btn create" onclick="worldQuickCreate('condition')">新状态</button>
     </div>`;
   }
   const stat = (label, value) => `<div class="social-stat world-stat"><span class="social-stat-num">${formatNum(value || 0)}</span><span class="social-stat-label">${label}</span></div>`;
@@ -1754,6 +1845,8 @@ function renderWorldModel() {
     stat("地点", counts.places),
     stat("知识", counts.lore),
     stat("势力", counts.faction_presence),
+    stat("路线", counts.routes),
+    stat("状态", counts.conditions),
   ].join("");
   renderWorldMap(data.map || {});
 
@@ -1827,6 +1920,37 @@ function renderWorldModel() {
       </div>`;
     }).join("") : '<div class="empty-state">还没有势力影响</div>';
   }
+
+  const routesEl = document.getElementById("world-routes");
+  if (routesEl) {
+    const routes = data.routes || [];
+    routesEl.innerHTML = routes.length ? routes.slice(0, 18).map(r => {
+      const risk = Number(r.risk_level) || 0;
+      const endpoints = [r.from_scope_name || r.from_scope_id, r.to_scope_name || r.to_scope_id].filter(Boolean).join(" → ");
+      const detail = [r.travel_mode, r.duration_minutes != null ? `${formatNum(r.duration_minutes)}min` : "", endpoints].filter(Boolean).join(" · ");
+      return `<div class="social-row-card world-row route-row">
+        <div class="world-row-head"><div><span class="social-name">${escapeHtml(r.name || r.key)}</span><span class="social-tag">${escapeHtml(r.route_type || "route")}</span></div>${worldActionButtons("route", r, r.name || r.key)}</div>
+        <div class="social-axis-line"><span>${escapeHtml(r.status || "active")}</span><span class="${socialValueClass(risk - 50)}">${formatNum(risk)}</span></div>
+        ${detail ? `<div class="social-row-meta">${escapeHtml(detail)}</div>` : ""}
+      </div>`;
+    }).join("") : '<div class="empty-state">还没有路线</div>';
+  }
+
+  const conditionsEl = document.getElementById("world-conditions");
+  if (conditionsEl) {
+    const conditions = data.conditions || [];
+    conditionsEl.innerHTML = conditions.length ? conditions.slice(0, 18).map(c => {
+      const severity = Number(c.severity) || 0;
+      const scope = [c.scope_kind || "world", c.scope_name || c.scope_id].filter(Boolean).join(" · ");
+      const time = [c.starts_at, c.ends_at].filter(Boolean).join(" → ");
+      return `<div class="social-card world-card condition-card">
+        <div class="social-card-head"><span class="social-title">${escapeHtml(c.title || c.key)}</span><div class="world-card-actions"><span class="social-tag">${escapeHtml(c.condition_type || "state")}</span>${worldEditButton("condition", c)}${worldArchiveButton("condition", c, c.title || c.key)}</div></div>
+        <div class="social-axis-line"><span>${escapeHtml(scope)}</span><span class="${socialValueClass(severity - 50)}">${formatNum(severity)}</span></div>
+        ${c.summary ? `<div class="social-desc">${escapeHtml(c.summary)}</div>` : ""}
+        ${time ? `<div class="social-row-meta">${escapeHtml(time)}</div>` : ""}
+      </div>`;
+    }).join("") : '<div class="empty-state">还没有动态状态</div>';
+  }
 }
 
 const SOCIAL_SLOT_LABEL = {
@@ -1835,7 +1959,14 @@ const SOCIAL_SLOT_LABEL = {
   reputation_axis: "声望轴",
   evaluation_axis: "评价轴",
   rumor_channel: "流言渠道",
+  request_type: "请求类型",
 };
+
+function socialRequestAction(requestId, action) {
+  if (!requestId) return;
+  const reason = action === "reject" ? "webui_rejected" : `webui_${action}`;
+  return socialAction("request_transition", { request_id: requestId, transition_action: action, reason });
+}
 
 // 渲染 reader 提供的社会世界快照；输入是只读 snapshotData.social_world，
 // 输出是覆盖社会槽位、实体、声望、评价、请求和流言 DOM，不写数据库。
@@ -1854,7 +1985,20 @@ function renderSocialWorld() {
     stat("评价", counts.evaluations),
     stat("流言", counts.rumors),
     stat("请求", counts.requests),
+    stat("提示", counts.advisories),
   ].join("");
+
+  const advisoryEl = document.getElementById("social-advisories");
+  if (advisoryEl) {
+    const advisories = data.advisories || [];
+    advisoryEl.innerHTML = advisories.length ? advisories.slice(0, 10).map(a => {
+      const sources = (a.sources || []).slice(0, 3).join(" · ");
+      return `<div class="social-row-card advisory-row">
+        <div><span class="social-name">${escapeHtml(SOCIAL_SLOT_LABEL[a.slot_type] || a.slot_type || "槽位")}</span><span class="social-tag">${escapeHtml(a.key || "")}</span></div>
+        <div class="social-row-meta">${escapeHtml(a.message || "未定义槽位")} · ${formatNum(a.usage_count || 0)} 次${sources ? ` · ${escapeHtml(sources)}` : ""}</div>
+      </div>`;
+    }).join("") : '<div class="empty-state">无槽位提示</div>';
+  }
 
   const slots = data.slots || [];
   const slotsEl = document.getElementById("social-slots");
@@ -1947,6 +2091,10 @@ function renderSocialWorld() {
         <div class="request-metrics">
           <span>${escapeHtml(r.status || "open")}</span><span>${escapeHtml(r.privacy_level || "local")}</span>${links ? `<span>${escapeHtml(links)}</span>` : ""}
         </div>
+        ${["open","accepted","in_progress"].includes(r.status || "open") ? `<div class="request-actions">
+          ${(r.status || "open") === "open" ? `<button class="world-mini-btn create" onclick="socialRequestAction(${escapeJsArg(r.id)}, ${escapeJsArg("accept")})">接受</button><button class="world-mini-btn danger" onclick="socialRequestAction(${escapeJsArg(r.id)}, ${escapeJsArg("reject")})">拒绝</button>` : ""}
+          ${["accepted","in_progress","open"].includes(r.status || "open") ? `<button class="world-mini-btn" onclick="socialRequestAction(${escapeJsArg(r.id)}, ${escapeJsArg("complete")})">完成</button><button class="world-mini-btn" onclick="socialRequestAction(${escapeJsArg(r.id)}, ${escapeJsArg("expire")})">过期</button>` : ""}
+        </div>` : ""}
       </div>`;
     }).join("") : '<div class="empty-state">无请求/愿望</div>';
   }

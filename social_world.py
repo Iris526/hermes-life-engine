@@ -20,7 +20,11 @@ _SLOT_CANON_KEYS = {
     "reputation_axis": "reputation_axes",
     "evaluation_axis": "evaluation_axes",
     "rumor_channel": "rumor_channels",
+    "request_type": "request_types",
 }
+
+_REQUEST_TERMINAL_STATUSES = {"rejected", "completed", "expired", "cancelled"}
+_REQUEST_STATUSES = {"open", "accepted", "in_progress", "rejected", "completed", "expired", "cancelled"}
 
 
 def _clamp_float(value: Any, lo: float, hi: float, default: float = 0.0) -> float:
@@ -65,7 +69,11 @@ def _decode_evaluation(row) -> dict[str, Any]:
 
 
 def _decode_request(row) -> dict[str, Any]:
-    return _decode_json_fields(_row(row), ["details_json", "evidence_json"])
+    return _decode_json_fields(_row(row), ["details_json", "quote_json", "billing_json", "evidence_json"])
+
+
+def _decode_request_transition(row) -> dict[str, Any]:
+    return _decode_json_fields(_row(row), ["quote_json", "billing_json", "evidence_json"])
 
 
 def _decode_reputation_event(row) -> dict[str, Any]:
@@ -268,19 +276,109 @@ def list_slot_definitions(conn, owner_kind: str, owner_id: str, *,
     if slot_type:
         where += " AND slot_type=?"
         params.append(str(slot_type))
-    rows = conn.execute(
-        f"SELECT * FROM worldview_slot_definitions {where} ORDER BY slot_type, key",
-        tuple(params),
-    ).fetchall()
     merged: dict[tuple[str, str], dict[str, Any]] = {}
     for item in slots_from_canon(canon):
         if slot_type and item.get("slot_type") != slot_type:
             continue
         merged[(item["slot_type"], item["key"])] = item
-    for row in rows:
-        item = _decode_slot(row)
-        merged[(item["slot_type"], item["key"])] = item
+    table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='worldview_slot_definitions'",
+    ).fetchone()
+    if table_exists:
+        rows = conn.execute(
+            f"SELECT * FROM worldview_slot_definitions {where} ORDER BY slot_type, key",
+            tuple(params),
+        ).fetchall()
+        for row in rows:
+            item = _decode_slot(row)
+            merged[(item["slot_type"], item["key"])] = item
     return list(merged.values())
+
+
+def _slot_keys(conn, owner_kind: str, owner_id: str, slot_type: str,
+               canon: dict[str, Any] | None = None) -> set[str]:
+    """读取某类槽位的已定义 key。
+
+    输入是槽位类型和可选 Canon；输出用于 advisory validator。该函数只读 DB，不作为
+    硬校验来源，因为世界观包可能还在草拟中，写入路径仍允许未知 key。
+    """
+    return {
+        str(item.get("key"))
+        for item in list_slot_definitions(conn, owner_kind, owner_id, slot_type=slot_type, canon=canon)
+        if item.get("key")
+    }
+
+
+def _collect_used_slot_values(conn, owner_kind: str, owner_id: str) -> dict[tuple[str, str], dict[str, Any]]:
+    """从社会账本收集正在使用的槽位 key。
+
+    输入是 owner；输出按 `(slot_type, key)` 聚合使用次数和来源表。调用方是
+    `slot_advisories`。这里只读取稳定列，不解释具体世界观含义。
+    """
+    checks = [
+        ("entity_kind", "world_entities", "entity_kind", "status!='archived'"),
+        ("relationship_axis", "social_edges", "axis", "status='active'"),
+        ("reputation_axis", "reputation_accounts", "axis", "status='active'"),
+        ("reputation_axis", "reputation_events", "axis", "1=1"),
+        ("evaluation_axis", "social_evaluations", "axis", "status='active'"),
+        ("rumor_channel", "rumors", "channel", "status!='archived'"),
+        ("request_type", "social_requests", "request_type", "status!='archived'"),
+    ]
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for slot_type, table, column, status_where in checks:
+        table_exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if not table_exists:
+            continue
+        rows = conn.execute(
+            f"""SELECT {column} AS key, COUNT(*) AS usage_count
+                FROM {table}
+                WHERE owner_kind=? AND owner_id=? AND {status_where}
+                GROUP BY {column}""",
+            (owner_kind, owner_id),
+        ).fetchall()
+        for row in rows:
+            key = str(row["key"] or "").strip()
+            if not key:
+                continue
+            item = out.setdefault(
+                (slot_type, key),
+                {"slot_type": slot_type, "key": key, "usage_count": 0, "sources": []},
+            )
+            item["usage_count"] += int(row["usage_count"] or 0)
+            item["sources"].append(f"{table}.{column}")
+    return out
+
+
+def slot_advisories(conn, owner_kind: str, owner_id: str, *,
+                    canon: dict[str, Any] | None = None,
+                    limit: int = 80) -> list[dict[str, Any]]:
+    """生成非阻断的社会槽位一致性提示。
+
+    输入是 owner 和可选 Canon；输出 warning/info 列表。它只提示“账本中使用了未定义
+    槽位 key”，不会阻止写入，适合世界观仍在扩展时发现 typo、同义词和遗漏定义。
+    """
+    used = _collect_used_slot_values(conn, owner_kind, owner_id)
+    defined_by_type = {
+        slot_type: _slot_keys(conn, owner_kind, owner_id, slot_type, canon=canon)
+        for slot_type in _SLOT_CANON_KEYS
+    }
+    out: list[dict[str, Any]] = []
+    for (slot_type, key), item in sorted(used.items()):
+        if key in defined_by_type.get(slot_type, set()):
+            continue
+        out.append({
+            "severity": "warning",
+            "slot_type": slot_type,
+            "key": key,
+            "usage_count": item["usage_count"],
+            "sources": sorted(set(item["sources"])),
+            "message": f"{slot_type} '{key}' is used but has no active slot definition",
+            "suggested_actions": ["define_slot", "merge_with_existing_slot"],
+        })
+    return out[:max(1, int(limit))]
 
 
 def create_entity(conn, owner_kind: str, owner_id: str, *, entity_kind: str,
@@ -776,11 +874,14 @@ def record_social_request(conn, owner_kind: str, owner_id: str, *, requester_ent
                           target_entity_id: str | None, request_type: str,
                           topic: str = "unknown", summary: str | None = None,
                           details: dict[str, Any] | None = None,
+                          quote: dict[str, Any] | None = None,
+                          billing: dict[str, Any] | None = None,
                           privacy_level: str = "local",
                           linked_event_id: str | None = None,
                           linked_schedule_block_id: str | None = None,
                           linked_activity_id: str | None = None,
                           linked_occurrence_id: str | None = None,
+                          linked_commission_id: str | None = None,
                           evidence: dict[str, Any] | None = None,
                           status: str = "open",
                           idempotency_key: str | None = None,
@@ -798,6 +899,9 @@ def record_social_request(conn, owner_kind: str, owner_id: str, *, requester_ent
     request_type = str(request_type or "").strip()
     if not request_type:
         raise ValueError("request_type is required")
+    status_v = str(status or "open").strip() or "open"
+    if status_v not in _REQUEST_STATUSES:
+        raise ValueError(f"unknown social request status: {status_v}")
     topic = str(topic or "unknown").strip() or "unknown"
     idem = str(idempotency_key or f"{source}:{linked_event_id or 'none'}:{linked_occurrence_id or 'none'}:{request_type}:{topic}").strip()
     existing = conn.execute(
@@ -809,28 +913,35 @@ def record_social_request(conn, owner_kind: str, owner_id: str, *, requester_ent
         conn.execute(
             """UPDATE social_requests
                SET requester_entity_id=?, target_entity_id=?, request_type=?, topic=?, summary=?,
-                   details_json=?, privacy_level=?, linked_event_id=?, linked_schedule_block_id=?,
-                   linked_activity_id=?, linked_occurrence_id=?, evidence_json=?, status=?,
-                   source=?, updated_at=datetime('now')
+                   details_json=?, quote_json=?, billing_json=?, privacy_level=?,
+                   linked_event_id=?, linked_schedule_block_id=?, linked_activity_id=?,
+                   linked_occurrence_id=?, linked_commission_id=?, evidence_json=?, status=?,
+                   source=?, updated_at=datetime('now'), accepted_at=CASE WHEN ?='accepted' AND accepted_at IS NULL THEN datetime('now') ELSE accepted_at END,
+                   closed_at=CASE WHEN ? IN ('rejected','completed','expired','cancelled') THEN datetime('now') ELSE closed_at END
                WHERE id=?""",
             (requester_entity_id, target_entity_id, request_type, topic, summary,
-             dumps(details or {}), privacy_level or "local", linked_event_id, linked_schedule_block_id,
-             linked_activity_id, linked_occurrence_id, dumps(evidence or {}), status or "open",
-             source, request_id),
+             dumps(details or {}), dumps(quote or {}), dumps(billing or {}), privacy_level or "local",
+             linked_event_id, linked_schedule_block_id, linked_activity_id, linked_occurrence_id,
+             linked_commission_id, dumps(evidence or {}), status_v, source, status_v, status_v,
+             request_id),
         )
     else:
         request_id = new_id("socreq")
+        now = conn.execute("SELECT datetime('now')").fetchone()[0]
         conn.execute(
             """INSERT INTO social_requests(
                  id, owner_kind, owner_id, requester_entity_id, target_entity_id,
-                 request_type, topic, summary, details_json, privacy_level,
+                 request_type, topic, summary, details_json, quote_json, billing_json, privacy_level,
                  linked_event_id, linked_schedule_block_id, linked_activity_id,
-                 linked_occurrence_id, evidence_json, status, source, idempotency_key
-               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 linked_occurrence_id, linked_commission_id, evidence_json, status, source, idempotency_key,
+                 accepted_at, closed_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (request_id, owner_kind, owner_id, requester_entity_id, target_entity_id,
-             request_type, topic, summary, dumps(details or {}), privacy_level or "local",
-             linked_event_id, linked_schedule_block_id, linked_activity_id, linked_occurrence_id,
-             dumps(evidence or {}), status or "open", source, idem),
+             request_type, topic, summary, dumps(details or {}), dumps(quote or {}), dumps(billing or {}),
+             privacy_level or "local", linked_event_id, linked_schedule_block_id, linked_activity_id,
+             linked_occurrence_id, linked_commission_id, dumps(evidence or {}), status_v, source, idem,
+             now if status_v == "accepted" else None,
+             now if status_v in _REQUEST_TERMINAL_STATUSES else None),
         )
     append_journal(conn, owner_kind, owner_id, "social_request_recorded",
                    {"request_id": request_id, "request_type": request_type, "topic": topic,
@@ -865,6 +976,123 @@ def list_social_requests(conn, owner_kind: str, owner_id: str, *,
     return [_decode_request(r) for r in rows]
 
 
+def transition_social_request(conn, owner_kind: str, owner_id: str, *, request_id: str,
+                              action: str, actor_entity_id: str | None = None,
+                              reason: str | None = None,
+                              quote: dict[str, Any] | None = None,
+                              billing: dict[str, Any] | None = None,
+                              linked_event_id: str | None = None,
+                              linked_commission_id: str | None = None,
+                              evidence: dict[str, Any] | None = None,
+                              source: str = "life_social") -> dict[str, Any]:
+    """推进一个社会请求的生命周期。
+
+    输入是 request id 和动作；输出包含更新后的 request 与 transition 账本记录。
+    状态机覆盖接受、拒绝、完成、过期、取消、重开、转 event/commission、报价和账单
+    绑定。它只维护通用生命周期，不创建具体世界观委托内容。
+    """
+    request_id = str(request_id or "").strip()
+    action_l = str(action or "").strip().lower()
+    if not request_id:
+        raise ValueError("request_id is required")
+    if not action_l:
+        raise ValueError("request transition action is required")
+    if actor_entity_id and not _entity_belongs(conn, owner_kind, owner_id, actor_entity_id):
+        raise ValueError(f"actor entity not found: {actor_entity_id}")
+    row = conn.execute(
+        "SELECT * FROM social_requests WHERE id=? AND owner_kind=? AND owner_id=?",
+        (request_id, owner_kind, owner_id),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"social request not found: {request_id}")
+    current = _decode_request(row)
+    from_status = str(current.get("status") or "open")
+    if from_status in _REQUEST_TERMINAL_STATUSES and action_l != "reopen":
+        raise ValueError(f"social request is terminal: {from_status}")
+
+    next_status = from_status
+    if action_l in {"accept", "accepted"}:
+        next_status = "accepted"
+    elif action_l in {"reject", "rejected", "decline"}:
+        next_status = "rejected"
+    elif action_l in {"complete", "completed", "finish"}:
+        next_status = "completed"
+    elif action_l in {"expire", "expired"}:
+        next_status = "expired"
+    elif action_l in {"cancel", "cancelled"}:
+        next_status = "cancelled"
+    elif action_l in {"reopen", "open"}:
+        next_status = "open"
+    elif action_l in {"convert_event", "link_event", "event"}:
+        if not linked_event_id:
+            raise ValueError("linked_event_id is required for event conversion")
+        next_status = "in_progress"
+    elif action_l in {"convert_commission", "link_commission", "commission"}:
+        if not linked_commission_id:
+            raise ValueError("linked_commission_id is required for commission conversion")
+        next_status = "in_progress"
+    elif action_l in {"set_quote", "quote", "set_billing", "billing", "note"}:
+        next_status = from_status
+    else:
+        raise ValueError(f"unknown social request transition action: {action_l}")
+    if next_status not in _REQUEST_STATUSES:
+        raise ValueError(f"unknown social request status: {next_status}")
+
+    next_quote = dict(current.get("quote") or {})
+    if quote:
+        next_quote.update(quote)
+    next_billing = dict(current.get("billing") or {})
+    if billing:
+        next_billing.update(billing)
+    next_event_id = linked_event_id or current.get("linked_event_id")
+    next_commission_id = linked_commission_id or current.get("linked_commission_id")
+    closed = next_status in _REQUEST_TERMINAL_STATUSES
+    accepted = next_status in {"accepted", "in_progress", "completed"}
+    conn.execute(
+        """UPDATE social_requests
+           SET status=?, quote_json=?, billing_json=?, linked_event_id=?,
+               linked_commission_id=?, updated_at=datetime('now'),
+               accepted_at=CASE WHEN ?=1 AND accepted_at IS NULL THEN datetime('now') WHEN ?='open' THEN NULL ELSE accepted_at END,
+               closed_at=CASE WHEN ?=1 THEN datetime('now') WHEN ?='open' THEN NULL ELSE closed_at END
+           WHERE id=?""",
+        (next_status, dumps(next_quote), dumps(next_billing), next_event_id, next_commission_id,
+         1 if accepted else 0, next_status, 1 if closed else 0, next_status, request_id),
+    )
+    transition_id = new_id("socreqtx")
+    conn.execute(
+        """INSERT INTO social_request_transitions(
+             id, owner_kind, owner_id, request_id, action, from_status, to_status,
+             actor_entity_id, reason, quote_json, billing_json, linked_event_id,
+             linked_commission_id, evidence_json, source
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (transition_id, owner_kind, owner_id, request_id, action_l, from_status, next_status,
+         actor_entity_id, reason, dumps(quote or {}), dumps(billing or {}),
+         linked_event_id, linked_commission_id, dumps(evidence or {}), source),
+    )
+    append_journal(conn, owner_kind, owner_id, "social_request_transitioned",
+                   {"request_id": request_id, "action": action_l, "from_status": from_status, "to_status": next_status}, source)
+    return {
+        "request": _decode_request(conn.execute("SELECT * FROM social_requests WHERE id=?", (request_id,)).fetchone()),
+        "transition": _decode_request_transition(conn.execute("SELECT * FROM social_request_transitions WHERE id=?", (transition_id,)).fetchone()),
+    }
+
+
+def list_social_request_transitions(conn, owner_kind: str, owner_id: str, *,
+                                    request_id: str | None = None,
+                                    limit: int = 50) -> list[dict[str, Any]]:
+    """读取社会请求生命周期账本。"""
+    params: list[Any] = [owner_kind, owner_id]
+    where = "WHERE owner_kind=? AND owner_id=?"
+    if request_id:
+        where += " AND request_id=?"
+        params.append(request_id)
+    rows = conn.execute(
+        f"SELECT * FROM social_request_transitions {where} ORDER BY created_at DESC LIMIT ?",
+        tuple(params + [int(limit)]),
+    ).fetchall()
+    return [_decode_request_transition(r) for r in rows]
+
+
 def summary(conn, owner_kind: str, owner_id: str, *, canon: dict[str, Any] | None = None) -> dict[str, Any]:
     """生成社会世界层的紧凑摘要。
 
@@ -873,6 +1101,7 @@ def summary(conn, owner_kind: str, owner_id: str, *, canon: dict[str, Any] | Non
     """
     return {
         "slots": list_slot_definitions(conn, owner_kind, owner_id, canon=canon),
+        "advisories": slot_advisories(conn, owner_kind, owner_id, canon=canon, limit=20),
         "entities": list_entities(conn, owner_kind, owner_id, limit=12),
         "reputation": list_reputation_accounts(conn, owner_kind, owner_id, limit=12),
         "evaluations": list_evaluations(conn, owner_kind, owner_id, limit=8),

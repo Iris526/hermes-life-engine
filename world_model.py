@@ -101,6 +101,19 @@ def _decode_presence(row) -> dict[str, Any]:
     return _decode_json_fields(_row(row), ["evidence_json"])
 
 
+def _decode_route(row) -> dict[str, Any]:
+    """解码世界路线行。"""
+    item = _decode_json_fields(_row(row), ["cost_json", "schedule_json", "traits_json", "evidence_json"])
+    if "points_json" in item:
+        item["points"] = loads(item.pop("points_json"), [])
+    return item
+
+
+def _decode_condition(row) -> dict[str, Any]:
+    """解码动态世界状态行。"""
+    return _decode_json_fields(_row(row), ["payload_json", "evidence_json"])
+
+
 def _clean_key(value: Any, fallback: str | None = None) -> str:
     """规整外部传入的稳定 key。"""
     key = str(value or fallback or "").strip()
@@ -457,29 +470,66 @@ def _marker_from_place(place: dict[str, Any], index: int,
     }
 
 
-def _map_routes(map_cfg: dict[str, Any], canvas: dict[str, Any]) -> list[dict[str, Any]]:
-    """生成地图路线/道路结构。
+def _route_points(raw_points: Any, canvas: dict[str, Any]) -> list[dict[str, float]]:
+    """把路线点规整到地图画布坐标系。
 
-    输入是 profile.rules.map.routes；输出为可绘制折线。points 支持 [[x,y], ...] 或
-    {"x":..., "y":...} 列表。调用方是 WebUI 地图，主要用于道路、河道、边界线、
-    商道等 RPG 地图层。非法或不足两个点的路线会被跳过。
+    输入来自 profile.rules.map.routes 或 world_routes.points；输出是可绘制点列表。
+    支持 [[x,y], ...] 和 {"x":..., "y":...} 两种形态，坏点跳过。
     """
-    routes: list[dict[str, Any]] = []
+    points: list[dict[str, float]] = []
     canvas_w = float(canvas.get("width") or _DEFAULT_MAP_CANVAS["width"])
     canvas_h = float(canvas.get("height") or _DEFAULT_MAP_CANVAS["height"])
+    for point in raw_points or []:
+        if isinstance(point, (list, tuple)) and len(point) >= 2:
+            x, y = point[0], point[1]
+        elif isinstance(point, dict):
+            x, y = point.get("x"), point.get("y")
+        else:
+            continue
+        points.append({
+            "x": _clamp_map_value(x, 0.0, 0.0, canvas_w),
+            "y": _clamp_map_value(y, 0.0, 0.0, canvas_h),
+        })
+    return points
+
+
+def _scope_map_point(scope_kind: str | None, scope_id: str | None,
+                     region_shapes: dict[str, dict[str, Any]],
+                     markers: dict[str, dict[str, Any]]) -> dict[str, float] | None:
+    """把 region/place 作用域解析为地图点。
+
+    输入是 route/condition 的结构化 scope；输出是区域中心点或地点 marker 点。找不到
+    时返回 None，调用方会保留记录但不强行猜测。
+    """
+    kind = str(scope_kind or "").strip()
+    sid = str(scope_id or "").strip()
+    if not sid:
+        return None
+    if kind == "place" and sid in markers:
+        marker = markers[sid]
+        return {"x": float(marker.get("x") or 0), "y": float(marker.get("y") or 0)}
+    if kind == "region" and sid in region_shapes:
+        region = region_shapes[sid]
+        return {
+            "x": float(region.get("x") or 0) + float(region.get("width") or 0) / 2,
+            "y": float(region.get("y") or 0) + float(region.get("height") or 0) / 2,
+        }
+    return None
+
+
+def _map_routes(map_cfg: dict[str, Any], canvas: dict[str, Any],
+                route_records: list[dict[str, Any]] | None = None,
+                region_shapes: dict[str, dict[str, Any]] | None = None,
+                markers: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """生成地图路线/道路结构。
+
+    输入兼容 profile.rules.map.routes，并合并一等 world_routes 记录。输出为可绘制
+    折线；一等路线如果没有显式 points，会尝试从 from/to scope 的 region/place 坐标
+    推导。非法或不足两个点的路线会被跳过。
+    """
+    routes: list[dict[str, Any]] = []
     for idx, route in enumerate(_iter_map_records(map_cfg.get("routes") or map_cfg.get("paths"))):
-        points = []
-        for point in route.get("points") or []:
-            if isinstance(point, (list, tuple)) and len(point) >= 2:
-                x, y = point[0], point[1]
-            elif isinstance(point, dict):
-                x, y = point.get("x"), point.get("y")
-            else:
-                continue
-            points.append({
-                "x": _clamp_map_value(x, 0.0, 0.0, canvas_w),
-                "y": _clamp_map_value(y, 0.0, 0.0, canvas_h),
-            })
+        points = _route_points(route.get("points"), canvas)
         if len(points) < 2:
             continue
         role = str(route.get("role") or route.get("route_type") or "road")
@@ -493,7 +543,75 @@ def _map_routes(map_cfg: dict[str, Any], canvas: dict[str, Any]) -> list[dict[st
             "dash": route.get("dash"),
             "source": "profile.rules.map.routes",
         })
+    region_shapes = region_shapes or {}
+    markers = markers or {}
+    for idx, route in enumerate(route_records or []):
+        traits = route.get("traits") if isinstance(route.get("traits"), dict) else {}
+        points = _route_points(route.get("points"), canvas)
+        if len(points) < 2:
+            start = _scope_map_point(route.get("from_scope_kind"), route.get("from_scope_id"), region_shapes, markers)
+            end = _scope_map_point(route.get("to_scope_kind"), route.get("to_scope_id"), region_shapes, markers)
+            points = [p for p in (start, end) if p]
+        if len(points) < 2:
+            continue
+        role = str(route.get("route_type") or traits.get("role") or "road")
+        routes.append({
+            "id": route.get("id") or route.get("key") or f"world_route.{idx}",
+            "key": route.get("key"),
+            "name": route.get("name") or route.get("key") or "路线",
+            "role": role,
+            "points": points,
+            "width": _clamp_map_value(traits.get("width"), 1.2, 0.2, 8.0),
+            "color": traits.get("color"),
+            "dash": traits.get("dash") or ("3 2" if route.get("status") == "blocked" else None),
+            "status": route.get("status"),
+            "travel_mode": route.get("travel_mode"),
+            "duration_minutes": route.get("duration_minutes"),
+            "distance_value": route.get("distance_value"),
+            "distance_unit": route.get("distance_unit"),
+            "risk_level": route.get("risk_level"),
+            "from_scope_kind": route.get("from_scope_kind"),
+            "from_scope_id": route.get("from_scope_id"),
+            "to_scope_kind": route.get("to_scope_kind"),
+            "to_scope_id": route.get("to_scope_id"),
+            "source": "world_routes",
+        })
     return routes
+
+
+def _map_conditions(conditions: list[dict[str, Any]] | None,
+                    region_shapes: dict[str, dict[str, Any]],
+                    markers: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """把动态世界状态投影到地图作用域。
+
+    输入是 active conditions；输出保留原状态字段，并在 region/place 可定位时补充 x/y。
+    WebUI 可以用列表展示，未来也能直接叠加危险区、机会点和流言热度。
+    """
+    out: list[dict[str, Any]] = []
+    for condition in conditions or []:
+        point = _scope_map_point(condition.get("scope_kind"), condition.get("scope_id"), region_shapes, markers)
+        item = {
+            "id": condition.get("id"),
+            "key": condition.get("key"),
+            "title": condition.get("title"),
+            "condition_type": condition.get("condition_type"),
+            "scope_kind": condition.get("scope_kind"),
+            "scope_id": condition.get("scope_id"),
+            "severity": condition.get("severity"),
+            "intensity": condition.get("intensity"),
+            "status": condition.get("status"),
+            "starts_at": condition.get("starts_at"),
+            "ends_at": condition.get("ends_at"),
+            "summary": condition.get("summary"),
+            "source": "world_conditions",
+        }
+        if point:
+            item.update(point)
+            item["located"] = True
+        else:
+            item["located"] = False
+        out.append(item)
+    return out
 
 
 def _actor_marker(markers: list[dict[str, Any]], current_location: dict[str, Any] | None,
@@ -530,15 +648,18 @@ def _actor_marker(markers: list[dict[str, Any]], current_location: dict[str, Any
 
 
 def map_state(profiles: list[dict[str, Any]], regions: list[dict[str, Any]], places: list[dict[str, Any]],
+              routes: list[dict[str, Any]] | None = None,
+              conditions: list[dict[str, Any]] | None = None,
               *, current_location: dict[str, Any] | None = None,
               actor_label: str | None = "明灯") -> dict[str, Any]:
     """生成结构化世界地图。
 
     输入是已解码的世界档案、区域、地点，以及可选当前 location；输出是 WebUI 和
     context 可共享的地图对象，包括画布、视口能力、网格、图片资源、图片图层、地形
-    层、路线、区域形状、地点/建筑标记和明灯当前位置标记。函数不写数据库；地形、
-    坐标、图片引用和交互能力来自结构字段：
-    profile.rules.map、region.traits.map、place.coordinates。
+    层、路线、区域形状、地点/建筑标记、动态状态和明灯当前位置标记。函数不写
+    数据库；地形、坐标、图片引用和交互能力来自结构字段：
+    profile.rules.map、region.traits.map、place.coordinates，以及可选的一等
+    world_routes/world_conditions 记录。
     """
     profile_rules = profiles[0].get("rules") if profiles and isinstance(profiles[0].get("rules"), dict) else {}
     map_cfg = _nested_map_config(profile_rules)
@@ -547,7 +668,6 @@ def map_state(profiles: list[dict[str, Any]], regions: list[dict[str, Any]], pla
     grid = _map_grid(map_cfg, canvas)
     assets = _map_assets(map_cfg)
     image_layers = _map_image_layers(map_cfg, assets, canvas)
-    routes = _map_routes(map_cfg, canvas)
     terrain_layers: list[dict[str, Any]] = []
     for idx, layer in enumerate(map_cfg.get("terrain_layers") or []):
         if not isinstance(layer, dict):
@@ -566,6 +686,9 @@ def map_state(profiles: list[dict[str, Any]], regions: list[dict[str, Any]], pla
     region_shapes = [_region_shape(region, i, len(regions), canvas) for i, region in enumerate(regions)]
     region_shape_by_id = {str(r.get("id")): r for r in region_shapes if r.get("id")}
     markers = [_marker_from_place(place, i, region_shape_by_id, canvas) for i, place in enumerate(places)]
+    marker_by_id = {str(m.get("id")): m for m in markers if m.get("id")}
+    map_routes = _map_routes(map_cfg, canvas, routes, region_shape_by_id, marker_by_id)
+    map_conditions = _map_conditions(conditions, region_shape_by_id, marker_by_id)
     terrains = terrain_layers + region_shapes
     actor = _actor_marker(markers, current_location, actor_label)
     marker_roles = {"place": _MARKER_ROLE_LABELS["place"], "important_building": _MARKER_ROLE_LABELS["important_building"]}
@@ -579,7 +702,8 @@ def map_state(profiles: list[dict[str, Any]], regions: list[dict[str, Any]], pla
         "assets": assets,
         "image_layers": image_layers,
         "terrain": terrains,
-        "routes": routes,
+        "routes": map_routes,
+        "conditions": map_conditions,
         "regions": region_shapes,
         "markers": markers,
         "actor": actor,
@@ -593,7 +717,8 @@ def map_state(profiles: list[dict[str, Any]], regions: list[dict[str, Any]], pla
         "counts": {
             "terrain": len(terrains),
             "image_layers": len(image_layers),
-            "routes": len(routes),
+            "routes": len(map_routes),
+            "conditions": len(map_conditions),
             "markers": len(markers),
             "important_markers": len([m for m in markers if m.get("is_important")]),
         },
@@ -606,6 +731,8 @@ _ARCHIVE_TABLES = {
     "place": ("world_places", _decode_place),
     "lore": ("world_lore_entries", _decode_lore),
     "faction_presence": ("world_faction_presence", _decode_presence),
+    "route": ("world_routes", _decode_route),
+    "condition": ("world_conditions", _decode_condition),
 }
 
 
@@ -1014,6 +1141,149 @@ def upsert_faction_presence(conn, owner_kind: str, owner_id: str, *, faction_ent
     return _decode_presence(conn.execute("SELECT * FROM world_faction_presence WHERE id=?", (presence_id,)).fetchone())
 
 
+def _validate_route_endpoint(conn, owner_kind: str, owner_id: str,
+                             scope_kind: str | None, scope_id: str | None) -> tuple[str | None, str | None]:
+    """校验路线端点。
+
+    输入来自 world_routes 的 from/to scope；输出规整后的端点。端点可以为空，表示纯
+    地图折线；一旦给出端点，就必须指向现有 world/region/place，避免路线引用漂移。
+    """
+    if not scope_kind and not scope_id:
+        return None, None
+    if not scope_kind or not scope_id:
+        raise ValueError("route endpoint requires both scope_kind and scope_id")
+    return _validate_scope(conn, owner_kind, owner_id, scope_kind, scope_id)
+
+
+def upsert_route(conn, owner_kind: str, owner_id: str, *, key: str, name: str,
+                 route_type: str = "road",
+                 from_scope_kind: str | None = None, from_scope_id: str | None = None,
+                 to_scope_kind: str | None = None, to_scope_id: str | None = None,
+                 travel_mode: str | None = None,
+                 distance_value: float | None = None, distance_unit: str | None = None,
+                 duration_minutes: float | None = None, risk_level: float = 0.0,
+                 cost: dict[str, Any] | None = None,
+                 schedule: dict[str, Any] | None = None,
+                 points: list[Any] | None = None,
+                 traits: dict[str, Any] | None = None,
+                 evidence: dict[str, Any] | None = None,
+                 status: str = "active", source: str = "life_world") -> dict[str, Any]:
+    """创建或更新一条世界路线/交通边。
+
+    输入是稳定 key、端点、地图折线和耗时/风险等结构字段；输出 route 记录。路线是
+    玩法层基础设施，供地图、外勤估算和区域封锁读取；具体交通规则仍由世界观解释。
+    """
+    key = _clean_key(key)
+    name = str(name or "").strip()
+    if not name:
+        raise ValueError("route name is required")
+    if status not in {"active", "blocked", "closed", "archived"}:
+        raise ValueError("route status must be active/blocked/closed/archived")
+    from_kind, from_id = _validate_route_endpoint(conn, owner_kind, owner_id, from_scope_kind, from_scope_id)
+    to_kind, to_id = _validate_route_endpoint(conn, owner_kind, owner_id, to_scope_kind, to_scope_id)
+    risk = _clamp_map_value(risk_level, 0.0, 0.0, 100.0)
+    existing = conn.execute(
+        "SELECT id FROM world_routes WHERE owner_kind=? AND owner_id=? AND key=?",
+        (owner_kind, owner_id, key),
+    ).fetchone()
+    if existing:
+        route_id = existing["id"]
+        conn.execute(
+            """UPDATE world_routes
+               SET name=?, route_type=?, from_scope_kind=?, from_scope_id=?,
+                   to_scope_kind=?, to_scope_id=?, travel_mode=?, distance_value=?,
+                   distance_unit=?, duration_minutes=?, risk_level=?, cost_json=?,
+                   schedule_json=?, points_json=?, traits_json=?, evidence_json=?,
+                   status=?, source=?, updated_at=datetime('now')
+               WHERE id=?""",
+            (name, route_type or "road", from_kind, from_id, to_kind, to_id,
+             travel_mode, distance_value, distance_unit, duration_minutes, risk,
+             dumps(cost or {}), dumps(schedule or {}), dumps(points or []),
+             dumps(traits or {}), dumps(evidence or {}), status, source, route_id),
+        )
+        event_type = "world_route_updated"
+    else:
+        route_id = new_id("worldroute")
+        conn.execute(
+            """INSERT INTO world_routes(
+                 id, owner_kind, owner_id, key, name, route_type, from_scope_kind,
+                 from_scope_id, to_scope_kind, to_scope_id, travel_mode,
+                 distance_value, distance_unit, duration_minutes, risk_level,
+                 cost_json, schedule_json, points_json, traits_json, evidence_json,
+                 status, source
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (route_id, owner_kind, owner_id, key, name, route_type or "road",
+             from_kind, from_id, to_kind, to_id, travel_mode, distance_value,
+             distance_unit, duration_minutes, risk, dumps(cost or {}),
+             dumps(schedule or {}), dumps(points or []), dumps(traits or {}),
+             dumps(evidence or {}), status, source),
+        )
+        event_type = "world_route_created"
+    append_journal(conn, owner_kind, owner_id, event_type,
+                   {"route_id": route_id, "key": key, "from_scope_id": from_id, "to_scope_id": to_id}, source)
+    return _decode_route(conn.execute("SELECT * FROM world_routes WHERE id=?", (route_id,)).fetchone())
+
+
+def upsert_condition(conn, owner_kind: str, owner_id: str, *, key: str, title: str,
+                     condition_type: str = "state", scope_kind: str = "world",
+                     scope_id: str | None = None, severity: float = 0.0,
+                     intensity: float = 0.0, summary: str | None = None,
+                     content: str | None = None, starts_at: str | None = None,
+                     ends_at: str | None = None,
+                     payload: dict[str, Any] | None = None,
+                     evidence: dict[str, Any] | None = None,
+                     status: str = "active", source: str = "life_world") -> dict[str, Any]:
+    """创建或更新动态世界状态。
+
+    输入是作用域、强度、时间窗和扩展 payload；输出 condition 记录。它承载灵压、
+    人流、危险、机会、流言热度等玩法状态，但核心不解释这些世界观含义。
+    """
+    key = _clean_key(key)
+    title = str(title or "").strip()
+    if not title:
+        raise ValueError("condition title is required")
+    if status not in {"active", "resolved", "expired", "archived"}:
+        raise ValueError("condition status must be active/resolved/expired/archived")
+    scope_kind, scope_id = _validate_scope(conn, owner_kind, owner_id, scope_kind, scope_id)
+    severity_v = _clamp_map_value(severity, 0.0, 0.0, 100.0)
+    intensity_v = _clamp_map_value(intensity, 0.0, 0.0, 100.0)
+    existing = conn.execute(
+        "SELECT id FROM world_conditions WHERE owner_kind=? AND owner_id=? AND key=?",
+        (owner_kind, owner_id, key),
+    ).fetchone()
+    if existing:
+        condition_id = existing["id"]
+        conn.execute(
+            """UPDATE world_conditions
+               SET title=?, condition_type=?, scope_kind=?, scope_id=?, severity=?,
+                   intensity=?, summary=?, content=?, starts_at=?, ends_at=?,
+                   payload_json=?, evidence_json=?, status=?, source=?,
+                   updated_at=datetime('now')
+               WHERE id=?""",
+            (title, condition_type or "state", scope_kind, scope_id, severity_v,
+             intensity_v, summary, content, starts_at, ends_at, dumps(payload or {}),
+             dumps(evidence or {}), status, source, condition_id),
+        )
+        event_type = "world_condition_updated"
+    else:
+        condition_id = new_id("worldcond")
+        conn.execute(
+            """INSERT INTO world_conditions(
+                 id, owner_kind, owner_id, key, title, condition_type, scope_kind,
+                 scope_id, severity, intensity, summary, content, starts_at, ends_at,
+                 payload_json, evidence_json, status, source
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (condition_id, owner_kind, owner_id, key, title, condition_type or "state",
+             scope_kind, scope_id, severity_v, intensity_v, summary, content,
+             starts_at, ends_at, dumps(payload or {}), dumps(evidence or {}),
+             status, source),
+        )
+        event_type = "world_condition_created"
+    append_journal(conn, owner_kind, owner_id, event_type,
+                   {"condition_id": condition_id, "key": key, "scope_kind": scope_kind, "scope_id": scope_id, "status": status}, source)
+    return _decode_condition(conn.execute("SELECT * FROM world_conditions WHERE id=?", (condition_id,)).fetchone())
+
+
 def _active_dependents(conn, owner_kind: str, owner_id: str, kind: str, object_id: str) -> list[dict[str, Any]]:
     """查询归档对象的 active 依赖。
 
@@ -1027,6 +1297,7 @@ def _active_dependents(conn, owner_kind: str, owner_id: str, kind: str, object_i
             ("place", "world_places", "region_id"),
             ("lore", "world_lore_entries", None),
             ("faction_presence", "world_faction_presence", None),
+            ("condition", "world_conditions", None),
         ]
         for dep_kind, table, column in checks:
             if column:
@@ -1040,11 +1311,20 @@ def _active_dependents(conn, owner_kind: str, owner_id: str, kind: str, object_i
                     (owner_kind, owner_id, object_id),
                 ).fetchall()
             deps.extend({"kind": dep_kind, "id": r["id"]} for r in rows)
+        route_rows = conn.execute(
+            """SELECT id FROM world_routes
+               WHERE owner_kind=? AND owner_id=? AND status!='archived'
+                 AND ((from_scope_kind='region' AND from_scope_id=?)
+                   OR (to_scope_kind='region' AND to_scope_id=?))""",
+            (owner_kind, owner_id, object_id, object_id),
+        ).fetchall()
+        deps.extend({"kind": "route", "id": r["id"]} for r in route_rows)
     elif kind == "place":
         checks = [
             ("place", "world_places", "parent_place_id"),
             ("lore", "world_lore_entries", None),
             ("faction_presence", "world_faction_presence", None),
+            ("condition", "world_conditions", None),
         ]
         for dep_kind, table, column in checks:
             if column:
@@ -1058,6 +1338,14 @@ def _active_dependents(conn, owner_kind: str, owner_id: str, kind: str, object_i
                     (owner_kind, owner_id, object_id),
                 ).fetchall()
             deps.extend({"kind": dep_kind, "id": r["id"]} for r in rows)
+        route_rows = conn.execute(
+            """SELECT id FROM world_routes
+               WHERE owner_kind=? AND owner_id=? AND status!='archived'
+                 AND ((from_scope_kind='place' AND from_scope_id=?)
+                   OR (to_scope_kind='place' AND to_scope_id=?))""",
+            (owner_kind, owner_id, object_id, object_id),
+        ).fetchall()
+        deps.extend({"kind": "route", "id": r["id"]} for r in route_rows)
     return deps
 
 
@@ -1101,7 +1389,7 @@ def archive_object(conn, owner_kind: str, owner_id: str, *, object_kind: str,
     """
     kind = str(object_kind or "").strip().lower()
     if kind not in _ARCHIVE_TABLES:
-        raise ValueError("object_kind must be profile/region/place/lore/faction_presence")
+        raise ValueError("object_kind must be profile/region/place/lore/faction_presence/route/condition")
     table, decoder = _ARCHIVE_TABLES[kind]
     params: list[Any] = [owner_kind, owner_id]
     where = "owner_kind=? AND owner_id=?"
@@ -1246,6 +1534,59 @@ def list_faction_presence(conn, owner_kind: str, owner_id: str, *, faction_entit
     return [_decode_presence(r) for r in rows]
 
 
+def list_routes(conn, owner_kind: str, owner_id: str, *,
+                scope_kind: str | None = None, scope_id: str | None = None,
+                status: str | None = None, limit: int = 80) -> list[dict[str, Any]]:
+    """列出世界路线，可按端点 scope 过滤。
+
+    默认返回非 archived 路线，包括 active 和 blocked，供地图和外勤估算知道道路是否
+    暂时不可通行。传入 status 时按精确状态过滤。
+    """
+    params: list[Any] = [owner_kind, owner_id]
+    where = "WHERE owner_kind=? AND owner_id=?"
+    if scope_kind and scope_id:
+        where += " AND ((from_scope_kind=? AND from_scope_id=?) OR (to_scope_kind=? AND to_scope_id=?))"
+        params.extend([scope_kind, scope_id, scope_kind, scope_id])
+    if status:
+        where += " AND status=?"
+        params.append(status)
+    else:
+        where += " AND status!='archived'"
+    rows = conn.execute(
+        f"SELECT * FROM world_routes {where} ORDER BY risk_level DESC, updated_at DESC LIMIT ?",
+        tuple(params + [int(limit)]),
+    ).fetchall()
+    return [_decode_route(r) for r in rows]
+
+
+def list_conditions(conn, owner_kind: str, owner_id: str, *,
+                    scope_kind: str | None = None, scope_id: str | None = None,
+                    condition_type: str | None = None,
+                    status: str | None = "active", limit: int = 80) -> list[dict[str, Any]]:
+    """列出动态世界状态，可按结构作用域过滤。"""
+    params: list[Any] = [owner_kind, owner_id]
+    where = "WHERE owner_kind=? AND owner_id=?"
+    if scope_kind:
+        where += " AND scope_kind=?"
+        params.append(scope_kind)
+    if scope_id:
+        where += " AND scope_id=?"
+        params.append(scope_id)
+    if condition_type:
+        where += " AND condition_type=?"
+        params.append(condition_type)
+    if status:
+        where += " AND status=?"
+        params.append(status)
+    else:
+        where += " AND status!='archived'"
+    rows = conn.execute(
+        f"SELECT * FROM world_conditions {where} ORDER BY severity DESC, updated_at DESC LIMIT ?",
+        tuple(params + [int(limit)]),
+    ).fetchall()
+    return [_decode_condition(r) for r in rows]
+
+
 def effective_context(conn, owner_kind: str, owner_id: str, *, region_id: str | None = None,
                       region_key: str | None = None, place_id: str | None = None,
                       place_key: str | None = None, location: dict[str, Any] | None = None,
@@ -1276,6 +1617,12 @@ def effective_context(conn, owner_kind: str, owner_id: str, *, region_id: str | 
     limit_v = max(1, int(limit))
     lore = _collect_effective_entries(conn, owner_kind, owner_id, effective_scopes, list_lore_entries, limit_v)
     presence = _collect_effective_entries(conn, owner_kind, owner_id, effective_scopes, list_faction_presence, limit_v)
+    conditions = _collect_effective_entries(conn, owner_kind, owner_id, effective_scopes, list_conditions, limit_v)
+    route_by_id: dict[str, dict[str, Any]] = {}
+    for scope_kind, scope_id in effective_scopes:
+        for route in list_routes(conn, owner_kind, owner_id, scope_kind=scope_kind, scope_id=scope_id, limit=limit_v):
+            if route.get("id"):
+                route_by_id[str(route["id"])] = route
 
     profiles = list_profiles(conn, owner_kind, owner_id, limit=2)
     return {
@@ -1292,12 +1639,16 @@ def effective_context(conn, owner_kind: str, owner_id: str, *, region_id: str | 
         "places": [place] if place else [],
         "lore": lore,
         "faction_presence": presence,
+        "routes": list(route_by_id.values())[:limit_v],
+        "conditions": conditions,
         "counts": {
             "profiles": len(profiles),
             "regions": 1 if region else 0,
             "places": 1 if place else 0,
             "lore": len(lore),
             "faction_presence": len(presence),
+            "routes": min(len(route_by_id), limit_v),
+            "conditions": len(conditions),
         },
     }
 
@@ -1314,18 +1665,24 @@ def summary(conn, owner_kind: str, owner_id: str, *, limit: int = 20) -> dict[st
     places = list_places(conn, owner_kind, owner_id, limit=limit)
     lore = list_lore_entries(conn, owner_kind, owner_id, limit=limit)
     presence = list_faction_presence(conn, owner_kind, owner_id, limit=limit)
+    routes = list_routes(conn, owner_kind, owner_id, limit=limit)
+    conditions = list_conditions(conn, owner_kind, owner_id, limit=limit)
     return {
         "profiles": profiles,
         "regions": regions,
         "places": places,
         "lore": lore,
         "faction_presence": presence,
-        "map": map_state(profiles, regions, places),
+        "routes": routes,
+        "conditions": conditions,
+        "map": map_state(profiles, regions, places, routes, conditions),
         "counts": {
             "profiles": len(profiles),
             "regions": len(regions),
             "places": len(places),
             "lore": len(lore),
             "faction_presence": len(presence),
+            "routes": len(routes),
+            "conditions": len(conditions),
         },
     }

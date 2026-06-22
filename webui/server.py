@@ -293,6 +293,10 @@ def create_app(life_dir: str | None = None) -> FastAPI:
                     world_action = req.payload.get("world_action") or req.payload.get("action")
                     payload = {k: v for k, v in req.payload.items() if k not in {"world_action", "action"}}
                     return rt.world(world_action, state.owner_kind, state.owner_id, None, None, **payload)
+                if req.action == "social":
+                    social_action = req.payload.get("social_action") or req.payload.get("action")
+                    payload = {k: v for k, v in req.payload.items() if k not in {"social_action", "action"}}
+                    return rt.social(social_action, state.owner_kind, state.owner_id, None, None, **payload)
                 if req.action == "sleep_recovery_plan":
                     return rt.sleep("recovery_plan", state.owner_kind, state.owner_id, None, None)
                 if req.action == "proactive_dismiss":

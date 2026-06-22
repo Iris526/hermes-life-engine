@@ -171,12 +171,12 @@ def _seed_world(rt: LifeEngineRuntime) -> dict[str, dict]:
     }
 
 
-def test_schema_v63_and_world_model_tables(tmp_path: Path) -> None:
+def test_schema_v64_and_world_model_tables(tmp_path: Path) -> None:
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
-        assert _SCHEMA_VERSION >= 63
-        assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 63
+        assert _SCHEMA_VERSION >= 64
+        assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 64
         tables = {r[0] for r in rt.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         assert {
             "world_profiles",
@@ -184,6 +184,8 @@ def test_schema_v63_and_world_model_tables(tmp_path: Path) -> None:
             "world_places",
             "world_lore_entries",
             "world_faction_presence",
+            "world_routes",
+            "world_conditions",
         }.issubset(tables)
     finally:
         rt.close()
@@ -285,6 +287,55 @@ def test_world_map_has_terrain_buildings_and_actor_marker(tmp_path: Path) -> Non
     assert world_map["actor"]["label"] == "明灯"
 
 
+def test_world_routes_and_conditions_feed_map_and_context(tmp_path: Path) -> None:
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        seeded = _seed_world(rt)
+        route = _result(rt.world(
+            "route",
+            key="route.rain_to_shrine",
+            name="雨棚巷到归明观",
+            route_type="road",
+            from_scope_kind="place",
+            from_scope_id=seeded["place"]["id"],
+            to_scope_kind="place",
+            to_scope_id=seeded["shrine"]["id"],
+            travel_mode="walk",
+            duration_minutes=18,
+            risk_level=25,
+        ))
+        condition = _result(rt.world(
+            "condition",
+            key="cond.rain_shelter.pressure",
+            title="雨棚巷灵压升高",
+            condition_type="hazard",
+            scope_kind="place",
+            scope_id=seeded["place"]["id"],
+            severity=72,
+            intensity=66,
+            summary="夜间符线节点波动。",
+        ))
+
+        world_map = rt.world("map", location={"name": "雨棚巷"})["world_map"]
+        assert any(r["id"] == route["id"] and r["duration_minutes"] == 18 for r in world_map["routes"])
+        assert any(c["id"] == condition["id"] and c["located"] is True for c in world_map["conditions"])
+        scoped = rt.world("context", place_id=seeded["place"]["id"])["world_context"]
+        assert any(r["id"] == route["id"] for r in scoped["routes"])
+        assert any(c["id"] == condition["id"] for c in scoped["conditions"])
+
+        db = str(db_path())
+    finally:
+        rt.close()
+
+    world = LifeEngineReader(db).snapshot("agent", "default-agent")["world_model"]
+    assert any(r["key"] == "route.rain_to_shrine" and r["from_scope_name"] == "雨棚巷" for r in world["routes"])
+    assert any(c["key"] == "cond.rain_shelter.pressure" and c["scope_name"] == "雨棚巷" for c in world["conditions"])
+    assert world["map"]["counts"]["routes"] >= 2
+    assert world["map"]["counts"]["conditions"] >= 1
+
+
 def test_archive_blocks_or_cascades_dependents(tmp_path: Path) -> None:
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
@@ -328,6 +379,8 @@ def test_webui_reader_and_endpoint_include_world_model(tmp_path: Path) -> None:
     assert any(p["name"] == "雨棚巷" and p["region_name"] == "第七城" for p in world["places"])
     assert any(l["scope_name"] == "雨棚巷" for l in world["lore"])
     assert any(p["faction_name"] == "巡城司" for p in world["faction_presence"])
+    assert "routes" in world
+    assert "conditions" in world
     assert world["map"]["counts"]["important_markers"] >= 1
 
     client = TestClient(create_app(db))
@@ -362,3 +415,11 @@ def test_webui_world_action_can_write_and_archive(tmp_path: Path) -> None:
     assert archived["ok"] is True
     endpoint = client.get("/api/world_model").json()
     assert all(r["key"] != "web.region" for r in endpoint["regions"])
+
+    route_created = client.post("/api/action", json={
+        "action": "world",
+        "payload": {"world_action": "route", "key": "web.route", "name": "网页路线", "points": [[1, 1], [5, 5]]},
+    }).json()
+    assert route_created["ok"] is True
+    endpoint = client.get("/api/world_model").json()
+    assert any(r["key"] == "web.route" for r in endpoint["routes"])

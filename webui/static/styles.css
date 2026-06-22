@@ -688,9 +688,11 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .social-card.world-card,.social-row-card.world-row { border-left-color: var(--gold-dim); }
 .social-card.lore-card { border-left-color: var(--cyan); }
 .social-card.faction-presence-card { border-left-color: var(--cinnabar); }
+.social-card.condition-card { border-left-color: var(--warn); }
 .social-card.entity-card { border-left-color: var(--gold-dim); }
 .social-card.request-card { border-left-color: var(--gold); }
 .social-card.rumor-card { border-left-color: var(--warn); }
+.social-row-card.advisory-row { border-left-color: var(--warn); }
 .social-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .world-row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .world-card-actions { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px; flex-shrink: 0; }
@@ -711,6 +713,7 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .social-meter-fill.negative { background: linear-gradient(90deg,var(--bad),var(--cinnabar)); }
 .rumor-metrics,.request-metrics { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
 .rumor-metrics span,.request-metrics span { padding: 1px 6px; background: var(--bg-0); border: 1px solid var(--border-dim); border-radius: 1px; }
+.request-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
 
 /* ══════════ v0.18 心相 / 内境 ══════════ */
 .innerlife-body { display: flex; flex-direction: column; gap: 20px; }

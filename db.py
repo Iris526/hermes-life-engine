@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 63
+_SCHEMA_VERSION = 64
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -126,7 +126,7 @@ def migrate(conn: sqlite3.Connection) -> None:
 
     v0 -> v1 creates the original LifeEngine tables; later versions add
     receipts, truth sources, collection items, meals, goals, autonomy, proactive, execution,
-    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets, and v0.12.8 behavior-to-truth-source mapping, and v0.12.8 outfit resolver/current outfit/action-chain closure, and v0.12.9 resolver aliases/outfit presets/collection board, and v0.12.10 prompt/context slimming with progressive disclosure.
+    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets, and v0.12.8 behavior-to-truth-source mapping, and v0.12.8 outfit resolver/current outfit/action-chain closure, and v0.12.9 resolver aliases/outfit presets/collection board, and v0.12.10 prompt/context slimming with progressive disclosure, and v0.18.x first-class travel routes, dynamic world conditions, and social request lifecycle transitions.
     """
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
     _ensure_schema_migration_table(conn)
@@ -321,6 +321,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 63:
         _create_schema_v63(conn)
         _record_schema_migration(conn, 63, "structured_world_model")
+    if current < 64:
+        _create_schema_v64(conn)
+        _record_schema_migration(conn, 64, "world_routes_conditions_and_social_request_lifecycle")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -4047,7 +4050,7 @@ def _create_schema_v61(conn: sqlite3.Connection) -> None:
           id TEXT PRIMARY KEY,
           owner_kind TEXT NOT NULL,                 -- agent/user/relationship；限定槽位属于哪个生活域
           owner_id TEXT NOT NULL,                   -- owner 实例 id；供多 profile 隔离
-          slot_type TEXT NOT NULL,                  -- entity_kind | relationship_axis | reputation_axis | evaluation_axis | rumor_channel
+          slot_type TEXT NOT NULL,                  -- entity_kind | relationship_axis | reputation_axis | evaluation_axis | rumor_channel | request_type
           key TEXT NOT NULL,                        -- 世界观包稳定引用名；例如 guild/company/trust/fame
           label TEXT NOT NULL,                      -- 面向人/模型的显示名；不要求全局唯一
           description TEXT,                         -- 世界观对此槽位的解释；只用于展示和上下文
@@ -4452,4 +4455,110 @@ def _create_schema_v63(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_world_faction_presence_scope ON world_faction_presence(owner_kind, owner_id, scope_kind, scope_id, status)"
+    )
+
+
+def _create_schema_v64(conn: sqlite3.Connection) -> None:
+    """Gameplay world state: first-class routes, dynamic conditions, request lifecycle.
+
+    路线和动态状态是玩法层基础设施：具体世界观仍决定“路是什么路、危险是什么
+    危险”，核心只保存结构化端点、地图折线、耗时/风险和状态生命周期。社会请求
+    状态机使用 transition ledger，避免委托/愿望只剩一个不可追溯的 status 字段。
+    """
+    _add_column_if_missing(conn, "social_requests", "quote_json", "quote_json TEXT NOT NULL DEFAULT '{}'")
+    _add_column_if_missing(conn, "social_requests", "billing_json", "billing_json TEXT NOT NULL DEFAULT '{}'")
+    _add_column_if_missing(conn, "social_requests", "linked_commission_id", "linked_commission_id TEXT")
+    _add_column_if_missing(conn, "social_requests", "accepted_at", "accepted_at TEXT")
+    _add_column_if_missing(conn, "social_requests", "closed_at", "closed_at TEXT")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS social_request_transitions (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          request_id TEXT NOT NULL,                 -- social_requests.id；请求状态机的主体
+          action TEXT NOT NULL,                     -- accept/reject/complete/expire/convert_event/...
+          from_status TEXT,
+          to_status TEXT NOT NULL,
+          actor_entity_id TEXT,                     -- 处理该请求的社会实体，可为空
+          reason TEXT,
+          quote_json TEXT NOT NULL DEFAULT '{}',    -- 报价/价格解释；核心只存结构
+          billing_json TEXT NOT NULL DEFAULT '{}',  -- 账单/结算引用；核心不解释业务规则
+          linked_event_id TEXT,
+          linked_commission_id TEXT,
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_social_request_transitions_request ON social_request_transitions(owner_kind, owner_id, request_id, created_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS world_routes (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          key TEXT NOT NULL,                        -- 稳定路线 key；用于交通、外勤和地图渲染
+          name TEXT NOT NULL,
+          route_type TEXT NOT NULL DEFAULT 'road',  -- road/river/rail/leyline/danger/custom，由世界观解释
+          from_scope_kind TEXT,                     -- region/place/world/custom；为空表示纯地图折线
+          from_scope_id TEXT,
+          to_scope_kind TEXT,
+          to_scope_id TEXT,
+          travel_mode TEXT,                         -- walk/bike/car/ritual/custom
+          distance_value REAL,
+          distance_unit TEXT,
+          duration_minutes REAL,
+          risk_level REAL NOT NULL DEFAULT 0,       -- 0..100；用于路线推荐和外勤估算
+          cost_json TEXT NOT NULL DEFAULT '{}',
+          schedule_json TEXT NOT NULL DEFAULT '{}',
+          points_json TEXT NOT NULL DEFAULT '[]',   -- 地图 canvas 坐标折线，缺省可由端点推导
+          traits_json TEXT NOT NULL DEFAULT '{}',
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',    -- active | blocked | closed | archived
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_world_routes_owner ON world_routes(owner_kind, owner_id, status, updated_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_world_routes_scope ON world_routes(owner_kind, owner_id, from_scope_kind, from_scope_id, to_scope_kind, to_scope_id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS world_conditions (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          key TEXT NOT NULL,                        -- 稳定动态状态 key；同一状态幂等更新
+          title TEXT NOT NULL,
+          condition_type TEXT NOT NULL DEFAULT 'state', -- hazard/opportunity/crowd/pressure/rumor_heat/custom
+          scope_kind TEXT NOT NULL DEFAULT 'world', -- world | region | place
+          scope_id TEXT NOT NULL DEFAULT '__world__',
+          severity REAL NOT NULL DEFAULT 0,         -- 0..100；影响提示优先级
+          intensity REAL NOT NULL DEFAULT 0,        -- 0..100；世界观可解释的强度
+          summary TEXT,
+          content TEXT,
+          starts_at TEXT,
+          ends_at TEXT,
+          payload_json TEXT NOT NULL DEFAULT '{}',  -- 世界观专属动态字段
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',    -- active | resolved | expired | archived
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_world_conditions_scope ON world_conditions(owner_kind, owner_id, scope_kind, scope_id, status, severity)"
     )

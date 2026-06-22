@@ -445,7 +445,7 @@ LIFE_SOCIAL = {
     "name": "life_social",
     "description": (
         "Social World capability slots. Core LifeEngine stores generic social-world primitives "
-        "(world entities, affiliations, directed social edges, reputation ledgers, evaluations, rumors) "
+        "(world entities, affiliations, directed social edges, reputation ledgers, evaluations, rumors, requests) "
         "while concrete worldviews define what entity kinds, axes, channels, and rules mean. "
         "Use define_slot to register a worldview slot; create_entity/link_affiliation/set_edge/reputation_event/"
         "evaluate/rumor/expose_rumor to write durable social facts through LifeOps; summary/list actions are read-only. "
@@ -456,16 +456,16 @@ LIFE_SOCIAL = {
         "properties": {
             **OWNER_PROPS,
             "action": {"type": "string", "enum": [
-                "summary", "slots", "define_slot",
+                "summary", "slots", "define_slot", "advisories",
                 "create_entity", "entities", "get_entity",
                 "link_affiliation", "affiliations",
                 "set_edge", "edges",
                 "reputation_event", "reputation_accounts", "reputation_events",
                 "evaluate", "evaluations",
                 "rumor", "rumors", "expose_rumor", "rumor_exposures",
-                "requests",
+                "record_request", "requests", "request_transition", "request_transitions",
             ], "description": "社会世界操作。写操作都会经 LifeOps；读操作直接查询。"},
-            "slot_type": {"type": "string", "enum": ["entity_kind", "relationship_axis", "reputation_axis", "evaluation_axis", "rumor_channel"], "description": "For define_slot/slots: which worldview capability slot this definition belongs to."},
+            "slot_type": {"type": "string", "enum": ["entity_kind", "relationship_axis", "reputation_axis", "evaluation_axis", "rumor_channel", "request_type"], "description": "For define_slot/slots: which worldview capability slot this definition belongs to."},
             "key": {"type": "string", "description": "Stable worldview slot key, e.g. guild/company/trust/fame/group_chat."},
             "label": {"type": "string", "description": "Human-facing display label for a slot."},
             "config": {"type": "object", "description": "Worldview-specific rule/config payload. Core stores it but does not interpret it."},
@@ -504,9 +504,21 @@ LIFE_SOCIAL = {
             "rumor_id": {"type": "string"},
             "exposure_state": {"type": "string", "description": "heard/spread/suppressed/believed/rejected."},
             "reaction": {"type": "string"},
-            "requester_entity_id": {"type": "string", "description": "Filter social/visitor requests by requester entity."},
-            "target_entity_id": {"type": "string", "description": "Filter social/visitor requests by target entity."},
+            "request_id": {"type": "string", "description": "social_requests.id for lifecycle transitions."},
+            "transition_action": {"type": "string", "description": "Request lifecycle action: accept/reject/complete/expire/cancel/reopen/convert_event/convert_commission/set_quote/set_billing."},
+            "requester_entity_id": {"type": "string", "description": "Record/filter social/visitor requests by requester entity."},
+            "target_entity_id": {"type": "string", "description": "Record/filter social/visitor requests by target entity."},
             "request_type": {"type": "string", "description": "Filter request records, e.g. wish/blessing/purchase_need/commission_inquiry/fieldwork_request."},
+            "topic": {"type": "string", "description": "Request topic or need key."},
+            "details": {"type": "object", "description": "Worldview-specific request details."},
+            "quote": {"type": "object", "description": "Optional quote/pricing payload for a request."},
+            "billing": {"type": "object", "description": "Optional billing/settlement payload for a request."},
+            "linked_event_id": {"type": "string", "description": "Event linked to a request or conversion."},
+            "linked_schedule_block_id": {"type": "string"},
+            "linked_activity_id": {"type": "string"},
+            "linked_occurrence_id": {"type": "string"},
+            "linked_commission_id": {"type": "string", "description": "Worldview-specific commission id linked to a request."},
+            "actor_entity_id": {"type": "string", "description": "Entity handling a request transition."},
             "status": {"type": "string"},
             "source": {"type": "string"},
             "limit": {"type": "integer"},
@@ -522,7 +534,8 @@ LIFE_WORLD = {
     "name": "life_world",
     "description": (
         "Structured World Model for worldview content that must actually take effect. "
-        "Stores world profiles, map regions, places/cities, lore/background text, and faction influence. "
+        "Stores world profiles, map regions, places/cities, lore/background text, faction influence, "
+        "first-class travel routes, and dynamic regional/place conditions. "
         "Text lives in summary/content/background_text, but activation and reuse are controlled by structured "
         "keys, ids, scope_kind/scope_id, status, and LifeOps receipts rather than prompt-only promises."
     ),
@@ -537,9 +550,11 @@ LIFE_WORLD = {
                 "place", "upsert_place", "places",
                 "upsert_lore", "lore", "lore_entries",
                 "upsert_faction_presence", "faction_presence",
+                "route", "upsert_route", "routes", "travel_edges",
+                "condition", "upsert_condition", "conditions", "world_conditions",
                 "archive", "delete", "remove",
             ], "description": "世界本体操作。写操作走 LifeOps；读操作查询结构化世界状态。"},
-            "object_kind": {"type": "string", "enum": ["profile", "region", "place", "lore", "faction_presence"], "description": "For archive/delete/remove."},
+            "object_kind": {"type": "string", "enum": ["profile", "region", "place", "lore", "faction_presence", "route", "condition"], "description": "For archive/delete/remove."},
             "object_id": {"type": "string", "description": "Stable row id for archive/delete/remove."},
             "key": {"type": "string", "description": "Stable key for profile/region/place/lore. Required for upserts."},
             "title": {"type": "string", "description": "Profile or lore title."},
@@ -566,12 +581,30 @@ LIFE_WORLD = {
             "faction_entity_id": {"type": "string", "description": "world_entities.id for a faction/organization entity from life_social."},
             "influence": {"type": "number", "description": "-100..100 faction influence in the structured scope."},
             "stance": {"type": "string", "description": "allied/hostile/neutral/contested/custom."},
+            "route_type": {"type": "string", "description": "road/river/rail/leyline/danger/custom."},
+            "from_scope_kind": {"type": "string", "enum": ["world", "region", "place"], "description": "Route start endpoint scope kind."},
+            "from_scope_id": {"type": "string", "description": "Route start endpoint id."},
+            "to_scope_kind": {"type": "string", "enum": ["world", "region", "place"], "description": "Route end endpoint scope kind."},
+            "to_scope_id": {"type": "string", "description": "Route end endpoint id."},
+            "travel_mode": {"type": "string", "description": "walk/bike/car/ritual/custom."},
+            "distance_value": {"type": "number"},
+            "distance_unit": {"type": "string"},
+            "duration_minutes": {"type": "number", "description": "Expected travel duration in minutes."},
+            "risk_level": {"type": "number", "description": "0..100 route risk."},
+            "cost": {"type": "object", "description": "Structured travel cost payload."},
+            "schedule": {"type": "object", "description": "Structured route availability schedule."},
+            "points": {"type": "array", "description": "Map canvas route points, each as [x,y] or {x,y}."},
+            "condition_type": {"type": "string", "description": "hazard/opportunity/crowd/pressure/rumor_heat/custom."},
+            "severity": {"type": "number", "description": "0..100 dynamic condition severity."},
+            "intensity": {"type": "number", "description": "0..100 dynamic condition intensity."},
+            "starts_at": {"type": "string"},
+            "ends_at": {"type": "string"},
             "evidence": {"type": "object", "description": "Structured source evidence linking to setup/import/event/tool."},
             "cascade": {"type": "boolean", "description": "For archive/delete/remove: also archive active child regions/places and scoped lore/presence."},
             "status": {"type": "string", "description": "active/archived filter or upsert status."},
             "source": {"type": "string"},
             "limit": {"type": "integer"},
-            "payload": {"type": "object", "description": "Optional nested payload; flat fields are also accepted."},
+            "payload": {"type": "object", "description": "Worldview-specific dynamic state payload for conditions; also accepted as an optional nested payload by some hosts."},
             "session_id": {"type": "string"},
             "turn_id": {"type": "string"},
         },

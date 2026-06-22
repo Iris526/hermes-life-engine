@@ -116,6 +116,8 @@ ALLOWED_OPS = {
     "WORLD_UPSERT_PLACE",
     "WORLD_UPSERT_LORE",
     "WORLD_UPSERT_FACTION_PRESENCE",
+    "WORLD_UPSERT_ROUTE",
+    "WORLD_UPSERT_CONDITION",
     "WORLD_ARCHIVE_OBJECT",
     "SOCIAL_DEFINE_SLOT",
     "SOCIAL_CREATE_ENTITY",
@@ -125,6 +127,8 @@ ALLOWED_OPS = {
     "SOCIAL_RECORD_EVALUATION",
     "SOCIAL_RECORD_RUMOR",
     "SOCIAL_RECORD_RUMOR_EXPOSURE",
+    "SOCIAL_RECORD_REQUEST",
+    "SOCIAL_REQUEST_TRANSITION",
 }
 
 USER_WRITE_OPS = {
@@ -154,6 +158,8 @@ USER_WRITE_OPS = {
     "WORLD_UPSERT_PLACE",
     "WORLD_UPSERT_LORE",
     "WORLD_UPSERT_FACTION_PRESENCE",
+    "WORLD_UPSERT_ROUTE",
+    "WORLD_UPSERT_CONDITION",
     "WORLD_ARCHIVE_OBJECT",
     "SOCIAL_CREATE_ENTITY",
     "SOCIAL_LINK_AFFILIATION",
@@ -162,6 +168,8 @@ USER_WRITE_OPS = {
     "SOCIAL_RECORD_EVALUATION",
     "SOCIAL_RECORD_RUMOR",
     "SOCIAL_RECORD_RUMOR_EXPOSURE",
+    "SOCIAL_RECORD_REQUEST",
+    "SOCIAL_REQUEST_TRANSITION",
 }
 
 
@@ -540,10 +548,26 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
             float(payload.get("influence", 0))
         except Exception as exc:
             raise ValidationError("faction influence must be numeric") from exc
+    elif op_type == "WORLD_UPSERT_ROUTE":
+        _require(payload, "key", "name")
+        for key in ("duration_minutes", "distance_value", "risk_level"):
+            if payload.get(key) is not None:
+                try:
+                    float(payload.get(key))
+                except Exception as exc:
+                    raise ValidationError(f"route {key} must be numeric") from exc
+        if payload.get("risk_level") is not None:
+            _validate_0_100("route risk_level", payload.get("risk_level"))
+    elif op_type == "WORLD_UPSERT_CONDITION":
+        _require(payload, "key", "title")
+        payload.setdefault("scope_kind", "world")
+        for key in ("severity", "intensity"):
+            if payload.get(key) is not None:
+                _validate_0_100(f"condition {key}", payload.get(key))
     elif op_type == "WORLD_ARCHIVE_OBJECT":
         _require(payload, "object_kind")
-        if payload.get("object_kind") not in {"profile", "region", "place", "lore", "faction_presence"}:
-            raise ValidationError("object_kind must be profile/region/place/lore/faction_presence")
+        if payload.get("object_kind") not in {"profile", "region", "place", "lore", "faction_presence", "route", "condition"}:
+            raise ValidationError("object_kind must be profile/region/place/lore/faction_presence/route/condition")
         if payload.get("object_kind") == "faction_presence":
             if not (payload.get("object_id") or payload.get("faction_entity_id")):
                 raise ValidationError("faction_presence archive requires object_id or faction_entity_id")
@@ -551,8 +575,8 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
             raise ValidationError("archive requires object_id or key")
     elif op_type == "SOCIAL_DEFINE_SLOT":
         _require(payload, "slot_type", "key")
-        if payload.get("slot_type") not in {"entity_kind", "relationship_axis", "reputation_axis", "evaluation_axis", "rumor_channel"}:
-            raise ValidationError("slot_type must be entity_kind/relationship_axis/reputation_axis/evaluation_axis/rumor_channel")
+        if payload.get("slot_type") not in {"entity_kind", "relationship_axis", "reputation_axis", "evaluation_axis", "rumor_channel", "request_type"}:
+            raise ValidationError("slot_type must be entity_kind/relationship_axis/reputation_axis/evaluation_axis/rumor_channel/request_type")
     elif op_type == "SOCIAL_CREATE_ENTITY":
         _require(payload, "entity_kind", "display_name")
     elif op_type == "SOCIAL_LINK_AFFILIATION":
@@ -579,6 +603,13 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         _require(payload, "content", "channel")
     elif op_type == "SOCIAL_RECORD_RUMOR_EXPOSURE":
         _require(payload, "rumor_id", "entity_id")
+    elif op_type == "SOCIAL_RECORD_REQUEST":
+        _require(payload, "request_type")
+    elif op_type == "SOCIAL_REQUEST_TRANSITION":
+        _require(payload, "request_id")
+        if "action" not in payload and payload.get("transition_action"):
+            payload["action"] = payload.pop("transition_action")
+        _require(payload, "action")
     elif op_type == "RECORD_IMPROMPTU_ACTIVITY":
         _require(payload, "title")
         dur = payload.get("duration_minutes")
