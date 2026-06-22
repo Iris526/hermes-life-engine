@@ -219,3 +219,10 @@ RPG 感最大的杠杆：跨周长弧、阶段升级、自动铺事件。
 **上线 iris 步骤**：① 部署本插件到 iris 的 `~/.hermes/plugins/lifeengine`；② 可选在宿主 `config.yaml` 设 `plugins.entries.lifeengine.llm.allow_model_override: true` + `allowed_models` 启用 Haiku/Sonnet/Opus 分档（不设则用明灯当前活跃模型）；③ 触发一次做梦/tick/`life_opinion reflect`，确认 `life_author_runs` 出现 `status='ok'` 行即生成式链路打通。
 
 **仍遗留**：应用既有 `life_reflections.proposed_ops`；真·推送（你不在时也发，属宿主投递侧）。
+
+## 实现状态补充（2026-06-22，事务边界收口）
+
+- 新增 `heartbeat_authoring.py` 作为 LifeAuthor 与 heartbeat 写事务之间的隔离层：heartbeat 先在事务外预生成 autonomy goal-step、reflection、companion、dream preview，再进入 SQLite 写事务消费这些结果。
+- `life_author.author()` 增加事务内保护：当 `conn.in_transaction` 为真时直接降级返回 `None`，不访问宿主模型。
+- 手动入口 `life_dream run`、`life_opinion reflect`、`life_autonomy run/plan`、`life_proactive evaluate`、`life_campaign seed` 均改为先预生成、再提交 LifeOps 或领域写入。
+- heartbeat partial 汇总纳入 v0.18 新子流程：`reflection`、`campaigns`、`companion`。

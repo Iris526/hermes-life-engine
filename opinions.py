@@ -167,30 +167,68 @@ def _reflection_context(conn, agent_id: str) -> dict[str, Any]:
     }
 
 
-def run_reflection(conn, agent_id: str, *, owner_kind: str = "agent", now: str | None = None,
-                   trace_id: str | None = None, force: bool = False) -> dict[str, Any]:
-    """One reflection pass: look back, form/reinforce opinions, write a self-narrative.
+def _reflection_instructions() -> str:
+    """返回反思作者的稳定任务说明。
 
-    Paced to once per day unless ``force``. Degrades to a no-op without a host
-    model (opinions simply don't change). Never raises.
+    该说明只在 reflection 生成链路内使用，调用方是事务外预生成函数和兼容旧入口
+    的 `run_reflection`。它不读写数据库，也不访问网络；集中放置是为了保证预生成
+    路径和旧路径使用同一份输出契约，避免两边 prompt 漂移。
+    """
+    return (
+        "回看上面这些你最近的经历、心情、以及对方讲过的生活，做一次安静的反思。"
+        "(1) 形成或加深几条你*对具体事物的看法*——opinions：每条给 target(对什么)、"
+        "opinion_type(like/dislike/concern/value/discovery)、strength(-1..1)、confidence(0..1)、reason。"
+        "看法要具体（如『夜市』『记账这件事』『最近的钱』），别空泛。"
+        "(2) 写一句 self_narrative：用第一人称说说这阵子你自己有什么变化或想明白的事"
+        "（如『这阵子我好像越来越爱往外跑了』）。只谈*生活与自己*，不提任何系统/工程。"
+    )
+
+
+def author_reflection_for_tick(conn, agent_id: str, *, owner_kind: str = "agent",
+                               now: str | None = None, trace_id: str | None = None,
+                               force: bool = False) -> dict[str, Any] | None:
+    """在写事务外为一次反思预生成结构化结果。
+
+    输入来自 heartbeat 或 `life_opinion reflect` 的 agent id、逻辑时间和 trace id；
+    输出是符合 `REFLECTION_SCHEMA` 的 dict，或在当天已反思、宿主模型不可用、预算/门控
+    不允许、模型失败时返回 `None`。调用方随后把结果传给 `run_reflection` 落库。
+    副作用仅限 LifeAuthor 调用审计，不创建 memory/opinion/journal；失败不抛出，
+    让事务内执行保持可降级和幂等。
+    """
+    try:
+        if not force and _reflected_today(conn, agent_id):
+            return None
+        ctx = _reflection_context(conn, agent_id)
+        return life_author.author(
+            conn, owner_kind, agent_id, kind="reflection",
+            instructions=_reflection_instructions(), context=ctx, schema=REFLECTION_SCHEMA,
+            max_tokens=700, temperature=0.7, trace_id=trace_id,
+        )
+    except Exception:
+        return None
+
+
+def run_reflection(conn, agent_id: str, *, owner_kind: str = "agent", now: str | None = None,
+                   trace_id: str | None = None, force: bool = False,
+                   authored_reflection: dict[str, Any] | None = None,
+                   allow_authoring: bool = True) -> dict[str, Any]:
+    """执行一次反思并落库为观点与自我叙事。
+
+    输入来自 heartbeat 或 `life_opinion` 工具；`authored_reflection` 是事务外预生成的
+    LifeAuthor 结构化结果，`allow_authoring=False` 时本函数禁止现场模型调用。输出是
+    本次写入的 opinion ids、自我叙事 memory id，或 degraded/skipped 状态。副作用是
+    写 `agent_opinions`、`memories` 和 journal；所有异常被转成 `{ok: False}`，调用方
+    可把它纳入 heartbeat partial。幂等约束是非 force 情况下一天只落一次 reflection。
     """
     try:
         if not force and _reflected_today(conn, agent_id):
             return {"ok": True, "skipped": "already reflected today"}
-        ctx = _reflection_context(conn, agent_id)
-        instructions = (
-            "回看上面这些你最近的经历、心情、以及对方讲过的生活，做一次安静的反思。"
-            "(1) 形成或加深几条你*对具体事物的看法*——opinions：每条给 target(对什么)、"
-            "opinion_type(like/dislike/concern/value/discovery)、strength(-1..1)、confidence(0..1)、reason。"
-            "看法要具体（如『夜市』『记账这件事』『最近的钱』），别空泛。"
-            "(2) 写一句 self_narrative：用第一人称说说这阵子你自己有什么变化或想明白的事"
-            "（如『这阵子我好像越来越爱往外跑了』）。只谈*生活与自己*，不提任何系统/工程。"
-        )
-        parsed = life_author.author(
-            conn, owner_kind, agent_id, kind="reflection",
-            instructions=instructions, context=ctx, schema=REFLECTION_SCHEMA,
-            max_tokens=700, temperature=0.7, trace_id=trace_id,
-        )
+        parsed = authored_reflection
+        if parsed is None and allow_authoring:
+            parsed = author_reflection_for_tick(
+                conn, agent_id, owner_kind=owner_kind, now=now,
+                trace_id=trace_id, force=True,
+            )
         if not parsed:
             # No host model → don't mark done, so it reflects once the host is back.
             return {"ok": True, "degraded": True}

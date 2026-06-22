@@ -17,6 +17,7 @@ from pathlib import Path
 
 from lifeengine import life_author
 from lifeengine.constants import DEFAULT_AGENT_ID, PLUGIN_VERSION
+from lifeengine.db import transaction
 from lifeengine.db import _SCHEMA_VERSION
 from lifeengine.dream import _recent_context
 from lifeengine.runtime import LifeEngineRuntime
@@ -178,6 +179,40 @@ def test_dream_is_authored_when_host_model_present(tmp_path):
         doctor = rt.doctor()
         statuses = {c["name"]: c["status"] for c in doctor["checks"]}
         assert statuses.get("resource_ledger", "ok") not in {"fail", "error"}
+    finally:
+        life_author.set_test_llm(None)
+        rt.close()
+
+
+def test_life_author_does_not_call_host_inside_sqlite_transaction(tmp_path):
+    """验证 LifeAuthor 在 SQLite 写事务内只降级，不访问 host 模型。"""
+    fresh_home(tmp_path)
+    fake = _FakeLlm({
+        "content": "这不应该被调用。",
+        "share_text": "这不应该被调用。",
+        "symbols": [],
+    })
+    life_author.set_test_llm(fake)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        with transaction(rt.conn):
+            parsed = life_author.author(
+                rt.conn,
+                "agent",
+                DEFAULT_AGENT_ID,
+                kind="dream",
+                instructions="生成一个梦。",
+                context={"生活片段": ["院子里晒了被子"]},
+                schema={"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]},
+            )
+        assert parsed is None
+        assert fake.calls == []
+        n = rt.conn.execute(
+            "SELECT COUNT(*) FROM life_author_runs WHERE owner_kind='agent' AND owner_id=?",
+            (DEFAULT_AGENT_ID,),
+        ).fetchone()[0]
+        assert n == 0
     finally:
         life_author.set_test_llm(None)
         rt.close()

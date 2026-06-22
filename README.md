@@ -1,12 +1,13 @@
-# LifeEngine Hermes Plugin v0.17.0
+# LifeEngine Hermes Plugin v0.18.0
 
 LifeEngine is an embedded, SQLite/sqlite-vec based Agent life runtime for Hermes.
 
-This release builds the **经营 (venture) system** on top of v0.16.0's recurring activities — an engine-enforced way to run businesses to earn a living: supply chain (进销存) so goods don't appear from nowhere (sell consumes stock, low stock auto-orders a 进货 event), opportunity triggers (委托/客人 arrive on their own per an arrival rate), no double-booking (一人不能分身), and operation models (active occupies her time; self_service is passive; staffed pays wages) with fixed/flexible location. Builds on v0.15.0's resource-model reshape and v0.16.0's recurring activities.
+This release adds the **生成式内心生活 (LifeAuthor) layer** on top of the deterministic life substrate: authored dreams, companion follow-ups, cross-week campaigns, and reflection-driven opinions/self-narrative. Resource accounting, schedule execution, sleep, venture/recurring activity settlement, review, trace, and receipts remain deterministic and auditable.
 
-- Plugin version: `0.17.0`
+- Plugin version: `0.18.0`
 - sqlite-vec: required by LifeEngine runtime
 - Integration: Hermes directory plugin; no core-loop fork
+- Authoring boundary: host-model calls are prepared outside SQLite write transactions; LifeOps only commits already-authored content or deterministic fallbacks.
 
 ## Game UI / Observatory
 
@@ -63,6 +64,9 @@ Most humans only need:
 /life closet                  Collections / outfit / closet tools
 /life behavior                Private behavior mapping
 /life context                 Prompt/context slimming policy
+/life relationship            Relationship memory for what the user shared
+/life campaign                Cross-week themed arcs
+/life opinion                 Evolving opinions and self-narrative
 /life advanced                Show advanced commands
 ```
 
@@ -73,5 +77,5 @@ Complex `life_*` tools remain available to the Agent.
 The current design document is bundled here:
 
 ```text
-docs/lifeengine_total_design_v0_14_0.md
+docs/lifeengine_total_design_v0_18_0.md
 ```

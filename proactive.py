@@ -436,6 +436,19 @@ def _author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any
     return msg
 
 
+def author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any], *,
+                       trace_id: str | None = None) -> str | None:
+    """在 LifeOps 写事务外生成 proactive outbox 最终文案。
+
+    输入是已经存在的 proactive intent 和目标 user id；输出是一条可直接写入
+    proactive_outbox 的聊天消息，或在宿主模型不可用/门控关闭/返回无效时为 `None`。
+    调用方是 runtime 的 proactive evaluate 预处理和测试；副作用仅限 LifeAuthor
+    调用审计，不改变 intent/outbox 状态。事务内 evaluate 会优先使用该 draft_text，
+    并在缺失时回退确定性模板。
+    """
+    return _author_outbox_text(conn, agent_id, user_id, intent, trace_id=trace_id)
+
+
 def evaluate_proactive_intent(
     conn,
     agent_id: str,
@@ -446,7 +459,16 @@ def evaluate_proactive_intent(
     manual: bool = False,
     trace_id: str | None = None,
     draft_text: str | None = None,
+    allow_authoring: bool = True,
 ) -> dict[str, Any]:
+    """评估 proactive intent 并按策略排队或生成 outbox。
+
+    输入来自 LifeOps `EVALUATE_PROACTIVE_INTENT`、工具或 heartbeat；`draft_text`
+    是事务外预生成的最终消息，`allow_authoring=False` 表示本函数不得在写事务内调用
+    LifeAuthor。输出是逐 intent 的评估决策和可选 outbox。副作用是更新 intent/state、
+    写 proactive_evaluations/journal/outbox；失败由外层事务回滚。该函数保留旧的
+    `allow_authoring=True` 兼容直接模块调用，但 runtime 的 LifeOps 路径会传 false。
+    """
     canon_policy = _get_canon_policy(conn, agent_id)
     policy = _gate_policy(control, canon_policy)
     mode = policy["mode"]
@@ -508,7 +530,7 @@ def evaluate_proactive_intent(
             else:
                 msg = (
                     draft_text
-                    or _author_outbox_text(conn, agent_id, user_id, intent, trace_id=trace_id)
+                    or (_author_outbox_text(conn, agent_id, user_id, intent, trace_id=trace_id) if allow_authoring else None)
                     or _fallback_outbox_text(intent)
                 )
                 outbox = _create_outbox(conn, agent_id, user_id, intent, msg, status="queued", delivery_channel="hermes")

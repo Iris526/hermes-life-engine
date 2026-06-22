@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .autonomy import (
+    author_goal_step_for_tick,
     plan_autonomy,
     get_autonomy_decision,
     list_autonomy_decisions,
@@ -67,6 +68,7 @@ from .behavior_mapping import (
 from .db import connect, transaction, savepoint, _SCHEMA_VERSION
 from .doctor import run_doctor
 from .dream import (
+    author_dream_preview,
     collect_open_dream_repair_ops,
     create_dream_entry,
     dream_status,
@@ -139,6 +141,7 @@ from .maintenance import (
     run_install_check,
 )
 from .heartbeat import heartbeat_installation_status, write_tick_script
+from .heartbeat_authoring import prepare_heartbeat_authoring
 from .confirmations import confirmed_ops, get_confirmation, list_confirmations, mark_confirmation, propose_confirmation
 from .collections import (
     DEFAULT_COLLECTION_PRESETS,
@@ -204,6 +207,7 @@ from .memory import create_memory, search_memories
 from .migration import create_branch, list_migrations
 from .owner_scope import OwnerScope, resolve_owner_scope
 from .proactive import (
+    author_outbox_text,
     create_proactive_intent,
     evaluate_proactive_intent,
     expire_intents,
@@ -708,7 +712,7 @@ class LifeEngineRuntime:
         elif op_type == "CREATE_PROACTIVE_INTENT":
             return create_proactive_intent(self.conn, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
         elif op_type == "EVALUATE_PROACTIVE_INTENT":
-            return evaluate_proactive_intent(self.conn, owner_id, payload.get("intent_id"), control=ensure_control(self.conn, "agent", owner_id), target_user_id=payload.get("target_user_id"), manual=bool(payload.get("manual", False)), trace_id=payload.get("trace_id"), draft_text=payload.get("draft_text"))
+            return evaluate_proactive_intent(self.conn, owner_id, payload.get("intent_id"), control=ensure_control(self.conn, "agent", owner_id), target_user_id=payload.get("target_user_id"), manual=bool(payload.get("manual", False)), trace_id=payload.get("trace_id"), draft_text=payload.get("draft_text"), allow_authoring=bool(payload.get("allow_authoring", False)))
         elif op_type == "MARK_PROACTIVE_SENT":
             return mark_outbox_sent(self.conn, owner_id, payload["outbox_id"], result=payload.get("result") or {}, manual=bool(payload.get("manual", True)))
         elif op_type == "SUPPRESS_PROACTIVE_INTENT":
@@ -934,6 +938,21 @@ class LifeEngineRuntime:
     # ----- DreamRun / DreamAudit / DreamEntry -----------------------------
     def dream(self, action: str = "status", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
               session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """管理 DreamRun、梦境条目和梦审计。
+
+        输入来自 `life_dream` 工具或 CLI；读操作只查询状态，`run/cycle/dream` 会先在
+        事务外预生成梦境文本，再通过 LifeOps 写入 DreamRun 和相关事实。输出是对应
+        状态或 commit 结果。副作用包括 dream/audit/memory/proactive/mood 写入；模型
+        调用只允许发生在进入 `transaction()` 之前，事务内通过 `allow_authoring=False`
+        消费预生成结果或回退模板。
+        """
+        authored_dream = None
+        if action in {"run", "cycle", "dream"} and bool(payload.get("allow_authoring", True)):
+            authored_dream = author_dream_preview(
+                self.conn, owner_kind, owner_id,
+                sleep_session_id=payload.get("sleep_session_id"),
+                trace_id=payload.get("trace_id"),
+            )
         with transaction(self.conn):
             if action in {"status", "state"}:
                 out = dream_status(self.conn, owner_kind, owner_id)
@@ -956,6 +975,8 @@ class LifeEngineRuntime:
             if action in {"run", "cycle", "dream"}:
                 op_payload = dict(payload)
                 op_payload.setdefault("source", "life_dream_tool")
+                op_payload["authored_dream"] = authored_dream
+                op_payload["allow_authoring"] = False
                 return self._commit_ops_locked([{"type": "RUN_DREAM", "payload": op_payload}], owner_kind, owner_id, "life_dream_tool", session_id, turn_id, trace=None, control=ensure_control(self.conn, owner_kind, owner_id))
             if action in {"create_entry", "entry_create"}:
                 op_payload = dict(payload)
@@ -1122,11 +1143,14 @@ class LifeEngineRuntime:
             "resource_recovery",
             "autonomy",
             "persona_drift",
+            "reflection",
             "meals",
             "recurring_activities",
+            "campaigns",
             "venture_supply",
             "venture_opportunities",
             "realtime_sync",
+            "companion",
             "proactive",
             "managed_review",
             "delayed_reply_release",
@@ -1165,6 +1189,10 @@ class LifeEngineRuntime:
         self.conn.execute(
             "INSERT INTO heartbeat_runs(id, owner_kind, owner_id, tick_id, mode, status) VALUES(?,?,?,?,?,?)",
             (hbrun_id, owner_kind, owner_id, tick_id, mode, "running"),
+        )
+        authoring = prepare_heartbeat_authoring(
+            self.conn, owner_kind, owner_id, control,
+            now=now, tick_id=tick_id, trace_id=trace.id, manual=manual,
         )
         try:
             with transaction(self.conn):
@@ -1212,8 +1240,9 @@ class LifeEngineRuntime:
                                                     sleep_session_id = sess.get("id")
                                                     break
                                             if sleep_session_id:
+                                                authored_dream = (authoring.get("dreams_by_sleep_plan_id") or {}).get(job.get("target_id"))
                                                 with trace.span("dream_run", {"sleep_session_id": sleep_session_id}):
-                                                    dream_commit = self._commit_ops_locked([{"type": "RUN_DREAM", "payload": {"sleep_session_id": sleep_session_id, "trigger": "sleep_wake", "source": "heartbeat_dream", "trace_id": trace.id}}], owner_kind, owner_id, "dream_heartbeat", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                                                    dream_commit = self._commit_ops_locked([{"type": "RUN_DREAM", "payload": {"sleep_session_id": sleep_session_id, "trigger": "sleep_wake", "source": "heartbeat_dream", "trace_id": trace.id, "authored_dream": authored_dream, "allow_authoring": False}}], owner_kind, owner_id, "dream_heartbeat", session_id=None, turn_id=tick_id, trace=trace, control=control)
                                     except Exception as dream_exc:
                                         append_audit(self.conn, owner_kind, owner_id, "dream_heartbeat_failed", "warning", str(dream_exc), {"sleep_plan_id": job.get("target_id")}, trace.id)
                                 completed.append({"wake_job_id": job["id"], "sleep_plan_id": job["target_id"], "sleep_wake_commit": commit, "dream_commit": dream_commit})
@@ -1283,16 +1312,16 @@ class LifeEngineRuntime:
                         append_audit(self.conn, owner_kind, owner_id, "heartbeat_schedule_sweep_failed", "warning", str(sweep_exc), {"block_id": block["id"]}, trace.id)
                 minutes_elapsed = self._minutes_since_last_tick(owner_kind, owner_id, now)
                 recovered = self._settle_resources(owner_kind, owner_id, minutes_elapsed, control)
-                autonomy_result = self._run_autonomy_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
+                autonomy_result = self._run_autonomy_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual, authoring)
                 persona_result = self._run_persona_drift_for_tick(owner_kind, owner_id, control, tick_id, trace, now, minutes_elapsed)
-                reflection_result = self._run_reflection_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
+                reflection_result = self._run_reflection_for_tick(owner_kind, owner_id, control, tick_id, trace, now, authoring)
                 meals_result = self._settle_meals_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 recurring_result = self._materialize_recurring_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 campaign_result = self._run_campaigns_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 supply_result = self._settle_supply_chain_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 opportunity_result = self._roll_opportunities_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 realtime_sync = self._sync_realtime_to_schedule_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
-                companion_result = self._run_companion_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
+                companion_result = self._run_companion_for_tick(owner_kind, owner_id, control, tick_id, trace, now, authoring)
                 proactive_result = self._run_proactive_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 managed_review_result = self._run_managed_review_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
                 delayed_release = {"released_count": 0}
@@ -2056,7 +2085,16 @@ class LifeEngineRuntime:
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
     def _run_autonomy_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
-                               tick_id: str, trace: Trace, now: str, manual: bool) -> dict[str, Any]:
+                               tick_id: str, trace: Trace, now: str, manual: bool,
+                               authoring: dict[str, Any] | None = None) -> dict[str, Any]:
+        """运行 heartbeat 内的自主规划并提交候选 LifeOps。
+
+        输入来自 `tick()` 的控制状态、逻辑时间和事务外 authoring 包；输出是 planner
+        decision 与可选 commit。调用方式只由 heartbeat 触发。副作用是写 autonomy
+        decision，并在有 proposed_ops 时提交 LifeOps。`authoring` 中的
+        `autonomy_goal_step` 是唯一允许的生成式文案来源，本函数传
+        `allow_authoring=False`，确保事务内不再访问宿主模型。
+        """
         gates = control.get("module_gates") or {}
         mode = str(gates.get("autonomy", "manual") or "manual")
         # A manual /life tick should not accidentally force manual autonomy;
@@ -2066,7 +2104,12 @@ class LifeEngineRuntime:
         planner_manual = False
         try:
             with trace.span("autonomy_plan", {"mode": mode, "heartbeat_manual": heartbeat_manual}):
-                decision = plan_autonomy(self.conn, owner_kind, owner_id, control, tick_id=tick_id, trace_id=trace.id, manual=planner_manual, now=now)
+                decision = plan_autonomy(
+                    self.conn, owner_kind, owner_id, control, tick_id=tick_id,
+                    trace_id=trace.id, manual=planner_manual, now=now,
+                    authored_goal_step=(authoring or {}).get("autonomy_goal_step"),
+                    allow_authoring=False,
+                )
             ops = decision.get("proposed_ops") or []
             if not ops:
                 return {"decision": decision, "commit": None}
@@ -2094,7 +2137,7 @@ class LifeEngineRuntime:
             with trace.span("proactive_evaluate", {"mode": mode}):
                 commit = self._commit_ops_locked([
                     {"type": "EXPIRE_PROACTIVE_INTENTS", "payload": {}},
-                    {"type": "EVALUATE_PROACTIVE_INTENT", "payload": {"manual": False, "trace_id": trace.id}},
+                    {"type": "EVALUATE_PROACTIVE_INTENT", "payload": {"manual": False, "trace_id": trace.id, "allow_authoring": False}},
                 ], owner_kind, owner_id, "proactive_heartbeat", session_id=None, turn_id=tick_id, trace=trace, control=control)
             return {"commit": commit}
         except Exception as exc:
@@ -2102,12 +2145,15 @@ class LifeEngineRuntime:
             return {"error": f"{type(exc).__name__}: {exc}"}
 
     def _run_companion_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
-                                tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
-        """v0.18.0 P2: when the agent has been quiet a while and it's a good
-        moment (good mood, or a remembered thing about the user is due for a
-        follow-up), author one idle/companion line and file it as a proactive
-        intent. The proactive evaluation that runs next in this same tick then
-        surfaces it on the next turn. Degrades to nothing without a host model."""
+                                tick_id: str, trace: Trace, now: str,
+                                authoring: dict[str, Any] | None = None) -> dict[str, Any]:
+        """运行 heartbeat 的陪伴主动意图生成。
+
+        输入来自 `tick()` 的控制状态、逻辑时间和事务外 authoring 包；输出是创建的
+        proactive intent id/type 或空结果。副作用是写 proactive_intents 和可选
+        relationship note followed_up_at。生成式文案只能来自 `authoring["companion"]`，
+        本函数在事务内传 `allow_authoring=False`，失败时保持沉默。
+        """
         if owner_kind != "agent":
             return {"generated": None, "reason": "not agent"}
         gates = control.get("module_gates") or {}
@@ -2120,6 +2166,7 @@ class LifeEngineRuntime:
             with trace.span("companion_generate", {"tick_id": tick_id}):
                 intent = companion.maybe_generate_companion_intent(
                     self.conn, owner_id, control=control, now=now, trace_id=trace.id,
+                    authored=(authoring or {}).get("companion"), allow_authoring=False,
                 )
             return {"generated": intent.get("id") if intent else None,
                     "intent_type": intent.get("intent_type") if intent else None}
@@ -2128,11 +2175,15 @@ class LifeEngineRuntime:
             return {"error": f"{type(exc).__name__}: {exc}"}
 
     def _run_reflection_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
-                                 tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
-        """v0.18.0 P4: once a day, look back over recent experience and form /
-        reinforce opinions + write a line of self-narrative, so lived experience
-        visibly changes what she values and says. Paced inside run_reflection;
-        degrades to a no-op without a host model. Gated by `reflection`."""
+                                 tick_id: str, trace: Trace, now: str,
+                                 authoring: dict[str, Any] | None = None) -> dict[str, Any]:
+        """运行 heartbeat 的每日反思落库。
+
+        输入来自 `tick()` 的控制状态、逻辑时间和事务外 authoring 包；输出是写入的
+        opinions/self_narrative 或 skipped/degraded/error。副作用是写观点、记忆和
+        journal。生成式反思只能来自 `authoring["reflection"]`，本函数在事务内禁止
+        补调模型；没有预生成结果时返回 degraded，等待下一轮宿主可用时再反思。
+        """
         if owner_kind != "agent":
             return {"status": "skipped", "reason": "non-agent owner"}
         gates = control.get("module_gates") or {}
@@ -2142,7 +2193,12 @@ class LifeEngineRuntime:
         try:
             from . import opinions
             with trace.span("reflection", {"tick_id": tick_id}):
-                return opinions.run_reflection(self.conn, owner_id, owner_kind=owner_kind, now=now, trace_id=trace.id)
+                return opinions.run_reflection(
+                    self.conn, owner_id, owner_kind=owner_kind, now=now,
+                    trace_id=trace.id,
+                    authored_reflection=(authoring or {}).get("reflection"),
+                    allow_authoring=False,
+                )
         except Exception as exc:
             append_audit(self.conn, owner_kind, owner_id, "reflection_failed", "warning", str(exc), {}, trace.id)
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
@@ -2195,26 +2251,48 @@ class LifeEngineRuntime:
             with transaction(self.conn):
                 return {"ok": True, "sleep_adjustments": list_autonomy_sleep_adjustments(self.conn, owner_kind, owner_id, int(payload.get("limit", 20)))}
         if action in {"plan", "propose"}:
+            control_preview = ensure_control(self.conn, owner_kind, owner_id)
+            authored_goal_step = author_goal_step_for_tick(
+                self.conn, owner_kind, owner_id, control_preview,
+                tick_id=payload.get("tick_id"), trace_id=None,
+                manual=True, now=payload.get("now"),
+            )
             with transaction(self.conn):
                 control = ensure_control(self.conn, owner_kind, owner_id)
                 trace = Trace(self.conn, owner_kind, owner_id, "autonomy", session_id=session_id, turn_id=turn_id,
                               engine_state=control["engine_state"], canon_version=control.get("active_canon_version"),
                               input_obj={"action": action, "payload": payload}).start()
                 try:
-                    decision = plan_autonomy(self.conn, owner_kind, owner_id, control, tick_id=payload.get("tick_id"), trace_id=trace.id, manual=True, now=payload.get("now"))
+                    decision = plan_autonomy(
+                        self.conn, owner_kind, owner_id, control,
+                        tick_id=payload.get("tick_id"), trace_id=trace.id,
+                        manual=True, now=payload.get("now"),
+                        authored_goal_step=authored_goal_step, allow_authoring=False,
+                    )
                     trace.end(output_obj={"decision_id": decision["id"], "ops": len(decision.get("proposed_ops") or [])})
                     return {"ok": True, "decision": decision}
                 except Exception as exc:
                     trace.end(status="error", error=f"{type(exc).__name__}: {exc}")
                     raise
         if action in {"run", "act", "commit"}:
+            control_preview = ensure_control(self.conn, owner_kind, owner_id)
+            authored_goal_step = author_goal_step_for_tick(
+                self.conn, owner_kind, owner_id, control_preview,
+                tick_id=payload.get("tick_id"), trace_id=None,
+                manual=True, now=payload.get("now"),
+            )
             with transaction(self.conn):
                 control = ensure_control(self.conn, owner_kind, owner_id)
                 trace = Trace(self.conn, owner_kind, owner_id, "autonomy", session_id=session_id, turn_id=turn_id,
                               engine_state=control["engine_state"], canon_version=control.get("active_canon_version"),
                               input_obj={"action": action, "payload": payload}).start()
                 try:
-                    decision = plan_autonomy(self.conn, owner_kind, owner_id, control, tick_id=payload.get("tick_id"), trace_id=trace.id, manual=True, now=payload.get("now"))
+                    decision = plan_autonomy(
+                        self.conn, owner_kind, owner_id, control,
+                        tick_id=payload.get("tick_id"), trace_id=trace.id,
+                        manual=True, now=payload.get("now"),
+                        authored_goal_step=authored_goal_step, allow_authoring=False,
+                    )
                     ops = decision.get("proposed_ops") or []
                     commit = None
                     if ops:
@@ -2412,14 +2490,14 @@ class LifeEngineRuntime:
                 "可选 one_time_events（这个阶段的关键节点事件）。输出 title、description、importance、phases。"
                 "全部关于*生活*，自洽，别提任何系统/工程词。"
             )
+            parsed = life_author.author(
+                self.conn, owner_kind, owner_id, kind="campaign_seed",
+                instructions=instructions, context={"由头/想法": payload.get("brief", "")},
+                schema=_campaigns.SEED_SCHEMA, max_tokens=1400, temperature=0.85, trace_id=payload.get("trace_id"),
+            )
+            if not parsed or not (parsed.get("phases") or []):
+                return {"ok": False, "reason": "no host model available or empty blueprint", "seeded": False}
             with transaction(self.conn):
-                parsed = life_author.author(
-                    self.conn, owner_kind, owner_id, kind="campaign_seed",
-                    instructions=instructions, context={"由头/想法": payload.get("brief", "")},
-                    schema=_campaigns.SEED_SCHEMA, max_tokens=1400, temperature=0.85, trace_id=payload.get("trace_id"),
-                )
-                if not parsed or not (parsed.get("phases") or []):
-                    return {"ok": False, "reason": "no host model available or empty blueprint", "seeded": False}
                 camp = _campaigns.create_campaign(
                     self.conn, owner_kind, owner_id,
                     title=str(parsed.get("title") or "近来想做的一件大事"), phases=parsed["phases"],
@@ -2467,9 +2545,17 @@ class LifeEngineRuntime:
                 )
             return {"ok": True, "opinion": o}
         if action_l in {"reflect"}:
+            authored_reflection = _op.author_reflection_for_tick(
+                self.conn, owner_id, owner_kind=owner_kind, now=payload.get("now"),
+                trace_id=payload.get("trace_id"), force=bool(payload.get("force", True)),
+            )
             with transaction(self.conn):
-                return _op.run_reflection(self.conn, owner_id, owner_kind=owner_kind, now=payload.get("now"),
-                                          force=bool(payload.get("force", True)))
+                return _op.run_reflection(
+                    self.conn, owner_id, owner_kind=owner_kind, now=payload.get("now"),
+                    force=bool(payload.get("force", True)),
+                    authored_reflection=authored_reflection,
+                    allow_authoring=False,
+                )
         raise ValueError(f"Unknown opinion action: {action}")
 
     # ----- recurring activities (营生) -------------------------------------
@@ -2650,6 +2736,21 @@ class LifeEngineRuntime:
         if action in {"evaluate", "queue"}:
             p = dict(payload)
             p.setdefault("manual", False)
+            if not p.get("draft_text"):
+                try:
+                    control = ensure_control(self.conn, owner_kind, owner_id)
+                    gates = control.get("module_gates") or {}
+                    proactive_mode = str(gates.get("proactive", "pending_only") or "pending_only").strip().lower()
+                    can_reach_outbox = proactive_mode == "auto_send" or (proactive_mode == "manual_send" and bool(p.get("manual")))
+                    if can_reach_outbox and p.get("intent_id"):
+                        intent = get_proactive_intent(self.conn, p["intent_id"])
+                        target_user_id = p.get("target_user_id") or intent.get("target_id") or DEFAULT_USER_ID
+                        draft = author_outbox_text(self.conn, owner_id, str(target_user_id), intent, trace_id=p.get("trace_id"))
+                        if draft:
+                            p["draft_text"] = draft
+                except Exception:
+                    pass
+            p["allow_authoring"] = False
             return self.commit_ops([{ "type": "EVALUATE_PROACTIVE_INTENT", "payload": p }], owner_kind, owner_id, "life_proactive_tool", session_id, turn_id)
         if action in {"send", "mark_sent", "sent"}:
             p = dict(payload)

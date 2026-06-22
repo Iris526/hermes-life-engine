@@ -192,13 +192,18 @@ def author(conn, owner_kind: str, owner_id: str, *, kind: str, instructions: str
            context: dict[str, Any], schema: dict[str, Any], model: str | None = None,
            max_tokens: int = 900, temperature: float | None = None,
            trace_id: str | None = None) -> dict[str, Any] | None:
-    """Author one piece of structured life content via the host model.
+    """通过宿主模型生成一段结构化生活内容。
 
-    Returns the validated ``dict`` (from ``PluginLlmStructuredResult.parsed``) or
-    ``None`` when degraded (no host / gated off / disabled / over budget / failure).
-    Best-effort: this never raises — callers always have a template fallback.
+    输入是调用方整理好的业务 kind、写作说明、生活上下文和 JSON schema；输出是
+    `PluginLlmStructuredResult.parsed` 中已校验的 dict，或在无宿主、门控关闭、
+    预算耗尽、模型失败、以及调用方已经持有 SQLite 写事务时返回 `None`。调用方式是
+    同步 best-effort；副作用只是在成功/失败/预算阻断时写 `life_author_runs` 审计。
+    关键不变量是绝不在 `conn.in_transaction` 为真时访问宿主模型，避免心跳/工具的
+    网络 I/O 占用 LifeOps 写锁。调用方必须准备确定性模板或事务外预生成结果作为降级。
     """
     try:
+        if getattr(conn, "in_transaction", False):
+            return None
         if _gate(conn, owner_kind, owner_id) in _OFF_GATES:
             return None
         pol = _policy(conn, owner_kind, owner_id)

@@ -352,6 +352,64 @@ def _author_goal_step(conn, owner_kind: str, owner_id: str, *, goal: dict[str, A
         return None
 
 
+def author_goal_step_for_tick(conn, owner_kind: str, owner_id: str, control: dict[str, Any], *,
+                              tick_id: str | None = None, trace_id: str | None = None,
+                              manual: bool = False, now: str | None = None) -> dict[str, Any] | None:
+    """在 LifeOps 写事务外为本轮自主目标步骤预生成文案。
+
+    输入来自 heartbeat 或显式 `life_autonomy run` 即将使用的控制状态、逻辑时间
+    和 trace id；输出是 LifeAuthor 生成的 `{title, description}`，或在门控关闭、
+    冷却、无需新建目标事件、宿主模型不可用时返回 `None`。调用方是 runtime 的
+    heartbeat/autonomy 编排层；副作用仅限 LifeAuthor 自身的调用审计，不写生活事实、
+    不创建事件、不提交资源账本。失败全部降级为 `None`，让事务内 planner 使用确定性
+    模板，关键不变量是网络 I/O 不发生在 SQLite 写事务里。
+    """
+    mode = _mode(control)
+    try:
+        if owner_kind != "agent":
+            return None
+        if mode == "off" or (mode == "manual" and not manual):
+            return None
+        if not manual and _recent_decision_exists(conn, owner_kind, owner_id, minutes=45):
+            return None
+        accounts = _account_map(conn, owner_kind, owner_id)
+        energy = accounts.get("energy")
+        mood = accounts.get("mood")
+        sleep_ctx = _sleep_context(conn, owner_kind, owner_id, accounts, now=now)
+        if sleep_ctx.get("should_recover") and not sleep_ctx.get("existing_recovery_plan_id"):
+            return None
+        if sleep_ctx.get("all_nighter") and sleep_ctx.get("existing_recovery_plan_id"):
+            return None
+        if energy is not None and energy < 8 and not sleep_ctx.get("existing_recovery_plan_id"):
+            return None
+        goals = conn.execute(
+            """SELECT * FROM goals WHERE owner_kind=? AND owner_id=? AND status='active'
+                  ORDER BY priority DESC, updated_at ASC LIMIT 10""",
+            (owner_kind, owner_id),
+        ).fetchall()
+        selected = None
+        selected_open_events: list[dict[str, Any]] = []
+        for g in goals:
+            open_events = _active_events_for_goal(conn, owner_kind, owner_id, g["id"])
+            if not open_events:
+                selected = dict(g)
+                selected_open_events = []
+                break
+            if selected is None:
+                selected = dict(g)
+                selected_open_events = open_events
+        if selected is None or selected_open_events or mode == "planned_only":
+            return None
+        goal_type = selected.get("goal_type") or "lifestyle"
+        base_event_type = {"study": "study", "health": "health", "fitness": "health", "creative": "creative", "career": "work", "finance": "finance", "relationship": "social"}.get(goal_type, "self_reflection")
+        downshift = bool(sleep_ctx.get("should_downshift") and base_event_type in {"study", "work", "creative"})
+        return _author_goal_step(conn, owner_kind, owner_id, goal=selected,
+                                 downshift=downshift, energy=energy, mood=mood,
+                                 trace_id=trace_id)
+    except Exception:
+        return None
+
+
 def plan_autonomy(
     conn,
     owner_kind: str,
@@ -362,8 +420,17 @@ def plan_autonomy(
     trace_id: str | None = None,
     manual: bool = False,
     now: str | None = None,
+    authored_goal_step: dict[str, Any] | None = None,
+    allow_authoring: bool = True,
 ) -> dict[str, Any]:
-    """Return an autonomy decision with proposed LifeOps."""
+    """生成一次自主规划决策及其候选 LifeOps。
+
+    输入来自 heartbeat、CLI 或 `life_autonomy` 工具；`authored_goal_step` 是调用方
+    已经在写事务外取得的 LifeAuthor 结果，`allow_authoring=False` 表示本函数必须
+    只做确定性规划，不能在事务内补调模型。输出写入 autonomy_decisions 并返回决策
+    记录；副作用是记录 planner 决策和必要的 sleep adjustment。失败由调用方捕获，
+    LifeOps 提交仍由 runtime 负责，确保生成式内容与资源/事件事务边界分离。
+    """
     mode = _mode(control)
 
     sleep_ctx: dict[str, Any] = {}
@@ -520,9 +587,11 @@ def plan_autonomy(
 
     # v0.18.0: replace the generic '推进目标：X' title with an authored, textured
     # next step when the host model is available (falls back to the template).
-    authored = _author_goal_step(conn, owner_kind, owner_id, goal=selected,
-                                 downshift=bool(sleep_ctx.get("should_downshift")),
-                                 energy=energy, mood=mood, trace_id=trace_id)
+    authored = authored_goal_step
+    if authored is None and allow_authoring:
+        authored = _author_goal_step(conn, owner_kind, owner_id, goal=selected,
+                                     downshift=bool(sleep_ctx.get("should_downshift")),
+                                     energy=energy, mood=mood, trace_id=trace_id)
     if authored:
         a_title = str(authored.get("title") or "").strip()
         a_desc = str(authored.get("description") or "").strip()

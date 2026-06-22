@@ -106,46 +106,108 @@ def _recent_life(conn, agent_id: str, *, limit: int = 4) -> dict[str, list[str]]
     }
 
 
-def maybe_generate_companion_intent(conn, agent_id: str, *, control: dict[str, Any] | None = None,
-                                    user_id: str | None = None, now: str | None = None,
-                                    trace_id: str | None = None) -> dict[str, Any] | None:
-    """Generate at most one idle/companion proactive intent, or return None.
+def _candidate(conn, agent_id: str, *, control: dict[str, Any] | None = None,
+               user_id: str | None = None, now: str | None = None) -> dict[str, Any] | None:
+    """只读判断本轮是否值得生成一条陪伴主动意图。
 
-    Never raises — the heartbeat must not be destabilised by companion outreach.
+    输入来自 heartbeat 或显式调用时的控制状态、agent/user id 和逻辑时间；输出是
+    `ask_about_user` 或 `idle_share` 的候选描述，或在门控、节奏、心情条件不满足时
+    返回 `None`。调用方是事务外 authoring 预备流程和事务内最终落库流程。该函数只读
+    proactive/relationship/mood 状态，不访问网络、不创建 intent；事务内会再次调用它
+    做节奏复查，避免预生成期间状态变化导致重复主动消息。
+    """
+    proactive_gate, companion_gate = _gate(control)
+    if proactive_gate == "off" or companion_gate in {"off", "disabled", "manual", "false"}:
+        return None
+    pol = _policy(conn, agent_id)
+    if not pol.get("enabled", True):
+        return None
+    user_id = user_id or str(pol.get("default_user_id") or "anonymous-user")
+    if _has_pending_idle(conn, agent_id):
+        return None
+    if _today_idle_count(conn, agent_id) >= int(pol.get("idle_max_per_day") or 3):
+        return None
+    gap = _minutes_since_last_idle(conn, agent_id)
+    if gap is not None and gap < float(pol.get("min_minutes_between") or 180):
+        return None
+    due = rel.notes_due_for_followup(conn, agent_id, user_id, now=now, limit=1)
+    if due:
+        return {"kind": "ask_about_user", "user_id": user_id, "note": due[0]}
+    if mood_band(current_mood(conn, "agent", agent_id)) == "high":
+        return {"kind": "idle_share", "user_id": user_id}
+    return None
+
+
+def author_companion_for_tick(conn, agent_id: str, *, control: dict[str, Any] | None = None,
+                              user_id: str | None = None, now: str | None = None,
+                              trace_id: str | None = None) -> dict[str, Any] | None:
+    """在写事务外为陪伴主动意图预生成一句话。
+
+    输入来自 heartbeat 的 agent/control/时间上下文；输出是一个短期有效的内存包，
+    包含候选 kind、user_id、可选 note_id 以及 LifeAuthor 的 parsed 文案。调用方
+    随后把该包传给 `maybe_generate_companion_intent`，由后者在事务内复查并创建
+    proactive intent。副作用仅限 LifeAuthor 审计；如果无 host、节奏不满足或模型
+    失败，返回 `None`，不写 relationship/proactive 状态。
     """
     try:
-        proactive_gate, companion_gate = _gate(control)
-        if proactive_gate == "off" or companion_gate in {"off", "disabled", "manual", "false"}:
+        cand = _candidate(conn, agent_id, control=control, user_id=user_id, now=now)
+        if not cand:
             return None
-        pol = _policy(conn, agent_id)
-        if not pol.get("enabled", True):
+        if cand["kind"] == "ask_about_user":
+            parsed = _author_followup_line(conn, agent_id, cand["user_id"], cand["note"], now=now, trace_id=trace_id)
+            note_id = cand["note"].get("id")
+        else:
+            parsed = _author_idle_line(conn, agent_id, cand["user_id"], trace_id=trace_id)
+            note_id = None
+        if not parsed or not str(parsed.get("summary") or "").strip():
             return None
-        user_id = user_id or str(pol.get("default_user_id") or "anonymous-user")
-
-        # Pacing: one pending idle line at a time, a daily cap, and spacing.
-        if _has_pending_idle(conn, agent_id):
-            return None
-        if _today_idle_count(conn, agent_id) >= int(pol.get("idle_max_per_day") or 3):
-            return None
-        gap = _minutes_since_last_idle(conn, agent_id)
-        if gap is not None and gap < float(pol.get("min_minutes_between") or 180):
-            return None
-
-        due = rel.notes_due_for_followup(conn, agent_id, user_id, now=now, limit=1)
-        if due:
-            return _author_followup(conn, agent_id, user_id, due[0], now=now, trace_id=trace_id)
-
-        # No due follow-up: only reach out unprompted when genuinely in a good mood,
-        # so this reads as warmth, not neediness.
-        if mood_band(current_mood(conn, "agent", agent_id)) == "high":
-            return _author_idle_share(conn, agent_id, user_id, trace_id=trace_id)
-        return None
+        return {"kind": cand["kind"], "user_id": cand["user_id"], "note_id": note_id, "parsed": parsed}
     except Exception:
         return None
 
 
-def _author_followup(conn, agent_id: str, user_id: str, note: dict[str, Any], *,
-                     now: str | None, trace_id: str | None) -> dict[str, Any] | None:
+def maybe_generate_companion_intent(conn, agent_id: str, *, control: dict[str, Any] | None = None,
+                                    user_id: str | None = None, now: str | None = None,
+                                    trace_id: str | None = None,
+                                    authored: dict[str, Any] | None = None,
+                                    allow_authoring: bool = True) -> dict[str, Any] | None:
+    """创建至多一条陪伴主动意图。
+
+    输入来自 heartbeat 或工具层；`authored` 是事务外预生成的短期内存包，
+    `allow_authoring=False` 表示事务内不得补调模型。输出是创建好的 proactive intent
+    或 `None`。副作用是写 proactive_intents，并在 follow-up 成功创建后标记对应
+    relationship note 已回访；所有失败都降级为 `None`，避免陪伴链路 destabilise
+    heartbeat。函数会在落库前重新检查节奏和候选 note，保证幂等与不刷屏。
+    """
+    try:
+        cand = _candidate(conn, agent_id, control=control, user_id=user_id, now=now)
+        if not cand:
+            return None
+        package = authored
+        if package is not None:
+            if package.get("kind") != cand.get("kind") or package.get("user_id") != cand.get("user_id"):
+                package = None
+            if cand.get("note") and package and package.get("note_id") != cand["note"].get("id"):
+                package = None
+        if package is None and allow_authoring:
+            package = author_companion_for_tick(conn, agent_id, control=control, user_id=cand.get("user_id"), now=now, trace_id=trace_id)
+        if not package or not isinstance(package.get("parsed"), dict):
+            return None
+        if cand["kind"] == "ask_about_user":
+            return _create_followup_intent(conn, agent_id, cand["user_id"], cand["note"], package["parsed"], now=now, trace_id=trace_id)
+        return _create_idle_intent(conn, agent_id, cand["user_id"], package["parsed"], trace_id=trace_id)
+    except Exception:
+        return None
+
+
+def _author_followup_line(conn, agent_id: str, user_id: str, note: dict[str, Any], *,
+                          now: str | None, trace_id: str | None) -> dict[str, Any] | None:
+    """只生成回访文案，不创建 proactive intent。
+
+    输入是已通过节奏检查的一条 relationship note；输出是 LifeAuthor parsed dict。
+    调用方是事务外预生成流程或兼容旧路径的事务外调用。副作用仅限 LifeAuthor 审计，
+    失败返回 `None`，由上层保持沉默而不是发送模板化关心。
+    """
     context = {
         "对方上次跟你说过的他生活里的事": note.get("content"),
         "话题": note.get("topic"),
@@ -159,6 +221,18 @@ def _author_followup(conn, agent_id: str, user_id: str, note: dict[str, Any], *,
     parsed = life_author.author(conn, "agent", agent_id, kind="ask_about_user",
                                instructions=instructions, context=context, schema=_LINE_SCHEMA,
                                max_tokens=200, temperature=0.7, trace_id=trace_id)
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _create_followup_intent(conn, agent_id: str, user_id: str, note: dict[str, Any],
+                            parsed: dict[str, Any], *, now: str | None,
+                            trace_id: str | None) -> dict[str, Any] | None:
+    """把已生成的回访文案落为 proactive intent。
+
+    输入是事务外生成的 parsed 文案和当前仍然 due 的 relationship note；输出是创建好的
+    intent。副作用是写 proactive_intents 并标记 note followed_up_at。调用方是
+    `maybe_generate_companion_intent`；失败返回 `None`，不会重复追问。
+    """
     if not parsed or not str(parsed.get("summary") or "").strip():
         return None
     intent = create_proactive_intent(
@@ -176,7 +250,13 @@ def _author_followup(conn, agent_id: str, user_id: str, note: dict[str, Any], *,
     return intent
 
 
-def _author_idle_share(conn, agent_id: str, user_id: str, *, trace_id: str | None) -> dict[str, Any] | None:
+def _author_idle_line(conn, agent_id: str, user_id: str, *, trace_id: str | None) -> dict[str, Any] | None:
+    """只生成闲聊陪伴文案，不创建 proactive intent。
+
+    输入是 agent/user id 和 trace id；输出是 LifeAuthor parsed dict。调用方是事务外
+    预生成流程；副作用仅限 LifeAuthor 审计。无 host 或返回无效时返回 `None`，
+    保持“没事不硬发模板”的产品约束。
+    """
     life = _recent_life(conn, agent_id)
     notes = [n.get("content") for n in rel.recent_salient_notes(conn, agent_id, user_id, limit=2) if n.get("content")]
     try:
@@ -199,6 +279,17 @@ def _author_idle_share(conn, agent_id: str, user_id: str, *, trace_id: str | Non
     parsed = life_author.author(conn, "agent", agent_id, kind="idle_share",
                                instructions=instructions, context=context, schema=_LINE_SCHEMA,
                                max_tokens=200, temperature=0.9, trace_id=trace_id)
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _create_idle_intent(conn, agent_id: str, user_id: str, parsed: dict[str, Any], *,
+                        trace_id: str | None) -> dict[str, Any] | None:
+    """把已生成的闲聊文案落为 proactive intent。
+
+    输入是事务外生成的 parsed 文案；输出是创建好的 idle_share intent。副作用只写
+    proactive_intents，不访问模型、不修改 relationship note。调用方会先做节奏复查，
+    因此这里保持窄职责。
+    """
     if not parsed or not str(parsed.get("summary") or "").strip():
         return None
     return create_proactive_intent(

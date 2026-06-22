@@ -125,6 +125,23 @@ def test_reflection_runs_once_a_day_on_the_heartbeat(tmp_path):
         rt.close()
 
 
+def test_heartbeat_partial_reasons_include_v018_sections(tmp_path):
+    """验证 v0.18 新增 heartbeat 子流程失败会进入 partial 原因。"""
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        reasons = rt._heartbeat_partial_reasons({
+            "reflection": {"status": "error"},
+            "campaigns": {"ok": False},
+            "companion": {"error": "author failed"},
+        })
+        assert "reflection:error" in reasons
+        assert "campaigns:ok_false" in reasons
+        assert "companion:error" in reasons
+    finally:
+        rt.close()
+
+
 def test_reflection_is_a_noop_without_host_model(tmp_path):
     fresh_home(tmp_path)
     life_author.set_test_llm(None)

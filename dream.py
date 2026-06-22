@@ -319,6 +319,34 @@ def _author_dream(conn, owner_kind: str, owner_id: str, ctx: dict[str, Any],
     )
 
 
+def author_dream_preview(conn, owner_kind: str, owner_id: str, *,
+                         sleep_session_id: str | None = None,
+                         trace_id: str | None = None) -> dict[str, Any] | None:
+    """在 DreamRun 写事务外预生成梦境内容。
+
+    输入来自手动 `life_dream run` 或 heartbeat 自动醒来前的预备阶段；当传入
+    `sleep_session_id` 时会读取该 sleep session，否则只用近期生活上下文和一个空
+    session 生成预览。输出是 LifeAuthor 的 dream parsed dict，或在无 host、门控/
+    预算不允许、session 不存在、模型失败时返回 `None`。副作用仅限 LifeAuthor 调用
+    审计，不创建 dream_run、dream_entry、mood residue 或 proactive intent；调用方
+    必须在后续事务内重新执行 DreamAudit 和幂等检查。
+    """
+    try:
+        session = None
+        if sleep_session_id:
+            row = conn.execute(
+                "SELECT * FROM sleep_sessions WHERE id=? AND owner_kind=? AND owner_id=?",
+                (sleep_session_id, owner_kind, owner_id),
+            ).fetchone()
+            if not row:
+                return None
+            session = dict(row)
+        ctx = _recent_context(conn, owner_kind, owner_id, limit=6)
+        return _author_dream(conn, owner_kind, owner_id, ctx, session or {}, trace_id)
+    except Exception:
+        return None
+
+
 def _fallback_dream_text(ctx: dict[str, Any], session: dict[str, Any] | None) -> tuple[str, str, list[str]]:
     """Deterministic, life-flavoured dream for when the host model is absent.
 
@@ -384,7 +412,17 @@ def create_dream_entry(conn, owner_kind: str, owner_id: str, *, dream_run_id: st
 def run_dream_cycle(conn, owner_kind: str, owner_id: str, *, sleep_session_id: str | None = None,
                     force: bool = False, allow_nap: bool | None = None, create_share_intent: bool = True,
                     target_user_id: str | None = None, trigger: str = "sleep_wake", source: str = "dream", trace_id: str | None = None,
+                    authored_dream: dict[str, Any] | None = None, allow_authoring: bool = True,
                     **_: Any) -> dict[str, Any]:
+    """执行一次 DreamRun 并把梦境、审计和分享意图落库。
+
+    输入来自 LifeOps `RUN_DREAM`、`life_dream run` 或 heartbeat wake 流程；
+    `authored_dream` 是写事务外预生成的梦境内容，`allow_authoring=False` 表示本函数
+    在事务内只能消费预生成内容或使用确定性模板。输出是 dream_run、entry、proactive
+    intent 等证据；副作用是写 dream_runs/findings/entries/memory/mood/proactive。
+    失败由外层 LifeOps savepoint 回滚，关键不变量是 DreamAudit 仍在事务内执行，而
+    网络模型 I/O 不应在 SQLite 写事务内发生。
+    """
     policy = _active_dream_policy(conn, owner_kind, owner_id)
     srd_policy = get_srd_policy(conn, owner_kind, owner_id).get("effective_policy", {})
     policy = {**(srd_policy.get("dream") or {}), **policy}
@@ -440,7 +478,9 @@ def run_dream_cycle(conn, owner_kind: str, owner_id: str, *, sleep_session_id: s
     # audit. Audit findings stay internal (dream_runs + trace) and never enter
     # the dream content. Falls back to a clean, life-flavoured template when the
     # host model is unavailable.
-    authored = _author_dream(conn, owner_kind, owner_id, ctx, session, trace_id)
+    authored = authored_dream
+    if authored is None and allow_authoring:
+        authored = _author_dream(conn, owner_kind, owner_id, ctx, session, trace_id)
     if authored and str(authored.get("content") or "").strip():
         content = str(authored.get("content")).strip()
         share_text = str(authored.get("share_text") or "").strip()
