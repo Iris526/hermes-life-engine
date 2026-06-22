@@ -574,6 +574,58 @@ class LifeEngineRuntime:
                 fail_id = None
             return {"ok": False, "trace_id": trace.id, "audit_id": audit_id, "failed_lifeops_audit_id": fail_id, "error": error}
 
+    def _project_completed_event_safe(self, owner_kind: str, owner_id: str, event_id: str, *,
+                                      summary: str | None, source: str,
+                                      trace_id: str | None = None) -> dict[str, Any]:
+        """降级执行已完成事件的社会投影。
+
+        输入来自 COMPLETE_EVENT 的 LifeOps 写路径；输出始终是可序列化的投影结果。
+        该方法会调用 social_projector 的局部 savepoint 投影，成功时返回真实结果；
+        失败时写 warning audit 并返回 projection_failed，不让辅助社交事实阻断事件
+        完成、目标推进和 LifeOps receipt。调用方仍可通过 event_id 之后补投影。
+        """
+        try:
+            from .social_projector import project_completed_event
+            return project_completed_event(
+                self.conn, owner_kind, owner_id, event_id,
+                summary=summary,
+                source=source,
+            )
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            append_audit(
+                self.conn, owner_kind, owner_id,
+                "social_projection_failed", "warning", error,
+                {"projection_kind": "event_completed", "event_id": event_id, "source": source},
+                trace_id,
+            )
+            return {"projected": False, "reason": "projection_failed", "event_id": event_id, "error": error}
+
+    def _project_venture_sale_settlement_safe(self, owner_kind: str, owner_id: str, occurrence_id: str, *,
+                                              source: str, trace_id: str | None = None) -> dict[str, Any]:
+        """降级执行经营结算 occurrence 的社会投影。
+
+        输入来自 heartbeat 进销存结算或补偿扫描；输出始终是可序列化的投影结果。
+        social_projector 自身负责 savepoint 原子性，本方法负责失败审计和错误降级。
+        这样库存/收入结算不会因流言、评价等辅助事实失败而回滚，同时失败的
+        occurrence 不会留下半截 projection run，后续 heartbeat 可再次补投影。
+        """
+        try:
+            from .social_projector import project_venture_sale_settlement
+            return project_venture_sale_settlement(
+                self.conn, owner_kind, owner_id, occurrence_id,
+                source=source,
+            )
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            append_audit(
+                self.conn, owner_kind, owner_id,
+                "social_projection_failed", "warning", error,
+                {"projection_kind": "venture_sale_settled", "occurrence_id": occurrence_id, "source": source},
+                trace_id,
+            )
+            return {"projected": False, "reason": "projection_failed", "occurrence_id": occurrence_id, "error": error}
+
     def _commit_ops_locked(self, ops: list[dict[str, Any]], owner_kind: str, owner_id: str,
                            source: str, session_id: str | None = None, turn_id: str | None = None,
                            trace: Trace | None = None, control: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -608,9 +660,9 @@ class LifeEngineRuntime:
                 )
                 if trace is not None:
                     with trace.span(f"op:{op_type}", payload):
-                        result = self._apply_op(owner_kind, owner_id, op_type, payload, source, control.get("active_canon_version"))
+                        result = self._apply_op(owner_kind, owner_id, op_type, payload, source, control.get("active_canon_version"), trace_id=trace_id)
                 else:
-                    result = self._apply_op(owner_kind, owner_id, op_type, payload, source, control.get("active_canon_version"))
+                    result = self._apply_op(owner_kind, owner_id, op_type, payload, source, control.get("active_canon_version"), trace_id=trace_id)
                 self.conn.execute("UPDATE life_ops SET status='committed', result_json=? WHERE id=?", (dumps(result), op_id))
                 append_journal(self.conn, owner_kind, owner_id, op_type.lower(), {"op_id": op_id, "payload": payload, "result": result}, source, transaction_id=tx_id, op_id=op_id, canon_version=control.get("active_canon_version"))
                 results.append({"op_id": op_id, "type": op_type, "payload": payload, "result": result})
@@ -623,7 +675,15 @@ class LifeEngineRuntime:
                 )
         return {"ok": True, "transaction_id": tx_id, "receipt": receipt, "results": results, "trace_id": trace_id}
 
-    def _apply_op(self, owner_kind: str, owner_id: str, op_type: str, payload: dict[str, Any], source: str, canon_version: int | None) -> Any:
+    def _apply_op(self, owner_kind: str, owner_id: str, op_type: str, payload: dict[str, Any], source: str,
+                  canon_version: int | None, trace_id: str | None = None) -> Any:
+        """执行单个已通过校验的 LifeOp。
+
+        输入来自 `_commit_ops_locked` 的标准化 op；输出是写入 receipt/journal 的
+        领域结果。调用方已经持有 LifeOps savepoint，本函数可以写数据库和审计。
+        对于事件完成后的社会投影这类派生事实，失败会降级成结果字段和 warning
+        audit，不能破坏核心 LifeOp 的原子提交边界。
+        """
         if op_type == "CREATE_EVENT":
             event = create_event(self.conn, owner_kind, owner_id, canon_version=canon_version, **payload)
             if payload.get("goal_id"):
@@ -650,11 +710,11 @@ class LifeEngineRuntime:
         elif op_type == "COMPLETE_EVENT":
             result = complete_event(self.conn, owner_kind, owner_id, payload["event_id"], payload.get("summary", "completed"), payload.get("resource_deltas"), source)
             result["goal_updates"] = apply_event_goal_contributions(self.conn, owner_kind, owner_id, payload["event_id"], source)
-            from .social_projector import project_completed_event
-            result["social_projection"] = project_completed_event(
-                self.conn, owner_kind, owner_id, payload["event_id"],
+            result["social_projection"] = self._project_completed_event_safe(
+                owner_kind, owner_id, payload["event_id"],
                 summary=payload.get("summary", "completed"),
                 source=f"social_projector:{source}",
+                trace_id=trace_id,
             )
             return result
         elif op_type == "CREATE_SLEEP_PLAN":
@@ -1865,7 +1925,12 @@ class LifeEngineRuntime:
         """进销存: settle sales for completed venture occurrences (sold =
         min(demand, stock) → stock down, money up), mark arrived restock orders,
         and auto-create a 进货 (procurement) event when stock runs low — so goods
-        never appear from nowhere. Gated by `recurring_activities`."""
+        never appear from nowhere. Gated by `recurring_activities`.
+
+        社交投影是结算后的派生事实：失败时只让本段 heartbeat partial，并通过
+        补偿扫描重试已 sale_settled 但缺少 applied projection 的 occurrence，
+        不能重复扣库存/入账，也不能留下半截 projection run。
+        """
         if owner_kind != "agent":
             return {"status": "skipped", "reason": "non-agent owner"}
         gates = control.get("module_gates") or {}
@@ -1882,6 +1947,8 @@ class LifeEngineRuntime:
             income_total = 0.0
             restocks = 0
             social_projections = 0
+            social_projection_errors: list[dict[str, Any]] = []
+            attempted_social_occurrences: set[str] = set()
             for act in recurring.list_recurring_activities(self.conn, owner_kind, owner_id, status="active"):
                 op = act.get("operation_model") or "active"
                 passive = op in {"self_service", "staffed"}
@@ -1938,15 +2005,47 @@ class LifeEngineRuntime:
                         "UPDATE recurring_activity_occurrences SET sale_settled=1, sold_quantity=?, income=? WHERE id=?",
                         (sold, income, occ["id"]),
                     )
-                    from .social_projector import project_venture_sale_settlement
-                    projection = project_venture_sale_settlement(
-                        self.conn, owner_kind, owner_id, occ["id"],
+                    attempted_social_occurrences.add(occ["id"])
+                    projection = self._project_venture_sale_settlement_safe(
+                        owner_kind, owner_id, occ["id"],
                         source="social_projector:venture_sale",
+                        trace_id=trace.id,
                     )
                     if projection.get("projected"):
                         social_projections += 1
+                    elif projection.get("reason") == "projection_failed":
+                        social_projection_errors.append(projection)
                     sold_total += sold
                     income_total += income
+                for settled in self.conn.execute(
+                    """SELECT occ.id
+                       FROM recurring_activity_occurrences occ
+                       WHERE occ.owner_kind=? AND occ.owner_id=? AND occ.activity_id=?
+                         AND occ.sale_settled=1
+                         AND NOT EXISTS (
+                           SELECT 1 FROM social_projection_runs pr
+                           WHERE pr.owner_kind=occ.owner_kind
+                             AND pr.owner_id=occ.owner_id
+                             AND pr.projection_kind='venture_sale_settled'
+                             AND pr.projection_key=occ.id
+                             AND pr.status='applied'
+                         )
+                       ORDER BY occ.date_key DESC
+                       LIMIT 20""",
+                    (owner_kind, owner_id, act["id"]),
+                ).fetchall():
+                    if settled["id"] in attempted_social_occurrences:
+                        continue
+                    attempted_social_occurrences.add(settled["id"])
+                    projection = self._project_venture_sale_settlement_safe(
+                        owner_kind, owner_id, settled["id"],
+                        source="social_projector:venture_sale_retry",
+                        trace_id=trace.id,
+                    )
+                    if projection.get("projected"):
+                        social_projections += 1
+                    elif projection.get("reason") == "projection_failed":
+                        social_projection_errors.append(projection)
                 # 2) mark restock orders received once their procurement event completes
                 for order in self.conn.execute(
                     "SELECT id, event_id FROM venture_restock_orders WHERE owner_kind=? AND owner_id=? AND activity_id=? AND status='pending'",
@@ -2010,8 +2109,13 @@ class LifeEngineRuntime:
                                     title=f"进货：{sc.get('goods_name') or goods}", desc=f"为「{act['title']}」补货（库存 {stock:g} 低于 {threshold:g}）。",
                                     dur=60, unit_cost=uc, tag="进货"):
                                 restocks += 1
-            return {"status": "ok", "sold": sold_total, "income": income_total,
-                    "restocks_ordered": restocks, "social_projections": social_projections}
+            status = "partial" if social_projection_errors else "ok"
+            out = {"status": status, "sold": sold_total, "income": income_total,
+                   "restocks_ordered": restocks, "social_projections": social_projections}
+            if social_projection_errors:
+                out["ok"] = False
+                out["social_projection_errors"] = social_projection_errors[:5]
+            return out
         except Exception as exc:
             append_audit(self.conn, owner_kind, owner_id, "venture_supply_settle_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}

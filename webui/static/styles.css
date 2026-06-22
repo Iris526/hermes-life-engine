@@ -613,6 +613,7 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .social-card,.social-row-card { background: var(--bg-2); border: 1px solid var(--border-dim); border-left: 3px solid var(--cyan-dim); border-radius: 2px; padding: 10px 12px; }
 .social-row-card { padding: 8px 10px; font-size: 13px; }
 .social-card.entity-card { border-left-color: var(--gold-dim); }
+.social-card.request-card { border-left-color: var(--gold); }
 .social-card.rumor-card { border-left-color: var(--warn); }
 .social-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .social-title,.social-name { color: var(--text); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
@@ -629,8 +630,8 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .social-meter-fill { height: 100%; border-radius: 1px; background: linear-gradient(90deg,var(--border-dim),var(--cyan)); transition: width .35s ease; }
 .social-meter-fill.positive { background: linear-gradient(90deg,var(--gold),var(--good)); }
 .social-meter-fill.negative { background: linear-gradient(90deg,var(--bad),var(--cinnabar)); }
-.rumor-metrics { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
-.rumor-metrics span { padding: 1px 6px; background: var(--bg-0); border: 1px solid var(--border-dim); border-radius: 1px; }
+.rumor-metrics,.request-metrics { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
+.rumor-metrics span,.request-metrics span { padding: 1px 6px; background: var(--bg-0); border: 1px solid var(--border-dim); border-radius: 1px; }
 
 /* ══════════ v0.18 心相 / 内境 ══════════ */
 .innerlife-body { display: flex; flex-direction: column; gap: 20px; }

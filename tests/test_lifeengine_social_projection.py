@@ -6,11 +6,13 @@ import os
 import shutil
 from pathlib import Path
 
-from lifeengine import recurring
-from lifeengine.db import _SCHEMA_VERSION
+from lifeengine import recurring, social_projector
+from lifeengine.canon import ensure_control
+from lifeengine.db import _SCHEMA_VERSION, transaction
 from lifeengine.jsonutil import loads
 from lifeengine.runtime import LifeEngineRuntime
 from lifeengine.social_projector import project_completed_event, project_venture_sale_settlement
+from lifeengine.trace import Trace, new_id
 
 
 def fresh_home(tmp_path: Path):
@@ -162,6 +164,115 @@ def test_sale_settled_occurrence_projects_once(tmp_path):
         assert rt.social("requests", request_type="wish")["requests"]
     finally:
         rt.close()
+
+
+def test_event_completion_survives_social_projection_failure_and_can_retry(tmp_path):
+    """社交投影失败不应阻断事件完成；失败投影回滚后可按 event_id 补投影。"""
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        ev = _result(rt.event_tool(
+            "create",
+            title="归明观午后摆摊卖净符",
+            event_type="work",
+            activity_domain="venture",
+            tags=["摆摊", "归明观", "净符"],
+            resource_costs={},
+        ))
+
+        old_record_rumor = social_projector.record_rumor
+        social_projector.record_rumor = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("forced-rumor-boom"))
+        try:
+            out = rt.event_tool("complete", event_id=ev["id"], summary="卖符顺利，香客愿意再来。")
+        finally:
+            social_projector.record_rumor = old_record_rumor
+
+        projection = _result(out).get("social_projection") or {}
+        assert out["ok"] is True
+        assert projection["reason"] == "projection_failed"
+        assert rt.conn.execute("SELECT status FROM events WHERE id=?", (ev["id"],)).fetchone()["status"] == "completed"
+        assert _count(rt, "social_projection_runs") == 0
+        assert _count(rt, "reputation_events") == 0
+        assert _count(rt, "social_evaluations") == 0
+        assert _count(rt, "social_requests") == 0
+        assert _count(rt, "rumors") == 0
+
+        retry = project_completed_event(rt.conn, "agent", "default-agent", ev["id"], summary="卖符顺利，香客愿意再来。")
+        assert retry["projected"] is True
+        assert _count(rt, "social_projection_runs") == 1
+        assert rt.social("requests", request_type="wish")["requests"]
+    finally:
+        rt.close()
+
+
+def test_venture_projection_failure_rolls_back_and_heartbeat_retries(tmp_path):
+    """经营结算投影失败不应半写社会事实；已结算 occurrence 下次 heartbeat 可补投影。"""
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        reg = rt.activity(
+            "register",
+            title="净符摊",
+            cadence_kind="daily",
+            supply_chain={"goods_resource": "stock.jingfu", "goods_name": "净符", "unit": "枚",
+                          "initial_stock": 10, "unit_price": 8, "demand_per_occurrence": 3,
+                          "money_resource": "money.lingzhu"},
+            tags=["摆摊", "净符"],
+        )
+        activity_id = reg["receipt"]["facts"][0]["evidence"]["activity_id"]
+        ev = _result(rt.event_tool("create", title="净符摊", event_type="work",
+                                   activity_domain="venture", tags=["摆摊", "净符"], resource_costs={}))
+        recurring.record_occurrence(rt.conn, "agent", "default-agent", activity_id, "2026-06-22", ev["id"], None)
+        rt.event_tool("complete", event_id=ev["id"], summary="当日摆摊结束，待结算销售。")
+
+        old_record_rumor = social_projector.record_rumor
+        social_projector.record_rumor = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("forced-rumor-boom"))
+        try:
+            with transaction(rt.conn):
+                trace = Trace(rt.conn, "agent", "default-agent", "audit_repro", tick_id=new_id("tick")).start()
+                control = ensure_control(rt.conn, "agent", "default-agent")
+                first = rt._settle_supply_chain_for_tick("agent", "default-agent", control, trace.tick_id, trace, "2026-06-23T12:00:00+00:00")
+                trace.end(status="ok", output_obj=first)
+        finally:
+            social_projector.record_rumor = old_record_rumor
+
+        occ = rt.conn.execute("SELECT * FROM recurring_activity_occurrences WHERE event_id=?", (ev["id"],)).fetchone()
+        assert first["status"] == "partial"
+        assert first["ok"] is False
+        assert occ["sale_settled"] == 1
+        assert occ["sold_quantity"] == 3
+        assert occ["income"] == 24
+        assert rt.conn.execute("SELECT COUNT(*) c FROM social_projection_runs WHERE occurrence_id=?", (occ["id"],)).fetchone()["c"] == 0
+        assert _count(rt, "reputation_events") == 0
+        assert _count(rt, "social_evaluations") == 0
+        assert _count(rt, "social_requests") == 0
+        assert _count(rt, "rumors") == 0
+
+        with transaction(rt.conn):
+            trace = Trace(rt.conn, "agent", "default-agent", "audit_repro_retry", tick_id=new_id("tick")).start()
+            control = ensure_control(rt.conn, "agent", "default-agent")
+            second = rt._settle_supply_chain_for_tick("agent", "default-agent", control, trace.tick_id, trace, "2026-06-23T12:05:00+00:00")
+            trace.end(status="ok", output_obj=second)
+
+        assert second["status"] == "ok"
+        assert second["social_projections"] == 1
+        run = rt.conn.execute("SELECT status FROM social_projection_runs WHERE occurrence_id=?", (occ["id"],)).fetchone()
+        assert run["status"] == "applied"
+        assert rt.social("requests", request_type="wish")["requests"]
+    finally:
+        rt.close()
+
+
+def test_webui_social_requests_have_visible_surface():
+    """WebUI 社会世界面板必须把 reader 返回的请求/愿望列表渲染出来。"""
+    root = Path(__file__).resolve().parents[1]
+    index = (root / "webui" / "static" / "index.html").read_text(encoding="utf-8")
+    app = (root / "webui" / "static" / "app.js").read_text(encoding="utf-8")
+    assert 'id="social-requests"' in index
+    assert "counts.requests" in app
+    assert "social-requests" in app
 
 
 def test_projected_entities_do_not_invent_origin_faction_or_map_slots(tmp_path):

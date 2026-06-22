@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .db import savepoint
 from .jsonutil import dumps, loads
 from .social_world import (
     WORLD_AUDIENCE,
@@ -45,7 +46,13 @@ _CLIENT_ROLES = {"client", "requester", "customer", "委托人", "客户", "请�
 def project_completed_event(conn, owner_kind: str, owner_id: str, event_id: str, *,
                             summary: str | None = None,
                             source: str = "social_projector") -> dict[str, Any]:
-    """Project one completed event into Social World facts, idempotently."""
+    """把一个已完成事件投影为社会事实。
+
+    输入来自 LifeOps 的 COMPLETE_EVENT 或人工补投影调用；输出是本次是否产生
+    社会事实及计数。函数会写入 projection ledger、实体、关系、声望、评价、
+    请求、流言与 journal。关键不变量是：投影事实必须在局部 savepoint 内全成
+    或全不成，失败向上抛出供调用方降级/审计，不能留下半截事实或卡死幂等键。
+    """
     from .events import get_event
 
     event = get_event(conn, event_id)
@@ -64,24 +71,31 @@ def project_completed_event(conn, owner_kind: str, owner_id: str, event_id: str,
 
     evidence = _evidence(event=event, occurrence=occurrence, activity=activity,
                          source=source, projection_kind="event_completed", summary=summary)
-    run = _begin_run(conn, owner_kind, owner_id, "event_completed", event_id, evidence, source)
-    if not run.get("created"):
-        return {"projected": False, "reason": "already_projected", "run": run}
+    with savepoint(conn, f"social_projection_event_completed_{event_id}"):
+        run = _begin_run(conn, owner_kind, owner_id, "event_completed", event_id, evidence, source)
+        if not run.get("created"):
+            return {"projected": False, "reason": "already_projected", "run": run}
 
-    ensure_default_guimingguan_social_slots(conn, owner_kind, owner_id, source=source)
-    counts = _project_by_kind(conn, owner_kind, owner_id, kind=kind, event=event,
-                              occurrence=occurrence, activity=activity, evidence=evidence,
-                              summary=summary, source=source)
-    _finish_run(conn, run["id"], counts)
-    append_journal(conn, owner_kind, owner_id, "social_projection_applied",
-                   {"run_id": run["id"], "projection_kind": "event_completed",
-                    "event_id": event_id, "counts": counts}, source)
-    return {"projected": True, "run_id": run["id"], "kind": kind, "counts": counts}
+        ensure_default_guimingguan_social_slots(conn, owner_kind, owner_id, source=source)
+        counts = _project_by_kind(conn, owner_kind, owner_id, kind=kind, event=event,
+                                  occurrence=occurrence, activity=activity, evidence=evidence,
+                                  summary=summary, source=source)
+        _finish_run(conn, run["id"], counts)
+        append_journal(conn, owner_kind, owner_id, "social_projection_applied",
+                       {"run_id": run["id"], "projection_kind": "event_completed",
+                        "event_id": event_id, "counts": counts}, source)
+        return {"projected": True, "run_id": run["id"], "kind": kind, "counts": counts}
 
 
 def project_venture_sale_settlement(conn, owner_kind: str, owner_id: str, occurrence_id: str, *,
                                     source: str = "venture_sale") -> dict[str, Any]:
-    """Project a settled recurring-activity sale occurrence, idempotently."""
+    """把一次已结算经营 occurrence 投影为社会事实。
+
+    输入来自 heartbeat 进销存结算或人工补投影调用；输出是本次投影状态与计数。
+    函数只处理已 sale_settled 的 occurrence，不负责扣库存/入账。所有社会事实
+    写入都位于局部 savepoint 内；失败时回滚投影事实并向调用方抛出，保证后续
+    heartbeat 或人工调用仍可按 occurrence 幂等键重试。
+    """
     from .events import get_event
 
     occurrence = _get_occurrence(conn, owner_kind, owner_id, occurrence_id)
@@ -110,18 +124,19 @@ def project_venture_sale_settlement(conn, owner_kind: str, owner_id: str, occurr
     evidence = _evidence(event=event, occurrence=occurrence, activity=activity,
                          source=source, projection_kind="venture_sale_settled",
                          summary=f"sold={sold:g}; income={income:g}")
-    run = _begin_run(conn, owner_kind, owner_id, "venture_sale_settled", occurrence_id, evidence, source)
-    if not run.get("created"):
-        return {"projected": False, "reason": "already_projected", "run": run}
+    with savepoint(conn, f"social_projection_venture_sale_settled_{occurrence_id}"):
+        run = _begin_run(conn, owner_kind, owner_id, "venture_sale_settled", occurrence_id, evidence, source)
+        if not run.get("created"):
+            return {"projected": False, "reason": "already_projected", "run": run}
 
-    ensure_default_guimingguan_social_slots(conn, owner_kind, owner_id, source=source)
-    counts = _project_stall(conn, owner_kind, owner_id, event=event, occurrence=occurrence,
-                            activity=activity, evidence=evidence, summary=None, source=source)
-    _finish_run(conn, run["id"], counts)
-    append_journal(conn, owner_kind, owner_id, "social_projection_applied",
-                   {"run_id": run["id"], "projection_kind": "venture_sale_settled",
-                    "occurrence_id": occurrence_id, "counts": counts}, source)
-    return {"projected": True, "run_id": run["id"], "kind": kind, "counts": counts}
+        ensure_default_guimingguan_social_slots(conn, owner_kind, owner_id, source=source)
+        counts = _project_stall(conn, owner_kind, owner_id, event=event, occurrence=occurrence,
+                                activity=activity, evidence=evidence, summary=None, source=source)
+        _finish_run(conn, run["id"], counts)
+        append_journal(conn, owner_kind, owner_id, "social_projection_applied",
+                       {"run_id": run["id"], "projection_kind": "venture_sale_settled",
+                        "occurrence_id": occurrence_id, "counts": counts}, source)
+        return {"projected": True, "run_id": run["id"], "kind": kind, "counts": counts}
 
 
 def _project_by_kind(conn, owner_kind: str, owner_id: str, *, kind: str,
@@ -407,6 +422,13 @@ def _text_blob(*parts: Any) -> str:
 
 def _begin_run(conn, owner_kind: str, owner_id: str, projection_kind: str,
                projection_key: str, evidence: dict[str, Any], source: str) -> dict[str, Any]:
+    """开始或恢复一个社会投影幂等 run。
+
+    输入是 owner、投影类型和稳定 projection_key；输出给上层判断是否应继续写
+    事实。调用方必须已经处在投影 savepoint 中。已 applied 的 run 视为完成并
+    阻止重复写入；started/failed 等未完成状态允许复用同一 ledger 行重试，避免
+    旧的半提交 run 永久卡住后续投影。
+    """
     run_id = new_id("socproj")
     cur = conn.execute(
         """INSERT OR IGNORE INTO social_projection_runs(
@@ -425,6 +447,17 @@ def _begin_run(conn, owner_kind: str, owner_id: str, projection_kind: str,
            WHERE owner_kind=? AND owner_id=? AND projection_kind=? AND projection_key=?""",
         (owner_kind, owner_id, projection_kind, projection_key),
     ).fetchone()
+    if row and str(row["status"] or "") != "applied":
+        conn.execute(
+            """UPDATE social_projection_runs
+               SET source=?, status='started', event_id=?, schedule_block_id=?,
+                   activity_id=?, occurrence_id=?, fact_counts_json='{}',
+                   evidence_json=?, updated_at=datetime('now')
+               WHERE id=?""",
+            (source, evidence.get("event_id"), evidence.get("schedule_block_id"),
+             evidence.get("activity_id"), evidence.get("occurrence_id"), dumps(evidence), row["id"]),
+        )
+        return {"created": True, "id": row["id"], "retried": True}
     return dict(row) | {"created": False} if row else {"created": False}
 
 

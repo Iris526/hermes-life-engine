@@ -789,7 +789,7 @@ function renderCampaigns() {
   }).join("");
 }
 
-// ── 社会世界 / 声望面板 ───────────────────────
+// ── 社会世界 / 社交面板 ───────────────────────
 const SOCIAL_SLOT_LABEL = {
   entity_kind: "实体",
   relationship_axis: "关系轴",
@@ -798,6 +798,8 @@ const SOCIAL_SLOT_LABEL = {
   rumor_channel: "流言渠道",
 };
 
+// 渲染 reader 提供的社会世界快照；输入是只读 snapshotData.social_world，
+// 输出是覆盖社会槽位、实体、声望、评价、请求和流言 DOM，不写数据库。
 function renderSocialWorld() {
   const data = snapshotData.social_world || {};
   const overviewEl = document.getElementById("social-overview");
@@ -812,6 +814,7 @@ function renderSocialWorld() {
     stat("声望", counts.reputation),
     stat("评价", counts.evaluations),
     stat("流言", counts.rumors),
+    stat("请求", counts.requests),
   ].join("");
 
   const slots = data.slots || [];
@@ -887,6 +890,26 @@ function renderSocialWorld() {
         <div class="social-row-meta">${escapeHtml(e.truth_layer || "social_perception")} · ${escapeHtml(e.visibility || "known")}</div>
       </div>`;
     }).join("") : '<div class="empty-state">无社会评价</div>';
+  }
+
+  const reqEl = document.getElementById("social-requests");
+  if (reqEl) {
+    const requests = data.requests || [];
+    reqEl.innerHTML = requests.length ? requests.slice(0, 14).map(r => {
+      const actors = [r.requester_name || r.requester_entity_id, r.target_name || r.target_entity_id].filter(Boolean).join(" → ");
+      const links = [
+        r.linked_event_id ? `event ${r.linked_event_id}` : "",
+        r.linked_occurrence_id ? `occ ${r.linked_occurrence_id}` : "",
+      ].filter(Boolean).join(" · ");
+      return `<div class="social-card request-card">
+        <div class="social-card-head"><span class="social-title">${escapeHtml(r.topic || r.summary || "请求")}</span><span class="social-tag">${escapeHtml(r.request_type || "request")}</span></div>
+        ${actors ? `<div class="social-row-meta">${escapeHtml(actors)}</div>` : ""}
+        ${r.summary ? `<div class="social-desc">${escapeHtml(r.summary)}</div>` : ""}
+        <div class="request-metrics">
+          <span>${escapeHtml(r.status || "open")}</span><span>${escapeHtml(r.privacy_level || "local")}</span>${links ? `<span>${escapeHtml(links)}</span>` : ""}
+        </div>
+      </div>`;
+    }).join("") : '<div class="empty-state">无请求/愿望</div>';
   }
 
   const rumorEl = document.getElementById("social-rumors");
