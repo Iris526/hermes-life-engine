@@ -11,6 +11,7 @@ import os
 import shutil
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from lifeengine.db import _SCHEMA_VERSION
@@ -177,13 +178,64 @@ def test_world_model_effective_context_is_scope_bound(tmp_path: Path) -> None:
         event = _result(rt.event_tool(
             "create",
             title="雨棚巷节点复查",
-            location={"world_place_id": seeded["place"]["id"], "name": "雨棚巷"},
+            location={"name": "雨棚巷"},
         ))
+        assert event["location"]["world_place_id"] == seeded["place"]["id"]
         rt.event_tool("update_state", mode="busy", active_event_id=event["id"])
         ctx = rt.build_context_for_turn("s1", "t1", "这里是什么地方？")
         assert "world_context" in ctx
         assert "雨棚巷只在地点命中时生效。" in ctx
         assert "南门集的规矩不能污染雨棚巷场景。" not in ctx
+    finally:
+        rt.close()
+
+
+def test_effective_context_prioritizes_specific_scope_over_global_limit(tmp_path: Path) -> None:
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        seeded = _seed_world(rt)
+        for i in range(12):
+            rt.world(
+                "upsert_lore",
+                key=f"lore.global.{i}",
+                title=f"世界规则 {i}",
+                scope_kind="world",
+                content=f"世界级背景 {i}",
+            )
+
+        scoped = rt.world("context", place_id=seeded["place"]["id"], limit=5)["world_context"]
+        keys = [item["key"] for item in scoped["lore"]]
+        assert seeded["place_lore"]["key"] in keys
+        assert keys[0] == seeded["place_lore"]["key"]
+        assert len(keys) == 5
+    finally:
+        rt.close()
+
+
+def test_archive_blocks_or_cascades_dependents(tmp_path: Path) -> None:
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        seeded = _seed_world(rt)
+
+        with pytest.raises(Exception, match="active dependents"):
+            rt.world("archive", object_kind="place", object_id=seeded["place"]["id"])
+        with pytest.raises(Exception, match="faction_presence archive requires"):
+            rt.world("archive", object_kind="faction_presence", key="not.valid.for.presence")
+
+        archived = _result(rt.world(
+            "archive",
+            object_kind="place",
+            object_id=seeded["place"]["id"],
+            cascade=True,
+        ))
+        assert archived["status"] == "archived"
+        assert any(item["object_kind"] == "lore" and item["object_id"] == seeded["place_lore"]["id"] for item in archived["archived_dependents"])
+        assert all(item["key"] != seeded["place_lore"]["key"] for item in rt.world("lore")["lore"])
+        assert all(item["id"] != seeded["place"]["id"] for item in rt.world("places")["places"])
     finally:
         rt.close()
 
@@ -210,3 +262,30 @@ def test_webui_reader_and_endpoint_include_world_model(tmp_path: Path) -> None:
     endpoint = client.get("/api/world_model").json()
     assert endpoint["counts"]["places"] >= 2
     assert any(p["id"] == seeded["place"]["id"] for p in endpoint["places"])
+
+
+def test_webui_world_action_can_write_and_archive(tmp_path: Path) -> None:
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        db = str(db_path())
+    finally:
+        rt.close()
+
+    client = TestClient(create_app(db))
+    created = client.post("/api/action", json={
+        "action": "world",
+        "payload": {"world_action": "region", "key": "web.region", "name": "网页区域"},
+    }).json()
+    assert created["ok"] is True
+    endpoint = client.get("/api/world_model").json()
+    assert any(r["key"] == "web.region" for r in endpoint["regions"])
+
+    archived = client.post("/api/action", json={
+        "action": "world",
+        "payload": {"world_action": "archive", "object_kind": "region", "key": "web.region"},
+    }).json()
+    assert archived["ok"] is True
+    endpoint = client.get("/api/world_model").json()
+    assert all(r["key"] != "web.region" for r in endpoint["regions"])

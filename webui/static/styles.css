@@ -601,6 +601,12 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .social-stat { min-height: 56px; padding: 8px 10px; background: var(--bg-2); border: 1px solid var(--border-dim); border-radius: 2px; display: flex; flex-direction: column; justify-content: center; }
 .social-stat-num { font-family: var(--font-mono); color: var(--cyan); font-size: 18px; line-height: 1.1; }
 .social-stat-label { color: var(--text-dim); font-size: 11px; letter-spacing: 1px; }
+.world-editor { padding: 8px 10px; background: var(--bg-1); border: 1px solid rgba(198,167,87,.26); border-radius: 2px; }
+.world-editor-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.world-mini-btn { min-height: 24px; padding: 2px 8px; background: var(--bg-0); border: 1px solid var(--border-dim); border-radius: 2px; color: var(--text-dim); font-size: 11px; cursor: pointer; }
+.world-mini-btn:hover { border-color: var(--gold); color: var(--gold); }
+.world-mini-btn.create { color: var(--gold); border-color: rgba(198,167,87,.45); }
+.world-mini-btn.danger:hover { border-color: var(--bad); color: var(--bad); }
 .world-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap: 14px; align-items: start; }
 .social-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap: 14px; align-items: start; }
 .social-section.wide { grid-column: 1 / -1; }
@@ -623,6 +629,8 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .social-card.request-card { border-left-color: var(--gold); }
 .social-card.rumor-card { border-left-color: var(--warn); }
 .social-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.world-row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.world-card-actions { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px; flex-shrink: 0; }
 .social-title,.social-name { color: var(--text); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
 .social-tag { flex-shrink: 0; padding: 1px 6px; border-radius: 1px; background: var(--bg-0); border: 1px solid var(--border-dim); color: var(--text-dim); font-family: var(--font-mono); font-size: 10px; }
 .social-desc { margin-top: 5px; color: var(--text-dim); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }

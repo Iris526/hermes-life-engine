@@ -289,6 +289,10 @@ def create_app(life_dir: str | None = None) -> FastAPI:
                     return rt.review("apply", state.owner_kind, state.owner_id, None, None, item_id=req.payload.get("item_id"), choice=req.payload.get("choice"))
                 if req.action == "review_apply_all":
                     return rt.review("apply_all", state.owner_kind, state.owner_id, None, None, section=req.payload.get("section"), safe_only=True, limit=int(req.payload.get("limit") or 5))
+                if req.action == "world":
+                    world_action = req.payload.get("world_action") or req.payload.get("action")
+                    payload = {k: v for k, v in req.payload.items() if k not in {"world_action", "action"}}
+                    return rt.world(world_action, state.owner_kind, state.owner_id, None, None, **payload)
                 if req.action == "sleep_recovery_plan":
                     return rt.sleep("recovery_plan", state.owner_kind, state.owner_id, None, None)
                 if req.action == "proactive_dismiss":

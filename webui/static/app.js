@@ -791,11 +791,193 @@ function renderCampaigns() {
 }
 
 // ── 世界本体 / 社会世界面板 ─────────────────────
+function escapeJsArg(value) {
+  return escapeHtml(JSON.stringify(String(value ?? "")));
+}
+
+function worldAction(worldActionName, payload = {}) {
+  return doAction("world", { world_action: worldActionName, ...payload });
+}
+
+function worldList(kind) {
+  const data = snapshotData.world_model || {};
+  if (kind === "profile") return data.profiles || [];
+  if (kind === "region") return data.regions || [];
+  if (kind === "place") return data.places || [];
+  if (kind === "lore") return data.lore || [];
+  if (kind === "faction_presence") return data.faction_presence || [];
+  return [];
+}
+
+function worldFind(kind, objectId) {
+  return worldList(kind).find(item => item.id === objectId) || null;
+}
+
+function worldEditButton(kind, item) {
+  if (!item?.id) return "";
+  return `<button class="world-mini-btn" title="编辑" onclick="worldEdit(${escapeJsArg(kind)}, ${escapeJsArg(item.id)})">改</button>`;
+}
+
+function worldArchiveButton(kind, item, label, cascade = false) {
+  if (!item?.id) return "";
+  return `<button class="world-mini-btn danger" title="归档" onclick="archiveWorldObject(${escapeJsArg(kind)}, ${escapeJsArg(item.id)}, ${escapeJsArg(label)}, ${cascade ? "true" : "false"})">归档</button>`;
+}
+
+function worldActionButtons(kind, item, label, cascade = false) {
+  return `<div class="world-card-actions">${worldEditButton(kind, item)}${worldArchiveButton(kind, item, label, cascade)}</div>`;
+}
+
+function promptWorldValue(label, fallback = "", required = false) {
+  const raw = window.prompt(label, fallback ?? "");
+  if (raw === null) return null;
+  const value = raw.trim();
+  if (required && !value) {
+    showToast(`${label} 不能为空`, "warn");
+    return null;
+  }
+  return value;
+}
+
+function promptWorldScope(item = {}) {
+  const scopeKind = promptWorldValue("作用域 world / region / place", item.scope_kind || "world", true);
+  if (scopeKind === null) return null;
+  if (!["world", "region", "place"].includes(scopeKind)) {
+    showToast("作用域必须是 world/region/place", "warn");
+    return null;
+  }
+  let scopeId = "__world__";
+  if (scopeKind !== "world") {
+    scopeId = promptWorldValue(`${scopeKind} id`, item.scope_id || "", true);
+    if (scopeId === null) return null;
+  }
+  return { scope_kind: scopeKind, scope_id: scopeId };
+}
+
+async function worldEdit(kind, objectId = null) {
+  const item = objectId ? worldFind(kind, objectId) : {};
+  if (objectId && !item) {
+    showToast("找不到要编辑的世界对象", "warn");
+    return;
+  }
+  let action = "";
+  let payload = {};
+  if (kind === "profile") {
+    const key = promptWorldValue("档案 key", item.key || "default", true);
+    if (key === null) return;
+    const title = promptWorldValue("档案标题", item.title || key, true);
+    if (title === null) return;
+    const summary = promptWorldValue("摘要", item.summary || "");
+    if (summary === null) return;
+    const background = promptWorldValue("背景正文", item.background_text || "");
+    if (background === null) return;
+    action = "profile";
+    payload = { key, title, summary, background_text: background };
+  } else if (kind === "region") {
+    const key = promptWorldValue("区域 key", item.key || "", true);
+    if (key === null) return;
+    const name = promptWorldValue("区域/城池名称", item.name || key, true);
+    if (name === null) return;
+    const regionType = promptWorldValue("区域类型", item.region_type || "region");
+    if (regionType === null) return;
+    const parentRegionId = promptWorldValue("父区域 id，可空", item.parent_region_id || "");
+    if (parentRegionId === null) return;
+    const summary = promptWorldValue("摘要", item.summary || "");
+    if (summary === null) return;
+    const content = promptWorldValue("正文", item.content || "");
+    if (content === null) return;
+    action = "region";
+    payload = { key, name, region_type: regionType || "region", parent_region_id: parentRegionId || null, summary, content };
+  } else if (kind === "place") {
+    const firstRegion = (snapshotData.world_model?.regions || [])[0];
+    const key = promptWorldValue("地点 key", item.key || "", true);
+    if (key === null) return;
+    const name = promptWorldValue("地点名称", item.name || key, true);
+    if (name === null) return;
+    const placeType = promptWorldValue("地点类型", item.place_type || "place");
+    if (placeType === null) return;
+    const regionId = promptWorldValue("所属区域 id，可空", item.region_id || firstRegion?.id || "");
+    if (regionId === null) return;
+    const parentPlaceId = promptWorldValue("父地点 id，可空", item.parent_place_id || "");
+    if (parentPlaceId === null) return;
+    const summary = promptWorldValue("摘要", item.summary || "");
+    if (summary === null) return;
+    const content = promptWorldValue("正文", item.content || "");
+    if (content === null) return;
+    action = "place";
+    payload = { key, name, place_type: placeType || "place", region_id: regionId || null, parent_place_id: parentPlaceId || null, summary, content };
+  } else if (kind === "lore") {
+    const key = promptWorldValue("知识 key", item.key || "", true);
+    if (key === null) return;
+    const title = promptWorldValue("知识标题", item.title || key, true);
+    if (title === null) return;
+    const loreType = promptWorldValue("知识类型", item.lore_type || "background");
+    if (loreType === null) return;
+    const scope = promptWorldScope(item);
+    if (!scope) return;
+    const content = promptWorldValue("正文", item.content || "");
+    if (content === null) return;
+    const tagsRaw = promptWorldValue("标签，逗号分隔", (item.tags || []).join(","));
+    if (tagsRaw === null) return;
+    action = "upsert_lore";
+    payload = { key, title, lore_type: loreType || "background", ...scope, content, tags: tagsRaw.split(",").map(s => s.trim()).filter(Boolean) };
+  } else if (kind === "faction_presence") {
+    const socialEntities = snapshotData.social_world?.entities || [];
+    const fallbackFaction = socialEntities.find(e => ["faction", "organization", "club"].includes(e.entity_kind)) || socialEntities[0];
+    const factionEntityId = promptWorldValue("势力 entity id", item.faction_entity_id || fallbackFaction?.id || "", true);
+    if (factionEntityId === null) return;
+    const scope = promptWorldScope(item);
+    if (!scope) return;
+    const influenceRaw = promptWorldValue("影响力 -100..100", String(item.influence ?? 0), true);
+    if (influenceRaw === null) return;
+    const influence = Number(influenceRaw);
+    if (!Number.isFinite(influence)) {
+      showToast("影响力必须是数字", "warn");
+      return;
+    }
+    const stance = promptWorldValue("立场", item.stance || "neutral");
+    if (stance === null) return;
+    const summary = promptWorldValue("摘要", item.summary || "");
+    if (summary === null) return;
+    const content = promptWorldValue("正文", item.content || "");
+    if (content === null) return;
+    action = "upsert_faction_presence";
+    payload = { faction_entity_id: factionEntityId, ...scope, influence, stance, summary, content };
+  } else {
+    showToast("未知世界对象类型", "warn");
+    return;
+  }
+  await worldAction(action, payload);
+}
+
+function worldQuickCreate(kind) {
+  return worldEdit(kind, null);
+}
+
+async function archiveWorldObject(kind, objectId, label, cascade = false) {
+  if (!objectId) {
+    showToast("缺少对象 id，无法归档", "warn");
+    return;
+  }
+  const hint = cascade ? "，并级联归档子项和作用域条目" : "";
+  if (!window.confirm(`归档 ${label || kind}${hint}？`)) return;
+  await worldAction("archive", { object_kind: kind, object_id: objectId, cascade });
+}
+
 function renderWorldModel() {
   const data = snapshotData.world_model || {};
   const counts = data.counts || {};
   const overviewEl = document.getElementById("world-overview");
   if (!overviewEl) return;
+  const editorEl = document.getElementById("world-editor");
+  if (editorEl) {
+    editorEl.innerHTML = `<div class="world-editor-actions">
+      <button class="world-mini-btn create" onclick="worldQuickCreate('profile')">新档案</button>
+      <button class="world-mini-btn create" onclick="worldQuickCreate('region')">新区域</button>
+      <button class="world-mini-btn create" onclick="worldQuickCreate('place')">新地点</button>
+      <button class="world-mini-btn create" onclick="worldQuickCreate('lore')">新知识</button>
+      <button class="world-mini-btn create" onclick="worldQuickCreate('faction_presence')">新势力影响</button>
+    </div>`;
+  }
   const stat = (label, value) => `<div class="social-stat world-stat"><span class="social-stat-num">${formatNum(value || 0)}</span><span class="social-stat-label">${label}</span></div>`;
   overviewEl.innerHTML = [
     stat("档案", counts.profiles),
@@ -812,7 +994,7 @@ function renderWorldModel() {
       const rules = Object.entries(p.rules || {}).slice(0, 4)
         .map(([k, v]) => `<span class="social-chip mini">${escapeHtml(k)}:${escapeHtml(v)}</span>`).join("");
       return `<div class="social-card world-card profile-card">
-        <div class="social-card-head"><span class="social-title">${escapeHtml(p.title || p.key || "世界档案")}</span><span class="social-tag">${escapeHtml(p.key || "default")}</span></div>
+        <div class="social-card-head"><span class="social-title">${escapeHtml(p.title || p.key || "世界档案")}</span><div class="world-card-actions"><span class="social-tag">${escapeHtml(p.key || "default")}</span>${worldEditButton("profile", p)}${worldArchiveButton("profile", p, p.title || p.key || "世界档案")}</div></div>
         ${p.summary ? `<div class="social-desc">${escapeHtml(p.summary)}</div>` : ""}
         ${p.background_text ? `<div class="world-long-text">${escapeHtml(p.background_text)}</div>` : ""}
         ${rules ? `<div class="social-chip-list tight">${rules}</div>` : ""}
@@ -826,9 +1008,9 @@ function renderWorldModel() {
     regionEl.innerHTML = regions.length ? regions.slice(0, 18).map(r => {
       const parent = r.parent_region_id ? `父级 ${r.parent_region_id}` : "根区域";
       return `<div class="social-row-card world-row">
-        <div><span class="social-name">${escapeHtml(r.name || r.key)}</span><span class="social-tag">${escapeHtml(r.region_type || "region")}</span></div>
+        <div class="world-row-head"><div><span class="social-name">${escapeHtml(r.name || r.key)}</span><span class="social-tag">${escapeHtml(r.region_type || "region")}</span></div>${worldActionButtons("region", r, r.name || r.key, true)}</div>
         ${r.summary ? `<div class="social-desc">${escapeHtml(r.summary)}</div>` : ""}
-        <div class="social-row-meta">${escapeHtml(r.key || "")} · ${escapeHtml(parent)}</div>
+        <div class="social-row-meta">${escapeHtml(r.key || "")} · id ${escapeHtml(r.id || "")} · ${escapeHtml(parent)}</div>
       </div>`;
     }).join("") : '<div class="empty-state">还没有区域/城池</div>';
   }
@@ -839,9 +1021,9 @@ function renderWorldModel() {
     placeEl.innerHTML = places.length ? places.slice(0, 18).map(p => {
       const scope = p.region_name || p.region_id || "未绑定区域";
       return `<div class="social-row-card world-row">
-        <div><span class="social-name">${escapeHtml(p.name || p.key)}</span><span class="social-tag">${escapeHtml(p.place_type || "place")}</span></div>
+        <div class="world-row-head"><div><span class="social-name">${escapeHtml(p.name || p.key)}</span><span class="social-tag">${escapeHtml(p.place_type || "place")}</span></div>${worldActionButtons("place", p, p.name || p.key, true)}</div>
         ${p.summary ? `<div class="social-desc">${escapeHtml(p.summary)}</div>` : ""}
-        <div class="social-row-meta">${escapeHtml(p.key || "")} · ${escapeHtml(scope)}</div>
+        <div class="social-row-meta">${escapeHtml(p.key || "")} · id ${escapeHtml(p.id || "")} · ${escapeHtml(scope)}</div>
       </div>`;
     }).join("") : '<div class="empty-state">还没有地点</div>';
   }
@@ -853,7 +1035,7 @@ function renderWorldModel() {
       const tags = (l.tags || []).slice(0, 4).map(t => `<span class="social-chip mini">${escapeHtml(t)}</span>`).join("");
       const scope = [l.scope_kind || "world", l.scope_name || l.scope_id].filter(Boolean).join(" · ");
       return `<div class="social-card world-card lore-card">
-        <div class="social-card-head"><span class="social-title">${escapeHtml(l.title || l.key)}</span><span class="social-tag">${escapeHtml(l.lore_type || "lore")}</span></div>
+        <div class="social-card-head"><span class="social-title">${escapeHtml(l.title || l.key)}</span><div class="world-card-actions"><span class="social-tag">${escapeHtml(l.lore_type || "lore")}</span>${worldEditButton("lore", l)}${worldArchiveButton("lore", l, l.title || l.key)}</div></div>
         ${l.content ? `<div class="social-desc">${escapeHtml(l.content)}</div>` : ""}
         <div class="social-row-meta">${escapeHtml(scope)}</div>
         ${tags ? `<div class="social-chip-list tight">${tags}</div>` : ""}
@@ -868,7 +1050,7 @@ function renderWorldModel() {
       const influence = Number(p.influence) || 0;
       const scope = [p.scope_kind || "world", p.scope_name || p.scope_id].filter(Boolean).join(" · ");
       return `<div class="social-card world-card faction-presence-card">
-        <div class="social-card-head"><span class="social-title">${escapeHtml(p.faction_name || p.faction_entity_id)}</span><span class="social-tag">${escapeHtml(p.stance || "presence")}</span></div>
+        <div class="social-card-head"><span class="social-title">${escapeHtml(p.faction_name || p.faction_entity_id)}</span><div class="world-card-actions"><span class="social-tag">${escapeHtml(p.stance || "presence")}</span>${worldEditButton("faction_presence", p)}${worldArchiveButton("faction_presence", p, p.faction_name || p.faction_entity_id)}</div></div>
         <div class="social-axis-line"><span>${escapeHtml(scope)}</span><span class="${socialValueClass(influence)}">${formatSigned(influence)}</span></div>
         ${socialMeter(influence)}
         ${p.summary ? `<div class="social-desc">${escapeHtml(p.summary)}</div>` : ""}
@@ -1339,6 +1521,7 @@ async function doAction(action, payload = {}) {
     if (action === "tick") showToast(tickSummary(data), "ok");
     else if (action === "start") showToast("已开启 LifeEngine · " + tickSummary(data.tick), "ok");
     else if (action === "call") showToast("已发起 call(唤醒/插话)", "ok");
+    else if (action === "world") showToast("世界本体已更新", "ok");
     else showToast("✓ 已执行", "ok");
     loadSnapshot();
   } catch (err) {

@@ -222,6 +222,10 @@ def create_event(conn, owner_kind: str, owner_id: str, title: str,
             "SELECT key FROM resource_definitions WHERE owner_kind=? AND owner_id=?", (owner_kind, owner_id),
         ).fetchall()}
         resource_costs = {k: v for k, v in resource_costs.items() if k in defined}
+    if isinstance(location, dict) and location:
+        from . import world_model as _world_model
+        # 显式 world_* 引用必须真实存在；普通 name 只在唯一命中时补充结构引用。
+        location = _world_model.resolve_location_reference(conn, owner_kind, owner_id, location)
     event_id = new_id("event")
     category = event_category or event_type or "other"
     conn.execute(

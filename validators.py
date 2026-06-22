@@ -544,8 +544,11 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         _require(payload, "object_kind")
         if payload.get("object_kind") not in {"profile", "region", "place", "lore", "faction_presence"}:
             raise ValidationError("object_kind must be profile/region/place/lore/faction_presence")
-        if not (payload.get("object_id") or payload.get("key") or payload.get("faction_entity_id")):
-            raise ValidationError("archive requires object_id, key, or faction_entity_id")
+        if payload.get("object_kind") == "faction_presence":
+            if not (payload.get("object_id") or payload.get("faction_entity_id")):
+                raise ValidationError("faction_presence archive requires object_id or faction_entity_id")
+        elif not (payload.get("object_id") or payload.get("key")):
+            raise ValidationError("archive requires object_id or key")
     elif op_type == "SOCIAL_DEFINE_SLOT":
         _require(payload, "slot_type", "key")
         if payload.get("slot_type") not in {"entity_kind", "relationship_axis", "reputation_axis", "evaluation_axis", "rumor_channel"}:

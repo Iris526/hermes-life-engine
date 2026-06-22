@@ -77,6 +77,15 @@ _ARCHIVE_TABLES = {
 }
 
 
+def _single_match(rows: list[Any]) -> Any | None:
+    """只在精确匹配唯一时返回记录。
+
+    输入来自 name/key 解析查询；输出是唯一 SQLite row 或 None。调用方是 location
+    resolver。这里故意不在多匹配时猜测，避免把普通事件地点误绑到错误世界地点。
+    """
+    return rows[0] if len(rows) == 1 else None
+
+
 def _lookup_region(conn, owner_kind: str, owner_id: str, *, region_id: str | None = None,
                    region_key: str | None = None) -> dict[str, Any]:
     """按 id 或 key 查找可生效区域。"""
@@ -107,6 +116,82 @@ def _lookup_place(conn, owner_kind: str, owner_id: str, *, place_id: str | None 
             (place_key, owner_kind, owner_id),
         ).fetchone())
     return {}
+
+
+def resolve_location_reference(conn, owner_kind: str, owner_id: str,
+                               location: dict[str, Any] | None) -> dict[str, Any]:
+    """把事件 location 解析为世界本体引用。
+
+    输入是事件创建或上下文解析时传入的 location 字典；输出保留原字段，并在能唯一
+    命中时补充 `world_place_id/world_place_key/world_region_id/world_region_key`。
+    显式 world_* id/key 不存在时抛错，让写入方尽早发现坏引用；普通 name 只在唯一
+    命中时自动绑定，多匹配或未命中则保持原样以兼容历史事件。
+    """
+    if not isinstance(location, dict):
+        return {}
+    loc = dict(location or {})
+    if not loc:
+        return loc
+
+    explicit_place_id = loc.get("world_place_id")
+    explicit_place_key = loc.get("world_place_key")
+    explicit_region_id = loc.get("world_region_id")
+    explicit_region_key = loc.get("world_region_key")
+
+    place = _lookup_place(conn, owner_kind, owner_id, place_id=explicit_place_id, place_key=explicit_place_key)
+    if (explicit_place_id or explicit_place_key) and not place:
+        raise ValueError("world place reference not found")
+
+    region = _lookup_region(conn, owner_kind, owner_id, region_id=explicit_region_id, region_key=explicit_region_key)
+    if (explicit_region_id or explicit_region_key) and not region:
+        raise ValueError("world region reference not found")
+
+    if not place and (loc.get("place_id") or loc.get("place_key")):
+        place = _lookup_place(conn, owner_kind, owner_id, place_id=loc.get("place_id"), place_key=loc.get("place_key"))
+    if not region and (loc.get("region_id") or loc.get("region_key")):
+        region = _lookup_region(conn, owner_kind, owner_id, region_id=loc.get("region_id"), region_key=loc.get("region_key"))
+
+    name = str(loc.get("name") or loc.get("display_name") or "").strip()
+    if not place and name:
+        matched = _single_match(conn.execute(
+            """SELECT * FROM world_places
+               WHERE owner_kind=? AND owner_id=? AND status='active' AND (name=? OR key=?)""",
+            (owner_kind, owner_id, name, name),
+        ).fetchall())
+        if matched:
+            place = _decode_place(matched)
+    region_name = str(loc.get("region_name") or loc.get("region") or "").strip()
+    if not region and region_name:
+        matched = _single_match(conn.execute(
+            """SELECT * FROM world_regions
+               WHERE owner_kind=? AND owner_id=? AND status='active' AND (name=? OR key=?)""",
+            (owner_kind, owner_id, region_name, region_name),
+        ).fetchall())
+        if matched:
+            region = _decode_region(matched)
+    if place and not region and place.get("region_id"):
+        region = _lookup_region(conn, owner_kind, owner_id, region_id=place.get("region_id"))
+    structured_region_ref = any(loc.get(k) for k in ("world_region_id", "world_region_key", "region_id", "region_key"))
+    if structured_region_ref and place and region and place.get("region_id") and place.get("region_id") != region.get("id"):
+        raise ValueError("world place does not belong to the referenced world region")
+    if not region and name and not place:
+        matched = _single_match(conn.execute(
+            """SELECT * FROM world_regions
+               WHERE owner_kind=? AND owner_id=? AND status='active' AND (name=? OR key=?)""",
+            (owner_kind, owner_id, name, name),
+        ).fetchall())
+        if matched:
+            region = _decode_region(matched)
+
+    if place:
+        loc["world_place_id"] = place.get("id")
+        loc["world_place_key"] = place.get("key")
+        loc.setdefault("world_place_name", place.get("name"))
+    if region:
+        loc["world_region_id"] = region.get("id")
+        loc["world_region_key"] = region.get("key")
+        loc.setdefault("world_region_name", region.get("name"))
+    return loc
 
 
 def _validate_scope(conn, owner_kind: str, owner_id: str, scope_kind: str | None, scope_id: str | None) -> tuple[str, str]:
@@ -397,10 +482,86 @@ def upsert_faction_presence(conn, owner_kind: str, owner_id: str, *, faction_ent
     return _decode_presence(conn.execute("SELECT * FROM world_faction_presence WHERE id=?", (presence_id,)).fetchone())
 
 
+def _active_dependents(conn, owner_kind: str, owner_id: str, kind: str, object_id: str) -> list[dict[str, Any]]:
+    """查询归档对象的 active 依赖。
+
+    输入是待归档对象类型和 id；输出是仍处于 active 的直接依赖列表。调用方是
+    archive_object；默认用它阻止会产生 orphan 的删除，cascade=True 时作为级联清单。
+    """
+    deps: list[dict[str, Any]] = []
+    if kind == "region":
+        checks = [
+            ("region", "world_regions", "parent_region_id"),
+            ("place", "world_places", "region_id"),
+            ("lore", "world_lore_entries", None),
+            ("faction_presence", "world_faction_presence", None),
+        ]
+        for dep_kind, table, column in checks:
+            if column:
+                rows = conn.execute(
+                    f"SELECT id FROM {table} WHERE owner_kind=? AND owner_id=? AND status='active' AND {column}=?",
+                    (owner_kind, owner_id, object_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT id FROM {table} WHERE owner_kind=? AND owner_id=? AND status='active' AND scope_kind='region' AND scope_id=?",
+                    (owner_kind, owner_id, object_id),
+                ).fetchall()
+            deps.extend({"kind": dep_kind, "id": r["id"]} for r in rows)
+    elif kind == "place":
+        checks = [
+            ("place", "world_places", "parent_place_id"),
+            ("lore", "world_lore_entries", None),
+            ("faction_presence", "world_faction_presence", None),
+        ]
+        for dep_kind, table, column in checks:
+            if column:
+                rows = conn.execute(
+                    f"SELECT id FROM {table} WHERE owner_kind=? AND owner_id=? AND status='active' AND {column}=?",
+                    (owner_kind, owner_id, object_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT id FROM {table} WHERE owner_kind=? AND owner_id=? AND status='active' AND scope_kind='place' AND scope_id=?",
+                    (owner_kind, owner_id, object_id),
+                ).fetchall()
+            deps.extend({"kind": dep_kind, "id": r["id"]} for r in rows)
+    return deps
+
+
+def _archive_by_id(conn, owner_kind: str, owner_id: str, kind: str, object_id: str,
+                   source: str, archived: list[dict[str, Any]],
+                   seen: set[tuple[str, str]] | None = None) -> None:
+    """按 id 级联归档世界本体对象。
+
+    输入来自 archive_object 的 cascade 流程；输出写入 archived 收集列表。函数只接受
+    内部 kind/table 白名单，副作用是更新 status 与 journal。它保证先归档子节点和
+    作用域条目，再归档父节点，避免 active orphan。
+    """
+    seen = seen or set()
+    mark = (kind, object_id)
+    if mark in seen:
+        return
+    seen.add(mark)
+    table, _decoder = _ARCHIVE_TABLES[kind]
+    row = conn.execute(
+        f"SELECT * FROM {table} WHERE id=? AND owner_kind=? AND owner_id=?",
+        (object_id, owner_kind, owner_id),
+    ).fetchone()
+    if not row or row["status"] == "archived":
+        return
+    for dep in _active_dependents(conn, owner_kind, owner_id, kind, object_id):
+        _archive_by_id(conn, owner_kind, owner_id, dep["kind"], dep["id"], source, archived, seen)
+    conn.execute(f"UPDATE {table} SET status='archived', updated_at=datetime('now') WHERE id=?", (object_id,))
+    archived.append({"object_kind": kind, "object_id": object_id})
+    append_journal(conn, owner_kind, owner_id, f"world_{kind}_archived", {"object_kind": kind, "object_id": object_id}, source)
+
+
 def archive_object(conn, owner_kind: str, owner_id: str, *, object_kind: str,
                    object_id: str | None = None, key: str | None = None,
                    faction_entity_id: str | None = None, scope_kind: str | None = None,
-                   scope_id: str | None = None, source: str = "life_world") -> dict[str, Any]:
+                   scope_id: str | None = None, cascade: bool = False,
+                   source: str = "life_world") -> dict[str, Any]:
     """归档一个世界本体对象。
 
     输入是对象类型和稳定 id/key；输出归档后的记录。这里执行软删除，只把 status 置为
@@ -427,9 +588,34 @@ def archive_object(conn, owner_kind: str, owner_id: str, *, object_kind: str,
     row = conn.execute(f"SELECT * FROM {table} WHERE {where}", tuple(params)).fetchone()
     if not row:
         raise ValueError(f"world {kind} not found")
-    conn.execute(f"UPDATE {table} SET status='archived', updated_at=datetime('now') WHERE id=?", (row["id"],))
-    append_journal(conn, owner_kind, owner_id, f"world_{kind}_archived", {"object_kind": kind, "object_id": row["id"]}, source)
-    return decoder(conn.execute(f"SELECT * FROM {table} WHERE id=?", (row["id"],)).fetchone())
+    deps = _active_dependents(conn, owner_kind, owner_id, kind, row["id"])
+    if deps and not cascade:
+        raise ValueError(f"world {kind} has active dependents; pass cascade=true to archive them")
+    archived: list[dict[str, Any]] = []
+    _archive_by_id(conn, owner_kind, owner_id, kind, row["id"], source, archived)
+    out = decoder(conn.execute(f"SELECT * FROM {table} WHERE id=?", (row["id"],)).fetchone())
+    out["archived_dependents"] = [item for item in archived if item["object_id"] != row["id"]]
+    return out
+
+
+def _collect_effective_entries(conn, owner_kind: str, owner_id: str, scopes: list[tuple[str, str]],
+                               list_fn, limit: int) -> list[dict[str, Any]]:
+    """按当前场景优先级收集可生效条目。
+
+    输入是按“最具体到最通用”排序的 scope；输出最多 limit 条记录。调用方是
+    effective_context。这里保证 place/region 级条目不会被大量 world 级条目挤掉。
+    """
+    out: list[dict[str, Any]] = []
+    limit_v = max(1, int(limit))
+    for scope_kind, scope_id in scopes:
+        if len(out) >= limit_v:
+            break
+        out.extend(list_fn(
+            conn, owner_kind, owner_id,
+            scope_kind=scope_kind, scope_id=scope_id,
+            limit=limit_v,
+        ))
+    return out[:limit_v]
 
 
 def list_profiles(conn, owner_kind: str, owner_id: str, *, status: str | None = "active", limit: int = 20) -> list[dict[str, Any]]:
@@ -539,7 +725,7 @@ def effective_context(conn, owner_kind: str, owner_id: str, *, region_id: str | 
     是文字，但能否被取出由 scope_kind/scope_id 和地点/区域结构决定，而不是提示词
     里写“请只在这里生效”。
     """
-    loc = location if isinstance(location, dict) else {}
+    loc = resolve_location_reference(conn, owner_kind, owner_id, location if isinstance(location, dict) else {})
     rid = region_id or loc.get("world_region_id") or loc.get("region_id")
     rkey = region_key or loc.get("world_region_key") or loc.get("region_key")
     pid = place_id or loc.get("world_place_id") or loc.get("place_id")
@@ -549,31 +735,21 @@ def effective_context(conn, owner_kind: str, owner_id: str, *, region_id: str | 
         rid = place.get("region_id")
     region = _lookup_region(conn, owner_kind, owner_id, region_id=rid, region_key=rkey)
 
-    scopes: list[tuple[str, str]] = [("world", WORLD_SCOPE_ID)]
+    activation_scopes: list[tuple[str, str]] = [("world", WORLD_SCOPE_ID)]
     if region.get("id"):
-        scopes.append(("region", region["id"]))
+        activation_scopes.append(("region", region["id"]))
     if place.get("id"):
-        scopes.append(("place", place["id"]))
-
-    lore: list[dict[str, Any]] = []
-    presence: list[dict[str, Any]] = []
-    per_scope_limit = max(1, int(limit))
-    for scope_kind, scope_id in scopes:
-        lore.extend(list_lore_entries(
-            conn, owner_kind, owner_id,
-            scope_kind=scope_kind, scope_id=scope_id,
-            limit=per_scope_limit,
-        ))
-        presence.extend(list_faction_presence(
-            conn, owner_kind, owner_id,
-            scope_kind=scope_kind, scope_id=scope_id,
-            limit=per_scope_limit,
-        ))
+        activation_scopes.append(("place", place["id"]))
+    effective_scopes = list(reversed(activation_scopes))
+    limit_v = max(1, int(limit))
+    lore = _collect_effective_entries(conn, owner_kind, owner_id, effective_scopes, list_lore_entries, limit_v)
+    presence = _collect_effective_entries(conn, owner_kind, owner_id, effective_scopes, list_faction_presence, limit_v)
 
     profiles = list_profiles(conn, owner_kind, owner_id, limit=2)
     return {
         "activation": {
-            "scope_ids": [{"scope_kind": kind, "scope_id": sid} for kind, sid in scopes],
+            "scope_ids": [{"scope_kind": kind, "scope_id": sid} for kind, sid in activation_scopes],
+            "scope_priority": [{"scope_kind": kind, "scope_id": sid} for kind, sid in effective_scopes],
             "region_id": region.get("id"),
             "region_key": region.get("key"),
             "place_id": place.get("id"),
@@ -582,14 +758,14 @@ def effective_context(conn, owner_kind: str, owner_id: str, *, region_id: str | 
         "profiles": profiles,
         "regions": [region] if region else [],
         "places": [place] if place else [],
-        "lore": lore[:int(limit)],
-        "faction_presence": presence[:int(limit)],
+        "lore": lore,
+        "faction_presence": presence,
         "counts": {
             "profiles": len(profiles),
             "regions": 1 if region else 0,
             "places": 1 if place else 0,
-            "lore": len(lore[:int(limit)]),
-            "faction_presence": len(presence[:int(limit)]),
+            "lore": len(lore),
+            "faction_presence": len(presence),
         },
     }
 

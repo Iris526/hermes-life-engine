@@ -567,6 +567,7 @@ LIFE_WORLD = {
             "influence": {"type": "number", "description": "-100..100 faction influence in the structured scope."},
             "stance": {"type": "string", "description": "allied/hostile/neutral/contested/custom."},
             "evidence": {"type": "object", "description": "Structured source evidence linking to setup/import/event/tool."},
+            "cascade": {"type": "boolean", "description": "For archive/delete/remove: also archive active child regions/places and scoped lore/presence."},
             "status": {"type": "string", "description": "active/archived filter or upsert status."},
             "source": {"type": "string"},
             "limit": {"type": "integer"},
