@@ -1,0 +1,708 @@
+"""世界观社会层的能力槽与账本。
+
+本模块只定义 LifeEngine 的社会世界底座：实体、归属、关系边、声望账本、
+评价和流言。具体世界观里的“门派 / 公司 / 学院 / 神族”、声望维度和流言
+渠道都来自 Canon 或 `worldview_slot_definitions`，这里不写死任何设定。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from .jsonutil import dumps, loads
+from .trace import append_journal, new_id
+
+WORLD_AUDIENCE = "__world__"
+
+_SLOT_CANON_KEYS = {
+    "entity_kind": "entity_kinds",
+    "relationship_axis": "relationship_axes",
+    "reputation_axis": "reputation_axes",
+    "evaluation_axis": "evaluation_axes",
+    "rumor_channel": "rumor_channels",
+}
+
+
+def _clamp_float(value: Any, lo: float, hi: float, default: float = 0.0) -> float:
+    try:
+        return max(lo, min(hi, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _row(row) -> dict[str, Any]:
+    return dict(row) if row else {}
+
+
+def _decode_json_fields(item: dict[str, Any], fields: list[str]) -> dict[str, Any]:
+    for field in fields:
+        if field in item:
+            item[field[:-5] if field.endswith("_json") else field] = loads(item.pop(field), {})
+    return item
+
+
+def _decode_slot(row) -> dict[str, Any]:
+    out = _decode_json_fields(_row(row), ["config_json"])
+    if out:
+        out.setdefault("origin", "db")
+    return out
+
+
+def _decode_entity(row) -> dict[str, Any]:
+    return _decode_json_fields(_row(row), ["traits_json", "metadata_json"])
+
+
+def _decode_affiliation(row) -> dict[str, Any]:
+    return _decode_json_fields(_row(row), ["evidence_json"])
+
+
+def _decode_edge(row) -> dict[str, Any]:
+    return _decode_json_fields(_row(row), ["evidence_json"])
+
+
+def _decode_evaluation(row) -> dict[str, Any]:
+    return _decode_json_fields(_row(row), ["evidence_json"])
+
+
+def _slot_entries_from_value(slot_type: str, value: Any) -> list[dict[str, Any]]:
+    """把 Canon 里的槽定义规整成统一记录。
+
+    输入来自 `canon["worldview"]["social_slots"]`，允许 dict/list/字符串等宽松
+    形态；输出是只读槽定义列表。调用方是 `slot_catalog` 和测试。函数不写库，
+    失败时跳过坏项，保证具体世界观包可以渐进补齐。
+    """
+    entries: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        iterable = value.items()
+    elif isinstance(value, list):
+        iterable = []
+        for item in value:
+            if isinstance(item, dict):
+                key = item.get("key") or item.get("name") or item.get("id")
+                iterable.append((key, item))
+            else:
+                iterable.append((item, {"label": str(item)}))
+    else:
+        iterable = []
+    for key, raw in iterable:
+        k = str(key or "").strip()
+        if not k:
+            continue
+        if isinstance(raw, dict):
+            label = raw.get("label") or raw.get("display_name") or raw.get("name") or k
+            description = raw.get("description")
+            config = {kk: vv for kk, vv in raw.items() if kk not in {"key", "id", "name", "label", "display_name", "description"}}
+        else:
+            label = str(raw or k)
+            description = None
+            config = {}
+        entries.append({
+            "id": f"canon:{slot_type}:{k}",
+            "slot_type": slot_type,
+            "key": k,
+            "label": str(label),
+            "description": description,
+            "config": config,
+            "status": "active",
+            "source": "canon_worldview",
+            "origin": "canon",
+        })
+    return entries
+
+
+def slots_from_canon(canon: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """读取当前世界观 Canon 暴露的社会能力槽。
+
+    输入是 `get_active_canon()` 的结果；输出包含 entity kind、relationship axis、
+    reputation axis、evaluation axis 和 rumor channel。它只是解释配置，不创建表
+    记录。调用方是 `life_social slots/summary`，用于让具体世界观包决定槽位含义。
+    """
+    worldview = (canon or {}).get("worldview") or {}
+    slots = worldview.get("social_slots") or {}
+    out: list[dict[str, Any]] = []
+    if isinstance(slots, dict):
+        for slot_type, canon_key in _SLOT_CANON_KEYS.items():
+            out.extend(_slot_entries_from_value(slot_type, slots.get(canon_key)))
+    return out
+
+
+def upsert_slot_definition(conn, owner_kind: str, owner_id: str, *, slot_type: str, key: str,
+                           label: str | None = None, description: str | None = None,
+                           config: dict[str, Any] | None = None,
+                           source: str = "life_social") -> dict[str, Any]:
+    """注册或更新一个世界观社会能力槽。
+
+    输入来自 `life_social define_slot` 或 LifeOps；`slot_type` 表示槽类别，`key`
+    是世界观包稳定引用名。输出是落库后的定义。副作用是写
+    `worldview_slot_definitions` 和 journal。失败时抛出校验错误，外层 LifeOps
+    savepoint 会回滚，避免半截世界观定义。
+    """
+    slot_type = str(slot_type or "").strip()
+    key = str(key or "").strip()
+    if slot_type not in _SLOT_CANON_KEYS:
+        raise ValueError(f"unknown social slot_type: {slot_type}")
+    if not key:
+        raise ValueError("slot key is required")
+    existing = conn.execute(
+        "SELECT id FROM worldview_slot_definitions WHERE owner_kind=? AND owner_id=? AND slot_type=? AND key=?",
+        (owner_kind, owner_id, slot_type, key),
+    ).fetchone()
+    if existing:
+        slot_id = existing["id"]
+        conn.execute(
+            """UPDATE worldview_slot_definitions
+               SET label=?, description=?, config_json=?, source=?, status='active', updated_at=datetime('now')
+               WHERE id=?""",
+            (label or key, description, dumps(config or {}), source, slot_id),
+        )
+    else:
+        slot_id = new_id("socialslot")
+        conn.execute(
+            """INSERT INTO worldview_slot_definitions(
+                 id, owner_kind, owner_id, slot_type, key, label, description, config_json, source
+               ) VALUES(?,?,?,?,?,?,?,?,?)""",
+            (slot_id, owner_kind, owner_id, slot_type, key, label or key, description, dumps(config or {}), source),
+        )
+    append_journal(conn, owner_kind, owner_id, "social_slot_defined",
+                   {"slot_type": slot_type, "key": key, "slot_id": slot_id}, source)
+    return _decode_slot(conn.execute("SELECT * FROM worldview_slot_definitions WHERE id=?", (slot_id,)).fetchone())
+
+
+def list_slot_definitions(conn, owner_kind: str, owner_id: str, *,
+                          slot_type: str | None = None,
+                          canon: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """列出当前 owner 可用的社会能力槽。
+
+    输入可以带 `slot_type` 过滤，也可以带 active Canon 以合并 Canon 内声明的槽。
+    输出是去重后的槽定义列表，DB 定义优先于 Canon 同名定义。函数只读数据库，供
+    工具、上下文构建和测试读取。
+    """
+    params: list[Any] = [owner_kind, owner_id]
+    where = "WHERE owner_kind=? AND owner_id=? AND status='active'"
+    if slot_type:
+        where += " AND slot_type=?"
+        params.append(str(slot_type))
+    rows = conn.execute(
+        f"SELECT * FROM worldview_slot_definitions {where} ORDER BY slot_type, key",
+        tuple(params),
+    ).fetchall()
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in slots_from_canon(canon):
+        if slot_type and item.get("slot_type") != slot_type:
+            continue
+        merged[(item["slot_type"], item["key"])] = item
+    for row in rows:
+        item = _decode_slot(row)
+        merged[(item["slot_type"], item["key"])] = item
+    return list(merged.values())
+
+
+def create_entity(conn, owner_kind: str, owner_id: str, *, entity_kind: str,
+                  display_name: str, summary: str | None = None,
+                  traits: dict[str, Any] | None = None,
+                  metadata: dict[str, Any] | None = None,
+                  source: str = "life_social") -> dict[str, Any]:
+    """创建一个世界观社会实体。
+
+    输入来自工具或 LifeOps，`entity_kind` 只引用世界观槽，不在核心里枚举。输出是
+    `world_entities` 行。副作用是写实体表和 journal。实体代表人、势力、地点、
+    组织或任何世界观包定义的社会对象，后续关系边、声望和流言都引用它。
+    """
+    entity_kind = str(entity_kind or "").strip()
+    display_name = str(display_name or "").strip()
+    if not entity_kind:
+        raise ValueError("entity_kind is required")
+    if not display_name:
+        raise ValueError("display_name is required")
+    entity_id = new_id("worldent")
+    conn.execute(
+        """INSERT INTO world_entities(
+             id, owner_kind, owner_id, entity_kind, display_name, summary,
+             traits_json, metadata_json, source
+           ) VALUES(?,?,?,?,?,?,?,?,?)""",
+        (entity_id, owner_kind, owner_id, entity_kind, display_name, summary,
+         dumps(traits or {}), dumps(metadata or {}), source),
+    )
+    append_journal(conn, owner_kind, owner_id, "world_entity_created",
+                   {"entity_id": entity_id, "entity_kind": entity_kind, "display_name": display_name}, source)
+    return get_entity(conn, entity_id)
+
+
+def get_entity(conn, entity_id: str) -> dict[str, Any]:
+    """读取单个社会实体。
+
+    输入是 `world_entities.id`；输出是解码 JSON 字段后的实体 dict 或空 dict。
+    函数只读数据库，供工具、关系/声望写入前校验和测试调用。
+    """
+    return _decode_entity(conn.execute("SELECT * FROM world_entities WHERE id=?", (entity_id,)).fetchone())
+
+
+def list_entities(conn, owner_kind: str, owner_id: str, *, entity_kind: str | None = None,
+                  status: str = "active", limit: int = 50) -> list[dict[str, Any]]:
+    """按 owner 列出社会实体。
+
+    输入可按实体 kind/status 过滤；输出是最近更新的实体列表。函数只读数据库，
+    调用方包括 `life_social entities` 和后续上下文注入。
+    """
+    params: list[Any] = [owner_kind, owner_id, status]
+    where = "WHERE owner_kind=? AND owner_id=? AND status=?"
+    if entity_kind:
+        where += " AND entity_kind=?"
+        params.append(str(entity_kind))
+    rows = conn.execute(
+        f"SELECT * FROM world_entities {where} ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+        tuple(params + [int(limit)]),
+    ).fetchall()
+    return [_decode_entity(r) for r in rows]
+
+
+def link_affiliation(conn, owner_kind: str, owner_id: str, *, subject_entity_id: str,
+                     faction_entity_id: str, role: str | None = None,
+                     strength: float = 1.0, evidence: dict[str, Any] | None = None,
+                     source: str = "life_social") -> dict[str, Any]:
+    """记录一个实体对势力/组织/圈层的归属。
+
+    输入是主体实体、承载方实体和可选角色；输出是 affiliation 行。该函数不判断
+    `faction_entity_id` 是否真的叫“势力”，它只要求二者是同 owner 下的社会实体，
+    具体含义由世界观槽解释。重复归属会更新强度和证据，保持幂等。
+    """
+    if not _entity_belongs(conn, owner_kind, owner_id, subject_entity_id):
+        raise ValueError(f"subject entity not found: {subject_entity_id}")
+    if not _entity_belongs(conn, owner_kind, owner_id, faction_entity_id):
+        raise ValueError(f"faction entity not found: {faction_entity_id}")
+    role = str(role or "member").strip()
+    existing = conn.execute(
+        """SELECT id FROM world_affiliations
+           WHERE owner_kind=? AND owner_id=? AND subject_entity_id=? AND faction_entity_id=? AND role=?""",
+        (owner_kind, owner_id, subject_entity_id, faction_entity_id, role),
+    ).fetchone()
+    if existing:
+        affiliation_id = existing["id"]
+        conn.execute(
+            """UPDATE world_affiliations
+               SET strength=?, evidence_json=?, status='active', source=?, updated_at=datetime('now')
+               WHERE id=?""",
+            (_clamp_float(strength, 0.0, 1.0, 1.0), dumps(evidence or {}), source, affiliation_id),
+        )
+    else:
+        affiliation_id = new_id("affil")
+        conn.execute(
+            """INSERT INTO world_affiliations(
+                 id, owner_kind, owner_id, subject_entity_id, faction_entity_id, role,
+                 strength, evidence_json, source
+               ) VALUES(?,?,?,?,?,?,?,?,?)""",
+            (affiliation_id, owner_kind, owner_id, subject_entity_id, faction_entity_id, role,
+             _clamp_float(strength, 0.0, 1.0, 1.0), dumps(evidence or {}), source),
+        )
+    append_journal(conn, owner_kind, owner_id, "world_affiliation_linked",
+                   {"affiliation_id": affiliation_id, "subject_entity_id": subject_entity_id,
+                    "faction_entity_id": faction_entity_id, "role": role}, source)
+    return _decode_affiliation(conn.execute("SELECT * FROM world_affiliations WHERE id=?", (affiliation_id,)).fetchone())
+
+
+def list_affiliations(conn, owner_kind: str, owner_id: str, *, entity_id: str | None = None,
+                      limit: int = 50) -> list[dict[str, Any]]:
+    """读取实体归属关系。
+
+    输入可指定 subject 或 faction 的实体 id；输出是 active affiliations。函数只读
+    数据库，供工具展示“谁属于哪个势力/组织/圈层”。
+    """
+    params: list[Any] = [owner_kind, owner_id]
+    where = "WHERE owner_kind=? AND owner_id=? AND status='active'"
+    if entity_id:
+        where += " AND (subject_entity_id=? OR faction_entity_id=?)"
+        params.extend([entity_id, entity_id])
+    rows = conn.execute(
+        f"SELECT * FROM world_affiliations {where} ORDER BY updated_at DESC LIMIT ?",
+        tuple(params + [int(limit)]),
+    ).fetchall()
+    return [_decode_affiliation(r) for r in rows]
+
+
+def upsert_social_edge(conn, owner_kind: str, owner_id: str, *, source_entity_id: str,
+                       target_entity_id: str, axis: str, value: float,
+                       confidence: float = 0.6, visibility: str = "known",
+                       evidence: dict[str, Any] | None = None,
+                       source: str = "life_social") -> dict[str, Any]:
+    """写入或更新一条有向社会关系边。
+
+    输入是源实体、目标实体、世界观定义的关系轴和数值；输出是关系边。副作用是
+    写 `social_edges` 和 journal。关系轴如亲密、敌意、上下级、盟友等均由世界观包
+    定义，核心只维护数值、置信度、可见性和幂等更新。
+    """
+    if not _entity_belongs(conn, owner_kind, owner_id, source_entity_id):
+        raise ValueError(f"source entity not found: {source_entity_id}")
+    if not _entity_belongs(conn, owner_kind, owner_id, target_entity_id):
+        raise ValueError(f"target entity not found: {target_entity_id}")
+    axis = str(axis or "").strip()
+    if not axis:
+        raise ValueError("relationship axis is required")
+    existing = conn.execute(
+        """SELECT id FROM social_edges
+           WHERE owner_kind=? AND owner_id=? AND source_entity_id=? AND target_entity_id=? AND axis=?""",
+        (owner_kind, owner_id, source_entity_id, target_entity_id, axis),
+    ).fetchone()
+    if existing:
+        edge_id = existing["id"]
+        conn.execute(
+            """UPDATE social_edges
+               SET value=?, confidence=?, visibility=?, evidence_json=?, status='active',
+                   source=?, updated_at=datetime('now')
+               WHERE id=?""",
+            (_clamp_float(value, -100.0, 100.0, 0.0), _clamp_float(confidence, 0.0, 1.0, 0.6),
+             visibility, dumps(evidence or {}), source, edge_id),
+        )
+    else:
+        edge_id = new_id("socedge")
+        conn.execute(
+            """INSERT INTO social_edges(
+                 id, owner_kind, owner_id, source_entity_id, target_entity_id, axis,
+                 value, confidence, visibility, evidence_json, source
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (edge_id, owner_kind, owner_id, source_entity_id, target_entity_id, axis,
+             _clamp_float(value, -100.0, 100.0, 0.0), _clamp_float(confidence, 0.0, 1.0, 0.6),
+             visibility, dumps(evidence or {}), source),
+        )
+    append_journal(conn, owner_kind, owner_id, "social_edge_upserted",
+                   {"edge_id": edge_id, "source_entity_id": source_entity_id,
+                    "target_entity_id": target_entity_id, "axis": axis}, source)
+    return _decode_edge(conn.execute("SELECT * FROM social_edges WHERE id=?", (edge_id,)).fetchone())
+
+
+def list_social_edges(conn, owner_kind: str, owner_id: str, *, entity_id: str | None = None,
+                      axis: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    """读取社会关系边。
+
+    输入可按实体或关系轴过滤；输出是 active edges。函数只读数据库，调用方包括
+    `life_social edges` 和未来上下文/heartbeat 社会层。
+    """
+    params: list[Any] = [owner_kind, owner_id]
+    where = "WHERE owner_kind=? AND owner_id=? AND status='active'"
+    if entity_id:
+        where += " AND (source_entity_id=? OR target_entity_id=?)"
+        params.extend([entity_id, entity_id])
+    if axis:
+        where += " AND axis=?"
+        params.append(axis)
+    rows = conn.execute(
+        f"SELECT * FROM social_edges {where} ORDER BY updated_at DESC LIMIT ?",
+        tuple(params + [int(limit)]),
+    ).fetchall()
+    return [_decode_edge(r) for r in rows]
+
+
+def apply_reputation_event(conn, owner_kind: str, owner_id: str, *, subject_entity_id: str,
+                           axis: str, delta: float, audience_entity_id: str | None = None,
+                           reason: str | None = None, evidence_kind: str | None = None,
+                           evidence_id: str | None = None,
+                           source: str = "life_social") -> dict[str, Any]:
+    """把一次社会后果写入声望账本。
+
+    输入是主体实体、声望轴、增量和可选 audience；输出包含 reputation event 与聚合
+    account。副作用是插入 `reputation_events`、更新/创建 `reputation_accounts`
+    并写 journal。声望值限制在 -100..100；具体轴含义由世界观包定义。
+    """
+    if not _entity_belongs(conn, owner_kind, owner_id, subject_entity_id):
+        raise ValueError(f"subject entity not found: {subject_entity_id}")
+    audience = str(audience_entity_id or WORLD_AUDIENCE)
+    if audience != WORLD_AUDIENCE and not _entity_belongs(conn, owner_kind, owner_id, audience):
+        raise ValueError(f"audience entity not found: {audience}")
+    axis = str(axis or "").strip()
+    if not axis:
+        raise ValueError("reputation axis is required")
+    delta_value = _clamp_float(delta, -100.0, 100.0, 0.0)
+    event_id = new_id("repevt")
+    conn.execute(
+        """INSERT INTO reputation_events(
+             id, owner_kind, owner_id, subject_entity_id, audience_entity_id, axis,
+             delta, reason, evidence_kind, evidence_id, source
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        (event_id, owner_kind, owner_id, subject_entity_id, audience, axis,
+         delta_value, reason, evidence_kind, evidence_id, source),
+    )
+    existing = conn.execute(
+        """SELECT * FROM reputation_accounts
+           WHERE owner_kind=? AND owner_id=? AND subject_entity_id=? AND audience_entity_id=? AND axis=?""",
+        (owner_kind, owner_id, subject_entity_id, audience, axis),
+    ).fetchone()
+    if existing:
+        account_id = existing["id"]
+        next_value = _clamp_float(float(existing["value"]) + delta_value, -100.0, 100.0, 0.0)
+        next_conf = _clamp_float(float(existing["confidence"]) + 0.05, 0.0, 1.0, 0.5)
+        conn.execute(
+            "UPDATE reputation_accounts SET value=?, confidence=?, updated_at=datetime('now') WHERE id=?",
+            (next_value, next_conf, account_id),
+        )
+    else:
+        account_id = new_id("repacct")
+        conn.execute(
+            """INSERT INTO reputation_accounts(
+                 id, owner_kind, owner_id, subject_entity_id, audience_entity_id, axis,
+                 value, confidence
+               ) VALUES(?,?,?,?,?,?,?,?)""",
+            (account_id, owner_kind, owner_id, subject_entity_id, audience, axis,
+             _clamp_float(delta_value, -100.0, 100.0, 0.0), 0.55),
+        )
+    append_journal(conn, owner_kind, owner_id, "reputation_event_recorded",
+                   {"event_id": event_id, "account_id": account_id, "subject_entity_id": subject_entity_id,
+                    "audience_entity_id": audience, "axis": axis, "delta": delta_value}, source)
+    return {
+        "event": _row(conn.execute("SELECT * FROM reputation_events WHERE id=?", (event_id,)).fetchone()),
+        "account": _row(conn.execute("SELECT * FROM reputation_accounts WHERE id=?", (account_id,)).fetchone()),
+    }
+
+
+def list_reputation_accounts(conn, owner_kind: str, owner_id: str, *,
+                             subject_entity_id: str | None = None,
+                             audience_entity_id: str | None = None,
+                             axis: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    """读取声望聚合账户。
+
+    输入可按主体、audience 或轴过滤；输出为当前值列表。函数只读数据库，用于
+    展示“谁在什么圈层里被怎么看”。
+    """
+    params: list[Any] = [owner_kind, owner_id]
+    where = "WHERE owner_kind=? AND owner_id=? AND status='active'"
+    if subject_entity_id:
+        where += " AND subject_entity_id=?"
+        params.append(subject_entity_id)
+    if audience_entity_id:
+        where += " AND audience_entity_id=?"
+        params.append(str(audience_entity_id))
+    if axis:
+        where += " AND axis=?"
+        params.append(axis)
+    rows = conn.execute(
+        f"SELECT * FROM reputation_accounts {where} ORDER BY ABS(value) DESC, updated_at DESC LIMIT ?",
+        tuple(params + [int(limit)]),
+    ).fetchall()
+    return [_row(r) for r in rows]
+
+
+def list_reputation_events(conn, owner_kind: str, owner_id: str, *,
+                           subject_entity_id: str | None = None,
+                           limit: int = 50) -> list[dict[str, Any]]:
+    """读取声望事件流水。
+
+    输入可指定主体实体；输出按创建时间倒序排列。函数只读数据库，方便追溯某个
+    声望值为什么变化。
+    """
+    params: list[Any] = [owner_kind, owner_id]
+    where = "WHERE owner_kind=? AND owner_id=?"
+    if subject_entity_id:
+        where += " AND subject_entity_id=?"
+        params.append(subject_entity_id)
+    rows = conn.execute(
+        f"SELECT * FROM reputation_events {where} ORDER BY created_at DESC LIMIT ?",
+        tuple(params + [int(limit)]),
+    ).fetchall()
+    return [_row(r) for r in rows]
+
+
+def record_evaluation(conn, owner_kind: str, owner_id: str, *, subject_entity_id: str,
+                      axis: str, score: float, evaluator_entity_id: str | None = None,
+                      target_kind: str = "entity", target_id: str | None = None,
+                      reason: str | None = None, visibility: str = "known",
+                      truth_layer: str = "social_perception",
+                      evidence: dict[str, Any] | None = None,
+                      source: str = "life_social") -> dict[str, Any]:
+    """记录一次社会评价。
+
+    输入表达“某评价者/群体如何评价某主体或事件”；输出 evaluation 行。评价不同于
+    agent opinion：它是世界对主体的看法，可影响声望、邀请、排斥或流言。核心只
+    存 axis/score/reason/visibility/truth_layer，具体规则由世界观包解释。
+    """
+    if not _entity_belongs(conn, owner_kind, owner_id, subject_entity_id):
+        raise ValueError(f"subject entity not found: {subject_entity_id}")
+    evaluator = str(evaluator_entity_id or WORLD_AUDIENCE)
+    if evaluator != WORLD_AUDIENCE and not _entity_belongs(conn, owner_kind, owner_id, evaluator):
+        raise ValueError(f"evaluator entity not found: {evaluator}")
+    axis = str(axis or "").strip()
+    if not axis:
+        raise ValueError("evaluation axis is required")
+    evaluation_id = new_id("eval")
+    conn.execute(
+        """INSERT INTO social_evaluations(
+             id, owner_kind, owner_id, evaluator_entity_id, subject_entity_id,
+             target_kind, target_id, axis, score, reason, visibility, truth_layer,
+             evidence_json, source
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (evaluation_id, owner_kind, owner_id, evaluator, subject_entity_id,
+         target_kind or "entity", target_id or subject_entity_id, axis,
+         _clamp_float(score, -100.0, 100.0, 0.0), reason, visibility, truth_layer,
+         dumps(evidence or {}), source),
+    )
+    append_journal(conn, owner_kind, owner_id, "social_evaluation_recorded",
+                   {"evaluation_id": evaluation_id, "subject_entity_id": subject_entity_id,
+                    "evaluator_entity_id": evaluator, "axis": axis}, source)
+    return _decode_evaluation(conn.execute("SELECT * FROM social_evaluations WHERE id=?", (evaluation_id,)).fetchone())
+
+
+def list_evaluations(conn, owner_kind: str, owner_id: str, *, subject_entity_id: str | None = None,
+                     evaluator_entity_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    """读取社会评价记录。
+
+    输入可按被评价者或评价者过滤；输出保留 truth_layer 和 visibility，提醒调用方
+    不要把社会观感当成客观事实。
+    """
+    params: list[Any] = [owner_kind, owner_id]
+    where = "WHERE owner_kind=? AND owner_id=? AND status='active'"
+    if subject_entity_id:
+        where += " AND subject_entity_id=?"
+        params.append(subject_entity_id)
+    if evaluator_entity_id:
+        where += " AND evaluator_entity_id=?"
+        params.append(str(evaluator_entity_id))
+    rows = conn.execute(
+        f"SELECT * FROM social_evaluations {where} ORDER BY created_at DESC LIMIT ?",
+        tuple(params + [int(limit)]),
+    ).fetchall()
+    return [_decode_evaluation(r) for r in rows]
+
+
+def record_rumor(conn, owner_kind: str, owner_id: str, *, content: str,
+                 channel: str, subject_entity_id: str | None = None,
+                 target_kind: str = "entity", target_id: str | None = None,
+                 heat: float = 0.5, credibility: float = 0.3,
+                 sentiment: str | None = None, visibility: str = "local",
+                 truth_layer: str = "rumor_unverified",
+                 source: str = "life_social") -> dict[str, Any]:
+    """记录一条流言或未证实社会叙事。
+
+    输入包含内容、渠道、热度、可信度和 truth_layer；输出 rumor 行。副作用是写
+    `rumors` 和 journal。默认 truth_layer 为 `rumor_unverified`，调用方不得把它
+    当事实写入事件或记忆，除非后续世界观规则确认。
+    """
+    content = str(content or "").strip()
+    channel = str(channel or "").strip()
+    if not content:
+        raise ValueError("rumor content is required")
+    if not channel:
+        raise ValueError("rumor channel is required")
+    if subject_entity_id and not _entity_belongs(conn, owner_kind, owner_id, subject_entity_id):
+        raise ValueError(f"subject entity not found: {subject_entity_id}")
+    rumor_id = new_id("rumor")
+    conn.execute(
+        """INSERT INTO rumors(
+             id, owner_kind, owner_id, subject_entity_id, target_kind, target_id,
+             content, channel, heat, credibility, sentiment, visibility, truth_layer, source
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (rumor_id, owner_kind, owner_id, subject_entity_id, target_kind or "entity", target_id,
+         content, channel, _clamp_float(heat, 0.0, 1.0, 0.5), _clamp_float(credibility, 0.0, 1.0, 0.3),
+         sentiment, visibility, truth_layer, source),
+    )
+    append_journal(conn, owner_kind, owner_id, "rumor_recorded",
+                   {"rumor_id": rumor_id, "channel": channel, "truth_layer": truth_layer}, source)
+    return _row(conn.execute("SELECT * FROM rumors WHERE id=?", (rumor_id,)).fetchone())
+
+
+def list_rumors(conn, owner_kind: str, owner_id: str, *, channel: str | None = None,
+                subject_entity_id: str | None = None,
+                status: str = "active", limit: int = 50) -> list[dict[str, Any]]:
+    """读取流言记录。
+
+    输入可按渠道、主体和状态过滤；输出按热度和更新时间排序。函数只读数据库，
+    保留 truth_layer 供上层区分未证实流言、社会观感和已确认事实。
+    """
+    params: list[Any] = [owner_kind, owner_id, status]
+    where = "WHERE owner_kind=? AND owner_id=? AND status=?"
+    if channel:
+        where += " AND channel=?"
+        params.append(channel)
+    if subject_entity_id:
+        where += " AND subject_entity_id=?"
+        params.append(subject_entity_id)
+    rows = conn.execute(
+        f"SELECT * FROM rumors {where} ORDER BY heat DESC, updated_at DESC LIMIT ?",
+        tuple(params + [int(limit)]),
+    ).fetchall()
+    return [_row(r) for r in rows]
+
+
+def record_rumor_exposure(conn, owner_kind: str, owner_id: str, *, rumor_id: str,
+                          entity_id: str, exposure_state: str = "heard",
+                          reaction: str | None = None,
+                          source: str = "life_social") -> dict[str, Any]:
+    """记录某实体已经听到或传播过某条流言。
+
+    输入是 rumor 与实体 id；输出 exposure 行。重复记录会更新状态和反应，保持幂等。
+    副作用是写 `rumor_exposures` 和 journal，供后续传播/社交机会规则使用。
+    """
+    rumor = conn.execute(
+        "SELECT id FROM rumors WHERE id=? AND owner_kind=? AND owner_id=?",
+        (rumor_id, owner_kind, owner_id),
+    ).fetchone()
+    if not rumor:
+        raise ValueError(f"rumor not found: {rumor_id}")
+    if not _entity_belongs(conn, owner_kind, owner_id, entity_id):
+        raise ValueError(f"entity not found: {entity_id}")
+    existing = conn.execute(
+        "SELECT id FROM rumor_exposures WHERE rumor_id=? AND entity_id=?",
+        (rumor_id, entity_id),
+    ).fetchone()
+    if existing:
+        exposure_id = existing["id"]
+        conn.execute(
+            """UPDATE rumor_exposures
+               SET exposure_state=?, reaction=?, source=?, updated_at=datetime('now')
+               WHERE id=?""",
+            (exposure_state, reaction, source, exposure_id),
+        )
+    else:
+        exposure_id = new_id("rumorexp")
+        conn.execute(
+            """INSERT INTO rumor_exposures(
+                 id, owner_kind, owner_id, rumor_id, entity_id, exposure_state, reaction, source
+               ) VALUES(?,?,?,?,?,?,?,?)""",
+            (exposure_id, owner_kind, owner_id, rumor_id, entity_id, exposure_state, reaction, source),
+        )
+    append_journal(conn, owner_kind, owner_id, "rumor_exposure_recorded",
+                   {"rumor_id": rumor_id, "entity_id": entity_id, "exposure_state": exposure_state}, source)
+    return _row(conn.execute("SELECT * FROM rumor_exposures WHERE id=?", (exposure_id,)).fetchone())
+
+
+def list_rumor_exposures(conn, owner_kind: str, owner_id: str, *, rumor_id: str | None = None,
+                         entity_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    """读取流言触达记录。
+
+    输入可按 rumor 或实体过滤；输出展示谁听过、谁传播过或谁压下了流言。函数只读
+    数据库，是后续自动传播规则的证据来源。
+    """
+    params: list[Any] = [owner_kind, owner_id]
+    where = "WHERE owner_kind=? AND owner_id=?"
+    if rumor_id:
+        where += " AND rumor_id=?"
+        params.append(rumor_id)
+    if entity_id:
+        where += " AND entity_id=?"
+        params.append(entity_id)
+    rows = conn.execute(
+        f"SELECT * FROM rumor_exposures {where} ORDER BY updated_at DESC LIMIT ?",
+        tuple(params + [int(limit)]),
+    ).fetchall()
+    return [_row(r) for r in rows]
+
+
+def summary(conn, owner_kind: str, owner_id: str, *, canon: dict[str, Any] | None = None) -> dict[str, Any]:
+    """生成社会世界层的紧凑摘要。
+
+    输入是 owner 和可选 Canon；输出包含槽定义、近期实体、声望账户、评价与流言。
+    函数只读数据库，供 `life_social summary`、未来上下文注入和人工检查使用。
+    """
+    return {
+        "slots": list_slot_definitions(conn, owner_kind, owner_id, canon=canon),
+        "entities": list_entities(conn, owner_kind, owner_id, limit=12),
+        "reputation": list_reputation_accounts(conn, owner_kind, owner_id, limit=12),
+        "evaluations": list_evaluations(conn, owner_kind, owner_id, limit=8),
+        "rumors": list_rumors(conn, owner_kind, owner_id, limit=8),
+    }
+
+
+def _entity_belongs(conn, owner_kind: str, owner_id: str, entity_id: str | None) -> bool:
+    if not entity_id:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM world_entities WHERE id=? AND owner_kind=? AND owner_id=? AND status='active'",
+        (entity_id, owner_kind, owner_id),
+    ).fetchone()
+    return row is not None

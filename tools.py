@@ -239,6 +239,19 @@ def life_relationship(args: dict, **kwargs) -> str:
     return _run(lambda rt: rt.relationship(action, owner_kind, owner_id, kwargs.get("session_id"), kwargs.get("turn_id"), **payload))
 
 
+def life_social(args: dict, **kwargs) -> str:
+    """Social World slots: world-specific entities, reputation, evaluations, and rumors."""
+    owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))
+    action = args.get("action", "summary")
+    session_id = kwargs.get("session_id") or args.get("session_id")
+    turn_id = kwargs.get("turn_id") or args.get("turn_id")
+    payload = {k: v for k, v in args.items() if k not in {"owner_kind", "owner", "owner_id", "agent_id", "action", "session_id", "turn_id"}}
+    nested = payload.pop("payload", None)
+    if isinstance(nested, dict):
+        payload.update(nested)
+    return _run(lambda rt: rt.social(action, owner_kind, owner_id, session_id, turn_id, **payload))
+
+
 def life_campaign(args: dict, **kwargs) -> str:
     """Campaigns (资料片): register / seed / list / get / cancel a cross-week themed arc."""
     owner_kind, owner_id = resolve_owner(args, sender_id=kwargs.get("sender_id"))

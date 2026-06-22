@@ -83,11 +83,23 @@ DEFAULT_MODULE_GATES = {
     # v0.18.0 P4 reflection: once-a-day look-back that forms/reinforces opinions
     # and a self-narrative from lived experience. Needs life_author; no-op without.
     "reflection": "auto",
+    # Social World slots: world-specific entity / relationship / reputation /
+    # evaluation / rumor primitives. Core stores the slots and ledgers; concrete
+    # worldviews decide what each kind/axis/channel means.
+    "social_world": "auto",
 }
 
 DEFAULT_CANON_TEMPLATE = {
     "identity": {},
-    "worldview": {},
+    "worldview": {
+        "social_slots": {
+            "entity_kinds": {},
+            "relationship_axes": {},
+            "reputation_axes": {},
+            "evaluation_axes": {},
+            "rumor_channels": {},
+        }
+    },
     "truth_sources": {
         "bindings": {
             "time": {"domain": "time", "authority": "system_clock", "timezone": "Asia/Tokyo", "time_flow": "real_time"},

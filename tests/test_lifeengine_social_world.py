@@ -1,0 +1,167 @@
+"""社会世界层：世界观槽、实体、声望、评价和流言。
+
+这些测试刻意使用“学院/社团”作为样例世界观数据，但核心断言只关心槽机制：
+LifeEngine 负责持久化通用社会事实，具体实体类型、关系轴、声望轴和流言渠道都由
+世界观定义提供。
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from lifeengine.db import _SCHEMA_VERSION
+from lifeengine.runtime import LifeEngineRuntime
+
+
+def fresh_home(tmp_path: Path):
+    home = tmp_path / "hermes_home"
+    home.mkdir(parents=True, exist_ok=True)
+    os.environ["HERMES_HOME"] = str(home)
+    return home
+
+
+def setup_agent(rt: LifeEngineRuntime):
+    rt.setup("v0.18.x social world test agent")
+    rt.commit_canon()
+    rt.control("resume")
+    rt.living("init_resources")
+
+
+def _result(commit: dict, index: int = 0) -> dict:
+    return ((commit.get("results") or [])[index].get("result") or {})
+
+
+def test_schema_v61_and_social_world_tables(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        assert _SCHEMA_VERSION >= 61
+        assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 61
+        tables = {r[0] for r in rt.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert {
+            "worldview_slot_definitions",
+            "world_entities",
+            "world_affiliations",
+            "social_edges",
+            "reputation_accounts",
+            "reputation_events",
+            "social_evaluations",
+            "rumors",
+            "rumor_exposures",
+        }.issubset(tables)
+    finally:
+        rt.close()
+
+
+def test_social_slots_are_worldview_defined_not_core_enums(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        out = rt.social("define_slot", slot_type="entity_kind", key="club",
+                        label="社团", description="这个世界观里的学生组织")
+        slot = _result(out)
+        assert slot["slot_type"] == "entity_kind"
+        assert slot["key"] == "club"
+
+        axis = _result(rt.social("define_slot", slot_type="reputation_axis", key="craft_credit",
+                                 label="手作信用"))
+        assert axis["key"] == "craft_credit"
+
+        slots = rt.social("slots")["slots"]
+        assert any(s["slot_type"] == "entity_kind" and s["key"] == "club" for s in slots)
+        assert any(s["slot_type"] == "reputation_axis" and s["key"] == "craft_credit" for s in slots)
+    finally:
+        rt.close()
+
+
+def test_life_interface_exposes_social_domain(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        catalog = rt.interface("catalog")
+        assert "social" in catalog["domains"]
+        out = rt.interface("read", domain="social", view="summary")
+        assert out["ok"] is True
+        assert "social_world" in out
+    finally:
+        rt.close()
+
+
+def test_social_graph_reputation_evaluation_and_rumor_flow(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        agent = _result(rt.social("create_entity", entity_kind="person", display_name="明灯",
+                                  summary="当前生活主体"))
+        club = _result(rt.social("create_entity", entity_kind="club", display_name="手作社",
+                                 summary="重视作品交付的小社团"))
+        observer = _result(rt.social("create_entity", entity_kind="person", display_name="社团前辈"))
+
+        aff = _result(rt.social("link_affiliation", subject_entity_id=agent["id"],
+                                faction_entity_id=club["id"], role="member", strength=0.8))
+        assert aff["role"] == "member"
+
+        edge = _result(rt.social("set_edge", source_entity_id=observer["id"],
+                                 target_entity_id=agent["id"], axis="trust", value=35,
+                                 confidence=0.7, visibility="known"))
+        assert edge["axis"] == "trust"
+        assert edge["value"] == 35
+
+        rep = _result(rt.social("reputation_event", subject_entity_id=agent["id"],
+                                audience_entity_id=club["id"], axis="craft_credit",
+                                delta=18, reason="按时交付社团委托"))
+        assert rep["account"]["value"] == 18
+        rt.social("reputation_event", subject_entity_id=agent["id"],
+                  audience_entity_id=club["id"], axis="craft_credit",
+                  delta=-5, reason="迟到了一次")
+        accounts = rt.social("reputation_accounts", subject_entity_id=agent["id"])["reputation"]
+        assert any(a["axis"] == "craft_credit" and a["value"] == 13 for a in accounts)
+
+        evaluation = _result(rt.social("evaluate", evaluator_entity_id=club["id"],
+                                       subject_entity_id=agent["id"], axis="reliability",
+                                       score=42, reason="最近交付稳定",
+                                       truth_layer="social_perception"))
+        assert evaluation["truth_layer"] == "social_perception"
+
+        rumor = _result(rt.social("rumor", subject_entity_id=agent["id"],
+                                  content="听说她最近接了一个很难的手作委托。",
+                                  channel="club_chat", heat=0.7, credibility=0.4))
+        assert rumor["truth_layer"] == "rumor_unverified"
+        exposure = _result(rt.social("expose_rumor", rumor_id=rumor["id"],
+                                     entity_id=observer["id"], exposure_state="heard"))
+        assert exposure["exposure_state"] == "heard"
+
+        summary = rt.social("summary")["social_world"]
+        assert summary["entities"]
+        assert summary["reputation"]
+        assert summary["evaluations"]
+        assert summary["rumors"]
+
+        tx_count = rt.conn.execute(
+            "SELECT COUNT(*) FROM life_ops WHERE op_type LIKE 'SOCIAL_%'"
+        ).fetchone()[0]
+        assert tx_count >= 8
+    finally:
+        rt.close()
+
+
+def test_social_world_surfaces_in_inner_life_context(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        agent = _result(rt.social("create_entity", entity_kind="person", display_name="明灯"))
+        rt.social("reputation_event", subject_entity_id=agent["id"], axis="fame", delta=12,
+                  reason="帮邻里解决了一件小事")
+        rt.social("rumor", subject_entity_id=agent["id"], content="有人说她最近变得很可靠。",
+                  channel="neighborhood", heat=0.5)
+        ctx = rt.build_context_for_turn("s1", "t1", "今天怎么样？")
+        assert "social_world" in ctx
+        assert "rumor_unverified" in ctx
+        assert "fame" in ctx
+    finally:
+        rt.close()

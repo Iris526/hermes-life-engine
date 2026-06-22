@@ -108,6 +108,17 @@ ALLOWED_OPS = {
     # v0.16.0 recurring activities (营生): register / update / cancel an occupation
     "CREATE_RECURRING_ACTIVITY",
     "UPDATE_RECURRING_ACTIVITY",
+    # Social World slots: world-specific entities, relationships, reputation,
+    # evaluations, and rumors. These are generic social facts; concrete
+    # worldviews define the actual kind/axis/channel semantics.
+    "SOCIAL_DEFINE_SLOT",
+    "SOCIAL_CREATE_ENTITY",
+    "SOCIAL_LINK_AFFILIATION",
+    "SOCIAL_SET_EDGE",
+    "SOCIAL_REPUTATION_EVENT",
+    "SOCIAL_RECORD_EVALUATION",
+    "SOCIAL_RECORD_RUMOR",
+    "SOCIAL_RECORD_RUMOR_EXPOSURE",
 }
 
 USER_WRITE_OPS = {
@@ -131,6 +142,14 @@ USER_WRITE_OPS = {
     "RELEASE_DELAYED_REPLIES",
     "CALL_OVERRIDE",
     "RUN_DREAM", "CREATE_DREAM_ENTRY",
+    "SOCIAL_DEFINE_SLOT",
+    "SOCIAL_CREATE_ENTITY",
+    "SOCIAL_LINK_AFFILIATION",
+    "SOCIAL_SET_EDGE",
+    "SOCIAL_REPUTATION_EVENT",
+    "SOCIAL_RECORD_EVALUATION",
+    "SOCIAL_RECORD_RUMOR",
+    "SOCIAL_RECORD_RUMOR_EXPOSURE",
 }
 
 
@@ -493,6 +512,36 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         st = payload.get("status")
         if st is not None and st not in {"active", "paused", "cancelled"}:
             raise ValidationError("status must be active/paused/cancelled")
+    elif op_type == "SOCIAL_DEFINE_SLOT":
+        _require(payload, "slot_type", "key")
+        if payload.get("slot_type") not in {"entity_kind", "relationship_axis", "reputation_axis", "evaluation_axis", "rumor_channel"}:
+            raise ValidationError("slot_type must be entity_kind/relationship_axis/reputation_axis/evaluation_axis/rumor_channel")
+    elif op_type == "SOCIAL_CREATE_ENTITY":
+        _require(payload, "entity_kind", "display_name")
+    elif op_type == "SOCIAL_LINK_AFFILIATION":
+        _require(payload, "subject_entity_id", "faction_entity_id")
+    elif op_type == "SOCIAL_SET_EDGE":
+        _require(payload, "source_entity_id", "target_entity_id", "axis", "value")
+        try:
+            float(payload.get("value"))
+        except Exception as exc:
+            raise ValidationError("social edge value must be numeric") from exc
+    elif op_type == "SOCIAL_REPUTATION_EVENT":
+        _require(payload, "subject_entity_id", "axis", "delta")
+        try:
+            float(payload.get("delta"))
+        except Exception as exc:
+            raise ValidationError("reputation delta must be numeric") from exc
+    elif op_type == "SOCIAL_RECORD_EVALUATION":
+        _require(payload, "subject_entity_id", "axis", "score")
+        try:
+            float(payload.get("score"))
+        except Exception as exc:
+            raise ValidationError("evaluation score must be numeric") from exc
+    elif op_type == "SOCIAL_RECORD_RUMOR":
+        _require(payload, "content", "channel")
+    elif op_type == "SOCIAL_RECORD_RUMOR_EXPOSURE":
+        _require(payload, "rumor_id", "entity_id")
     elif op_type == "RECORD_IMPROMPTU_ACTIVITY":
         _require(payload, "title")
         dur = payload.get("duration_minutes")

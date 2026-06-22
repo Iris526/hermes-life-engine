@@ -60,6 +60,7 @@ CANONICAL_TOOL_MAP = {
     "truth": "life_truth",
     "goal": "life_goal / life_autonomy",
     "proactive": "life_proactive",
+    "social": "life_social / life_interface(domain=social)",
     "trace": "life_trace / life_doctor",
 }
 
@@ -73,6 +74,7 @@ INTENT_KEYWORDS = {
     "config": ["设定", "世界观", "人设", "canon", "config", "timezone", "天气", "货币"],
     "resource": ["资源", "钱", "灵铢", "精力", "疲劳", "库存", "账本", "resource"],
     "goal": ["目标", "计划", "推进", "goal", "arc"],
+    "social": ["声望", "评价", "流言", "势力", "社交", "关系网", "world", "social", "reputation", "rumor"],
     "trace": ["trace", "doctor", "审计", "为什么", "解释"],
 }
 
@@ -219,6 +221,12 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
         # she's in the middle of, and what she meant to ask — so the model can
         # voice her growth and what she's living. Omitted on work platforms.
         capsule["inner_life"] = inner_life
+    social_world = data.get("social_world") or {}
+    if social_world and not work_compact:
+        # Social world is private agent-life context but small enough to keep
+        # separate from inner_life: reputation/evaluation/rumor shape the world
+        # around the agent, and rumors retain their truth_layer warning.
+        capsule["social_world"] = social_world
     feedback = data.get("final_gate_feedback") or []
     if feedback and not work_compact:
         capsule["internal_feedback"] = feedback[:2]
@@ -257,6 +265,8 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
                 "truncated": True,
                 "private_agent_life_omitted": work_compact,
             }
+            if social_world and not work_compact:
+                minimal_capsule["social_world"] = social_world
             if feedback and not work_compact:
                 minimal_capsule["internal_final_gate_feedback"] = feedback[:2]
                 minimal_capsule["internal_feedback"] = feedback[:2]

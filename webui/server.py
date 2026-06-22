@@ -242,6 +242,10 @@ def create_app(life_dir: str | None = None) -> FastAPI:
     def relationship(owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
         return {"items": state.reader().relationship_notes(owner_kind or state.owner_kind, owner_id or state.owner_id)}
 
+    @app.get("/api/social_world")
+    def social_world(owner_kind: str | None = None, owner_id: str | None = None, limit: int = 80) -> dict[str, Any]:
+        return state.reader().social_world(owner_kind or state.owner_kind, owner_id or state.owner_id, limit=limit)
+
     @app.get("/api/trace/latest")
     def trace_latest(limit: int = 20) -> dict[str, Any]:
         return {"items": state.reader().trace_latest(limit=limit)}

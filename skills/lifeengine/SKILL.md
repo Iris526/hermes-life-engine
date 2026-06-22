@@ -1,6 +1,6 @@
 # LifeEngine Skill
 
-Use LifeEngine when the conversation concerns the agent's own life, user life records, resources, plans, schedule, diary, memory, world/persona settings, truth sources, collection items (wardrobe/closet/cabinets), meals, long-term goals, life arcs, autonomy, proactive communication, companionship/relationship memory (what the user shares about their own life), cross-week campaigns (资料片), or the agent's evolving opinions and self-narrative.
+Use LifeEngine when the conversation concerns the agent's own life, user life records, resources, plans, schedule, diary, memory, world/persona settings, truth sources, collection items (wardrobe/closet/cabinets), meals, long-term goals, life arcs, autonomy, proactive communication, companionship/relationship memory (what the user shares about their own life), social-world slots (world entities, factions/groups, reputation, evaluations, rumors), cross-week campaigns (资料片), or the agent's evolving opinions and self-narrative.
 
 Core rules:
 
@@ -16,6 +16,7 @@ Core rules:
 10. Use `life_confirmation` before writing uncertain user-life facts. Do not invent user-life facts.
 11. Use `life_trace` to explain why a life state changed. Every committed operation should be traceable through transaction, op, receipt, journal, and trace spans.
 12. Agent Life and User Life use the same schemas but different truth policy. Agent self-life may use narrative reality when Canon allows it; User Life requires user/tool/file/calendar/manual evidence.
+13. Use `life_social` for worldview-dependent social facts: entities, affiliations, relationship axes, reputation ledgers, evaluations, and rumors. Core LifeEngine stores slots and evidence; the current worldview decides what each kind/axis/channel means. Never treat `truth_layer="rumor_unverified"` as confirmed fact.
 
 Typical setup flow:
 
@@ -66,6 +67,19 @@ Typical proactive flow:
 - **张罗一件大事（资料片）**：想给生活加一条跨周长弧时，`life_campaign(action="seed", brief="想给归明观办一场夏夜庙会")` 让你自己设计阶段；或 `action="register"` 传现成阶段。心跳会按 预兆→升温→高潮→收尾 每天把相关事件铺进日程、自动推进与收尾。`action="list"` 看进行中的。
 - **你的看法会自己长**：每天的反思会从你的经历里形成/加深观点并写一句自我叙事，无需手动。想立刻回看 `life_opinion(action="reflect")`；想明确记一条 `action="record"`；`action="narrative"` 读最新自我叙事。在对话里体现成长（"我最近越来越…"）。
 - 以上全部由心跳的宿主模型驱动；**没有宿主模型时一切优雅降级**（回退模板 / 沉默 / 不形成观点），不报错。
+
+
+## 社会世界槽位
+
+这层用于“世界观内的互动”，但不是写死的 RPG 系统。具体世界观负责定义实体种类、
+关系轴、声望轴、评价轴和流言渠道；LifeEngine 只负责把这些槽位和运行态记成可审计
+账本。
+
+- **先定义槽**：`life_social(action="define_slot", slot_type="entity_kind", key="club", label="社团")`，同理可定义 `relationship_axis`、`reputation_axis`、`evaluation_axis`、`rumor_channel`。
+- **再记录实体与关系**：`life_social(action="create_entity", entity_kind="club", display_name="手作社")`；`action="link_affiliation"` 记录归属；`action="set_edge"` 记录有向社会关系。
+- **声望走账本**：`life_social(action="reputation_event", subject_entity_id="...", audience_entity_id="...", axis="craft_credit", delta=12, reason="按时交付")`。不要用普通资源表伪装声望，因为声望必须带 audience。
+- **评价不是 opinion**：`life_opinion` 是“我怎么看”，`life_social evaluate` 是“世界/某人/某势力怎么看我或某事”。
+- **流言不是事实**：`life_social(action="rumor", content="...", channel="...", truth_layer="rumor_unverified")` 只表示社会叙事或传闻；除非后续确认，不要把它写成 memory/event 的确定事实。
 
 
 ## Sleep / Reply / Dream policy

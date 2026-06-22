@@ -173,6 +173,7 @@ function render() {
   renderCloset();
   renderDreams();
   renderCampaigns();
+  renderSocialWorld();
   renderInnerLife();
   renderReview();
   renderTrace();
@@ -786,6 +787,140 @@ function renderCampaigns() {
       <div class="vital-bar"><div class="vital-bar-track"><div class="vital-bar-fill ${resolved ? "" : "high"}" style="width:${pct}%"></div></div></div>
     </div>`;
   }).join("");
+}
+
+// ── 社会世界 / 声望面板 ───────────────────────
+const SOCIAL_SLOT_LABEL = {
+  entity_kind: "实体",
+  relationship_axis: "关系轴",
+  reputation_axis: "声望轴",
+  evaluation_axis: "评价轴",
+  rumor_channel: "流言渠道",
+};
+
+function renderSocialWorld() {
+  const data = snapshotData.social_world || {};
+  const overviewEl = document.getElementById("social-overview");
+  if (!overviewEl) return;
+  const counts = data.counts || {};
+  const stat = (label, value) => `<div class="social-stat"><span class="social-stat-num">${formatNum(value || 0)}</span><span class="social-stat-label">${label}</span></div>`;
+  overviewEl.innerHTML = [
+    stat("槽位", counts.slots),
+    stat("实体", counts.entities),
+    stat("归属", counts.affiliations),
+    stat("关系", counts.edges),
+    stat("声望", counts.reputation),
+    stat("评价", counts.evaluations),
+    stat("流言", counts.rumors),
+  ].join("");
+
+  const slots = data.slots || [];
+  const slotsEl = document.getElementById("social-slots");
+  if (slotsEl) {
+    slotsEl.innerHTML = slots.length ? slots.slice(0, 60).map(s => {
+      const title = [s.description, s.origin || s.source].filter(Boolean).join(" · ");
+      return `<span class="social-chip" title="${escapeHtml(title)}"><b>${escapeHtml(SOCIAL_SLOT_LABEL[s.slot_type] || s.slot_type || "槽位")}</b>${escapeHtml(s.label || s.key || "—")}</span>`;
+    }).join("") : '<div class="empty-state">无社会槽位</div>';
+  }
+
+  const entitiesEl = document.getElementById("social-entities");
+  if (entitiesEl) {
+    const entities = data.entities || [];
+    entitiesEl.innerHTML = entities.length ? entities.slice(0, 18).map(e => {
+      const traits = Object.entries(e.traits || {}).slice(0, 3).map(([k, v]) => `<span class="social-chip mini">${escapeHtml(k)}:${escapeHtml(v)}</span>`).join("");
+      return `<div class="social-card entity-card">
+        <div class="social-card-head"><span class="social-title">${escapeHtml(e.display_name || e.id)}</span><span class="social-tag">${escapeHtml(e.entity_kind || "")}</span></div>
+        ${e.summary ? `<div class="social-desc">${escapeHtml(e.summary)}</div>` : ""}
+        ${traits ? `<div class="social-chip-list tight">${traits}</div>` : ""}
+      </div>`;
+    }).join("") : '<div class="empty-state">还没有社会实体</div>';
+  }
+
+  const affEl = document.getElementById("social-affiliations");
+  if (affEl) {
+    const affiliations = data.affiliations || [];
+    affEl.innerHTML = affiliations.length ? affiliations.slice(0, 14).map(a => {
+      const pct = Math.max(0, Math.min(100, (Number(a.strength) || 0) * 100));
+      return `<div class="social-row-card">
+        <div><span class="social-name">${escapeHtml(a.subject_name || a.subject_entity_id)}</span><span class="social-arrow">→</span><span class="social-name">${escapeHtml(a.faction_name || a.faction_entity_id)}</span></div>
+        <div class="social-row-meta">${escapeHtml(a.role || "member")} · ${formatNum(pct)}%</div>
+      </div>`;
+    }).join("") : '<div class="empty-state">无归属</div>';
+  }
+
+  const edgesEl = document.getElementById("social-edges");
+  if (edgesEl) {
+    const edges = data.edges || [];
+    edgesEl.innerHTML = edges.length ? edges.slice(0, 14).map(e => {
+      const value = Number(e.value) || 0;
+      return `<div class="social-row-card">
+        <div><span class="social-name">${escapeHtml(e.source_name || e.source_entity_id)}</span><span class="social-arrow">→</span><span class="social-name">${escapeHtml(e.target_name || e.target_entity_id)}</span></div>
+        <div class="social-axis-line"><span>${escapeHtml(e.axis || "关系")}</span><span class="${socialValueClass(value)}">${formatSigned(value)}</span></div>
+        ${socialMeter(value)}
+      </div>`;
+    }).join("") : '<div class="empty-state">无关系边</div>';
+  }
+
+  const repEl = document.getElementById("social-reputation");
+  if (repEl) {
+    const reps = data.reputation || [];
+    repEl.innerHTML = reps.length ? reps.slice(0, 16).map(r => {
+      const value = Number(r.value) || 0;
+      return `<div class="social-card">
+        <div class="social-card-head"><span class="social-title">${escapeHtml(r.subject_name || r.subject_entity_id)}</span><span class="social-tag">${escapeHtml(r.audience_name || r.audience_entity_id)}</span></div>
+        <div class="social-axis-line"><span>${escapeHtml(r.axis || "声望")}</span><span class="${socialValueClass(value)}">${formatSigned(value)}</span></div>
+        ${socialMeter(value)}
+        <div class="social-row-meta">confidence ${formatNum((Number(r.confidence) || 0) * 100)}%</div>
+      </div>`;
+    }).join("") : '<div class="empty-state">无声望记录</div>';
+  }
+
+  const evalEl = document.getElementById("social-evaluations");
+  if (evalEl) {
+    const evaluations = data.evaluations || [];
+    evalEl.innerHTML = evaluations.length ? evaluations.slice(0, 14).map(e => {
+      const score = Number(e.score) || 0;
+      return `<div class="social-card">
+        <div class="social-card-head"><span class="social-title">${escapeHtml(e.subject_name || e.subject_entity_id)}</span><span class="social-tag">${escapeHtml(e.evaluator_name || e.evaluator_entity_id)}</span></div>
+        <div class="social-axis-line"><span>${escapeHtml(e.axis || "评价")}</span><span class="${socialValueClass(score)}">${formatSigned(score)}</span></div>
+        ${e.reason ? `<div class="social-desc">${escapeHtml(e.reason)}</div>` : ""}
+        <div class="social-row-meta">${escapeHtml(e.truth_layer || "social_perception")} · ${escapeHtml(e.visibility || "known")}</div>
+      </div>`;
+    }).join("") : '<div class="empty-state">无社会评价</div>';
+  }
+
+  const rumorEl = document.getElementById("social-rumors");
+  if (rumorEl) {
+    const rumors = data.rumors || [];
+    rumorEl.innerHTML = rumors.length ? rumors.slice(0, 18).map(r => {
+      const heat = Math.max(0, Math.min(100, (Number(r.heat) || 0) * 100));
+      const cred = Math.max(0, Math.min(100, (Number(r.credibility) || 0) * 100));
+      return `<div class="social-card rumor-card">
+        <div class="social-card-head"><span class="social-title">${escapeHtml(r.subject_name || r.channel || "流言")}</span><span class="social-tag">${escapeHtml(r.channel || "")}</span></div>
+        <div class="social-desc">${escapeHtml(r.content || "")}</div>
+        <div class="rumor-metrics">
+          <span>heat ${formatNum(heat)}%</span><span>cred ${formatNum(cred)}%</span><span>${escapeHtml(r.truth_layer || "rumor_unverified")}</span><span>${formatNum(r.exposure_count || 0)} heard</span>
+        </div>
+      </div>`;
+    }).join("") : '<div class="empty-state">无流言</div>';
+  }
+}
+
+function socialMeter(value) {
+  const pct = Math.max(0, Math.min(100, (Number(value) + 100) / 2));
+  return `<div class="social-meter"><div class="social-meter-center"></div><div class="social-meter-fill ${socialValueClass(value)}" style="width:${pct}%"></div></div>`;
+}
+
+function socialValueClass(value) {
+  const v = Number(value) || 0;
+  if (v >= 20) return "positive";
+  if (v <= -20) return "negative";
+  return "neutral";
+}
+
+function formatSigned(value) {
+  const v = Number(value) || 0;
+  return `${v > 0 ? "+" : ""}${formatNum(v)}`;
 }
 
 // ── 心相 / 内境面板 ────────────────────────────

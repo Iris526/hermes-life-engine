@@ -142,11 +142,15 @@ def test_webui_refactor_assets_and_human_layout_exist():
     js = (root / "webui" / "static" / "app.js").read_text(encoding="utf-8")
     assert "portrait" in html
     assert "engine-live-card" in html
+    assert "overlay-social" in html
     assert "default-agent-reference.jpg" in html
     assert "sprite-img" in html
     assert "object-fit" in css
     assert "engine-live-card" in css
+    assert "social-overview" in css
     assert "sprite" in js
+    assert "renderSocialWorld" in js
     assert "doEnginePrimaryAction" in js
     assert 'req.action == "start"' in (root / "webui" / "server.py").read_text(encoding="utf-8")
+    assert "/api/social_world" in (root / "webui" / "server.py").read_text(encoding="utf-8")
     assert "JSON" in js

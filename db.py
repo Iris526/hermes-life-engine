@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 60
+_SCHEMA_VERSION = 61
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -312,6 +312,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 60:
         _create_schema_v60(conn)
         _record_schema_migration(conn, 60, "agent_opinions")
+    if current < 61:
+        _create_schema_v61(conn)
+        _record_schema_migration(conn, 61, "social_world_slots")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -4021,4 +4024,217 @@ def _create_schema_v60(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_agent_opinions_owner ON agent_opinions(agent_id, status, confidence)"
+    )
+
+
+def _create_schema_v61(conn: sqlite3.Connection) -> None:
+    """Social World slots (v0.18.x): 世界观社会层的通用能力槽。
+
+    这些表只表达“社会世界可以有实体、归属、关系边、声望、评价和流言”，不写死
+    任一具体世界观。`worldview_slot_definitions` 是世界观包展开后的槽位词典；
+    其它表存真实运行态。所有 mutation 仍走 LifeOps/savepoint，保证和 heartbeat
+    主写路径保持同一原子性边界。
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS worldview_slot_definitions (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,                 -- agent/user/relationship；限定槽位属于哪个生活域
+          owner_id TEXT NOT NULL,                   -- owner 实例 id；供多 profile 隔离
+          slot_type TEXT NOT NULL,                  -- entity_kind | relationship_axis | reputation_axis | evaluation_axis | rumor_channel
+          key TEXT NOT NULL,                        -- 世界观包稳定引用名；例如 guild/company/trust/fame
+          label TEXT NOT NULL,                      -- 面向人/模型的显示名；不要求全局唯一
+          description TEXT,                         -- 世界观对此槽位的解释；只用于展示和上下文
+          config_json TEXT NOT NULL DEFAULT '{}',   -- 槽位规则扩展；核心不解释具体业务细节
+          status TEXT NOT NULL DEFAULT 'active',    -- active | archived
+          source TEXT,                              -- life_social/canon_import/tool_imported 等来源
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, slot_type, key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_worldview_slot_defs_owner ON worldview_slot_definitions(owner_kind, owner_id, slot_type, status)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS world_entities (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,                 -- 生活域 owner；社会实体只在该 owner 的世界内有效
+          owner_id TEXT NOT NULL,
+          entity_kind TEXT NOT NULL,                -- 引用世界观槽：person/faction/place/company/academy 等
+          display_name TEXT NOT NULL,               -- 社会实体的人类可读名称
+          summary TEXT,                             -- 简短设定摘要；用于上下文和检索
+          traits_json TEXT NOT NULL DEFAULT '{}',   -- 具体世界观可解释的标签/性格/规模/风格
+          metadata_json TEXT NOT NULL DEFAULT '{}', -- 兼容扩展；核心不依赖其中字段
+          status TEXT NOT NULL DEFAULT 'active',    -- active | archived
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_world_entities_owner_kind ON world_entities(owner_kind, owner_id, entity_kind, status)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS world_affiliations (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          subject_entity_id TEXT NOT NULL,          -- 被归属的一方：人、店铺、团体或世界观自定义实体
+          faction_entity_id TEXT NOT NULL,          -- 承载归属的一方：势力/组织/圈层；核心不限定 kind
+          role TEXT NOT NULL DEFAULT 'member',      -- 角色名；例如 member/leader/vendor/student
+          strength REAL NOT NULL DEFAULT 1.0,       -- 0..1，归属强度或稳定度
+          evidence_json TEXT NOT NULL DEFAULT '{}', -- 来源证据；可指向 event/memory/tool
+          status TEXT NOT NULL DEFAULT 'active',
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, subject_entity_id, faction_entity_id, role)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_world_affiliations_subject ON world_affiliations(owner_kind, owner_id, subject_entity_id, status)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS social_edges (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          source_entity_id TEXT NOT NULL,           -- 有向关系起点；如 A 对 B 的信任
+          target_entity_id TEXT NOT NULL,           -- 有向关系终点
+          axis TEXT NOT NULL,                       -- 引用 relationship_axis 槽；核心只保存 key
+          value REAL NOT NULL DEFAULT 0,            -- -100..100；轴的实际含义由世界观包解释
+          confidence REAL NOT NULL DEFAULT 0.6,     -- 0..1；这条关系判断的可靠度
+          visibility TEXT NOT NULL DEFAULT 'known', -- known/private/rumored/public 等可见性
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, source_entity_id, target_entity_id, axis)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_social_edges_entity ON social_edges(owner_kind, owner_id, source_entity_id, target_entity_id, status)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reputation_accounts (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          subject_entity_id TEXT NOT NULL,          -- 被评价声望的实体
+          audience_entity_id TEXT NOT NULL DEFAULT '__world__', -- audience；__world__ 表示全局/默认圈层
+          axis TEXT NOT NULL,                       -- 引用 reputation_axis 槽；如 fame/trust/notoriety
+          value REAL NOT NULL DEFAULT 0,            -- -100..100 当前聚合值
+          confidence REAL NOT NULL DEFAULT 0.5,     -- 0..1；随事件累计提高
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(owner_kind, owner_id, subject_entity_id, audience_entity_id, axis)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reputation_accounts_subject ON reputation_accounts(owner_kind, owner_id, subject_entity_id, axis)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reputation_events (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          subject_entity_id TEXT NOT NULL,          -- 声望变动主体
+          audience_entity_id TEXT NOT NULL DEFAULT '__world__',
+          axis TEXT NOT NULL,
+          delta REAL NOT NULL DEFAULT 0,            -- 本次声望变化，聚合进 reputation_accounts
+          reason TEXT,                              -- 人类可读原因
+          evidence_kind TEXT,                       -- event/memory/rumor/evaluation/tool 等
+          evidence_id TEXT,
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reputation_events_subject ON reputation_events(owner_kind, owner_id, subject_entity_id, created_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS social_evaluations (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          evaluator_entity_id TEXT NOT NULL DEFAULT '__world__', -- 谁在评价；__world__ 表示泛化社会观感
+          subject_entity_id TEXT NOT NULL,          -- 被评价主体
+          target_kind TEXT NOT NULL DEFAULT 'entity', -- entity/event/rumor/campaign/custom
+          target_id TEXT,                           -- 被评价对象 id；默认可等于主体
+          axis TEXT NOT NULL,                       -- 引用 evaluation_axis 槽
+          score REAL NOT NULL DEFAULT 0,            -- -100..100 的评价强度
+          reason TEXT,
+          visibility TEXT NOT NULL DEFAULT 'known',
+          truth_layer TEXT NOT NULL DEFAULT 'social_perception', -- social_perception/confirmed_fact/rumor_unverified
+          evidence_json TEXT NOT NULL DEFAULT '{}',
+          status TEXT NOT NULL DEFAULT 'active',
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_social_evaluations_subject ON social_evaluations(owner_kind, owner_id, subject_entity_id, created_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rumors (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          subject_entity_id TEXT,                   -- 流言主要指向的实体，可为空
+          target_kind TEXT NOT NULL DEFAULT 'entity',
+          target_id TEXT,
+          content TEXT NOT NULL,                    -- 流言原文或摘要；默认不作为事实
+          channel TEXT NOT NULL,                    -- 引用 rumor_channel 槽；如 tavern/group_chat/court
+          heat REAL NOT NULL DEFAULT 0.5,           -- 0..1 热度
+          credibility REAL NOT NULL DEFAULT 0.3,    -- 0..1 可信度，不等于事实性
+          sentiment TEXT,                           -- positive/neutral/negative/concern 等
+          visibility TEXT NOT NULL DEFAULT 'local',
+          truth_layer TEXT NOT NULL DEFAULT 'rumor_unverified',
+          status TEXT NOT NULL DEFAULT 'active',    -- active | faded | disproved | confirmed | archived
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rumors_owner_channel ON rumors(owner_kind, owner_id, channel, status, heat)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rumor_exposures (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          rumor_id TEXT NOT NULL,
+          entity_id TEXT NOT NULL,                  -- 听到/传播/压下流言的社会实体
+          exposure_state TEXT NOT NULL DEFAULT 'heard', -- heard/spread/suppressed/believed/rejected
+          reaction TEXT,
+          source TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(rumor_id, entity_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rumor_exposures_rumor ON rumor_exposures(owner_kind, owner_id, rumor_id, entity_id)"
     )

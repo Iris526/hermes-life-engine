@@ -2,12 +2,13 @@
 
 LifeEngine is an embedded, SQLite/sqlite-vec based Agent life runtime for Hermes.
 
-This release adds the **生成式内心生活 (LifeAuthor) layer** on top of the deterministic life substrate: authored dreams, companion follow-ups, cross-week campaigns, and reflection-driven opinions/self-narrative. Resource accounting, schedule execution, sleep, venture/recurring activity settlement, review, trace, and receipts remain deterministic and auditable.
+This release adds the **生成式内心生活 (LifeAuthor) layer** on top of the deterministic life substrate: authored dreams, companion follow-ups, cross-week campaigns, and reflection-driven opinions/self-narrative. It also includes a Social World slot layer for world-specific entities, affiliations, reputation, evaluations, and rumors. Resource accounting, schedule execution, sleep, venture/recurring activity settlement, review, trace, and receipts remain deterministic and auditable.
 
 - Plugin version: `0.18.0`
 - sqlite-vec: required by LifeEngine runtime
 - Integration: Hermes directory plugin; no core-loop fork
 - Authoring boundary: host-model calls are prepared outside SQLite write transactions; LifeOps only commits already-authored content or deterministic fallbacks.
+- Social World boundary: LifeEngine stores generic social slots and ledgers; concrete worldviews define what each entity kind, reputation axis, evaluation axis, and rumor channel means.
 
 ## Game UI / Observatory
 
@@ -70,7 +71,7 @@ Most humans only need:
 /life advanced                Show advanced commands
 ```
 
-Complex `life_*` tools remain available to the Agent.
+Complex `life_*` tools remain available to the Agent, including `life_social` for worldview social slots.
 
 ## Design docs
 

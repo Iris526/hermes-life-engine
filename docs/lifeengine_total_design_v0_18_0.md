@@ -226,3 +226,10 @@ RPG 感最大的杠杆：跨周长弧、阶段升级、自动铺事件。
 - `life_author.author()` 增加事务内保护：当 `conn.in_transaction` 为真时直接降级返回 `None`，不访问宿主模型。
 - 手动入口 `life_dream run`、`life_opinion reflect`、`life_autonomy run/plan`、`life_proactive evaluate`、`life_campaign seed` 均改为先预生成、再提交 LifeOps 或领域写入。
 - heartbeat partial 汇总纳入 v0.18 新子流程：`reflection`、`campaigns`、`companion`。
+
+## 实现状态补充（2026-06-22，社会世界槽位）
+
+- 新增 `social_world.py` 和 schema v61：`worldview_slot_definitions`、`world_entities`、`world_affiliations`、`social_edges`、`reputation_accounts/events`、`social_evaluations`、`rumors/exposures`。
+- 设计边界：这些表是“功能槽”，不写死势力/门派/公司/学院等具体世界观；具体设定通过 Canon `worldview.social_slots` 或 `life_social define_slot` 注册 entity kind、relationship axis、reputation axis、evaluation axis、rumor channel。
+- 写入边界：`life_social` 的所有 mutation 都转换为 `SOCIAL_*` LifeOps，复用 `_commit_ops_locked()` 的 savepoint 原子性、receipt 和 journal；读操作只查询领域表。
+- 上下文边界：`inner_life.social_world` 只注入紧凑声望、评价和流言摘要；`truth_layer="rumor_unverified"` 不得被当成确定事实。

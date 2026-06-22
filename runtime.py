@@ -750,6 +750,54 @@ class LifeEngineRuntime:
                 self.conn, owner_kind, owner_id, payload["activity_id"], canon_version=canon_version,
                 source=payload.get("source") or source,
                 **{k: v for k, v in payload.items() if k not in {"source", "activity_id"}})
+        elif op_type == "SOCIAL_DEFINE_SLOT":
+            from . import social_world as _social
+            return _social.upsert_slot_definition(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "SOCIAL_CREATE_ENTITY":
+            from . import social_world as _social
+            return _social.create_entity(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "SOCIAL_LINK_AFFILIATION":
+            from . import social_world as _social
+            return _social.link_affiliation(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "SOCIAL_SET_EDGE":
+            from . import social_world as _social
+            return _social.upsert_social_edge(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "SOCIAL_REPUTATION_EVENT":
+            from . import social_world as _social
+            return _social.apply_reputation_event(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "SOCIAL_RECORD_EVALUATION":
+            from . import social_world as _social
+            return _social.record_evaluation(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "SOCIAL_RECORD_RUMOR":
+            from . import social_world as _social
+            return _social.record_rumor(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "SOCIAL_RECORD_RUMOR_EXPOSURE":
+            from . import social_world as _social
+            return _social.record_rumor_exposure(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
         raise ValueError(f"Unknown LifeOp type: {op_type}")
 
     # ----- query / mutation convenience -----------------------------------
@@ -2458,6 +2506,117 @@ class LifeEngineRuntime:
             with transaction(self.conn):
                 return {"ok": True, "due": rel.notes_due_for_followup(self.conn, owner_id, user_id, now=payload.get("now"), limit=int(payload.get("limit", 5)))}
         raise ValueError(f"Unknown relationship action: {action}")
+
+    def social(self, action: str = "summary", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
+               session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
+        """管理世界观社会层的通用能力槽。
+
+        输入来自 `life_social` 工具或运行时测试；读操作直接查询社会世界表，写操作
+        全部转换成 LifeOps，确保实体、关系、声望、评价和流言都带 transaction、
+        receipt 与 journal。输出是对应领域对象或摘要。失败会由 LifeOps savepoint
+        回滚，避免半截社会事实。核心只保存槽与账本，不解释具体世界观规则。
+        """
+        from . import social_world as _social
+        action_l = str(action or "summary").strip().lower()
+        if action_l in {"summary", "state"}:
+            with transaction(self.conn):
+                return {"ok": True, "social_world": _social.summary(
+                    self.conn, owner_kind, owner_id,
+                    canon=get_active_canon(self.conn, owner_kind, owner_id),
+                )}
+        if action_l in {"slots", "slot_catalog"}:
+            with transaction(self.conn):
+                return {"ok": True, "slots": _social.list_slot_definitions(
+                    self.conn, owner_kind, owner_id, slot_type=payload.get("slot_type"),
+                    canon=get_active_canon(self.conn, owner_kind, owner_id),
+                )}
+        if action_l in {"define_slot", "slot", "configure_slot"}:
+            return self.commit_ops([{"type": "SOCIAL_DEFINE_SLOT", "payload": payload}], owner_kind, owner_id, "life_social_tool", session_id, turn_id)
+        if action_l in {"create_entity", "entity"}:
+            return self.commit_ops([{"type": "SOCIAL_CREATE_ENTITY", "payload": payload}], owner_kind, owner_id, "life_social_tool", session_id, turn_id)
+        if action_l in {"entities", "list_entities"}:
+            with transaction(self.conn):
+                return {"ok": True, "entities": _social.list_entities(
+                    self.conn, owner_kind, owner_id,
+                    entity_kind=payload.get("entity_kind"),
+                    status=payload.get("status", "active"),
+                    limit=int(payload.get("limit", 50)),
+                )}
+        if action_l in {"get_entity"}:
+            with transaction(self.conn):
+                entity = _social.get_entity(self.conn, payload["entity_id"])
+                if entity and (entity.get("owner_kind") != owner_kind or entity.get("owner_id") != owner_id):
+                    entity = {}
+                return {"ok": True, "entity": entity}
+        if action_l in {"link_affiliation", "affiliation"}:
+            return self.commit_ops([{"type": "SOCIAL_LINK_AFFILIATION", "payload": payload}], owner_kind, owner_id, "life_social_tool", session_id, turn_id)
+        if action_l in {"affiliations", "list_affiliations"}:
+            with transaction(self.conn):
+                return {"ok": True, "affiliations": _social.list_affiliations(
+                    self.conn, owner_kind, owner_id,
+                    entity_id=payload.get("entity_id"),
+                    limit=int(payload.get("limit", 50)),
+                )}
+        if action_l in {"set_edge", "edge", "relationship_edge"}:
+            return self.commit_ops([{"type": "SOCIAL_SET_EDGE", "payload": payload}], owner_kind, owner_id, "life_social_tool", session_id, turn_id)
+        if action_l in {"edges", "list_edges"}:
+            with transaction(self.conn):
+                return {"ok": True, "edges": _social.list_social_edges(
+                    self.conn, owner_kind, owner_id,
+                    entity_id=payload.get("entity_id"),
+                    axis=payload.get("axis"),
+                    limit=int(payload.get("limit", 50)),
+                )}
+        if action_l in {"reputation_event", "reputation", "rep"}:
+            return self.commit_ops([{"type": "SOCIAL_REPUTATION_EVENT", "payload": payload}], owner_kind, owner_id, "life_social_tool", session_id, turn_id)
+        if action_l in {"reputation_accounts", "reputations"}:
+            with transaction(self.conn):
+                return {"ok": True, "reputation": _social.list_reputation_accounts(
+                    self.conn, owner_kind, owner_id,
+                    subject_entity_id=payload.get("subject_entity_id"),
+                    audience_entity_id=payload.get("audience_entity_id"),
+                    axis=payload.get("axis"),
+                    limit=int(payload.get("limit", 50)),
+                )}
+        if action_l in {"reputation_events"}:
+            with transaction(self.conn):
+                return {"ok": True, "events": _social.list_reputation_events(
+                    self.conn, owner_kind, owner_id,
+                    subject_entity_id=payload.get("subject_entity_id"),
+                    limit=int(payload.get("limit", 50)),
+                )}
+        if action_l in {"evaluate", "evaluation"}:
+            return self.commit_ops([{"type": "SOCIAL_RECORD_EVALUATION", "payload": payload}], owner_kind, owner_id, "life_social_tool", session_id, turn_id)
+        if action_l in {"evaluations", "list_evaluations"}:
+            with transaction(self.conn):
+                return {"ok": True, "evaluations": _social.list_evaluations(
+                    self.conn, owner_kind, owner_id,
+                    subject_entity_id=payload.get("subject_entity_id"),
+                    evaluator_entity_id=payload.get("evaluator_entity_id"),
+                    limit=int(payload.get("limit", 50)),
+                )}
+        if action_l in {"rumor", "record_rumor"}:
+            return self.commit_ops([{"type": "SOCIAL_RECORD_RUMOR", "payload": payload}], owner_kind, owner_id, "life_social_tool", session_id, turn_id)
+        if action_l in {"rumors", "list_rumors"}:
+            with transaction(self.conn):
+                return {"ok": True, "rumors": _social.list_rumors(
+                    self.conn, owner_kind, owner_id,
+                    channel=payload.get("channel"),
+                    subject_entity_id=payload.get("subject_entity_id"),
+                    status=payload.get("status", "active"),
+                    limit=int(payload.get("limit", 50)),
+                )}
+        if action_l in {"rumor_exposure", "expose_rumor"}:
+            return self.commit_ops([{"type": "SOCIAL_RECORD_RUMOR_EXPOSURE", "payload": payload}], owner_kind, owner_id, "life_social_tool", session_id, turn_id)
+        if action_l in {"rumor_exposures", "list_rumor_exposures"}:
+            with transaction(self.conn):
+                return {"ok": True, "exposures": _social.list_rumor_exposures(
+                    self.conn, owner_kind, owner_id,
+                    rumor_id=payload.get("rumor_id"),
+                    entity_id=payload.get("entity_id"),
+                    limit=int(payload.get("limit", 50)),
+                )}
+        raise ValueError(f"Unknown social action: {action}")
 
     def campaign(self, action: str = "list", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
                  session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
@@ -4456,11 +4615,13 @@ class LifeEngineRuntime:
         }
 
     def _inner_life_capsule(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
-        """v0.18.0: the agent's inner life, surfaced for the turn — its current
-        self-narrative, the opinions it holds, the big thing it's in the middle
-        of (active campaign + phase), and anything it meant to ask the user about.
-        This is what makes v0.18's growth / arc / relationship actually show up in
-        conversation. Best-effort; private agent-life (omitted on work platforms)."""
+        """把 agent 当前可说出的内心与社会世界压缩进本轮上下文。
+
+        输入是 owner；输出包含自我叙事、观点、正在推进的 campaign、该回访的用户生活
+        事项，以及紧凑的社会世界摘要（声望/评价/流言）。调用方是
+        `build_context_for_turn()`；函数只读数据库，不写事实。失败逐段吞掉，避免上下文
+        注入影响主对话。
+        """
         cap: dict[str, Any] = {}
         try:
             from . import opinions as _opinions
@@ -4489,6 +4650,34 @@ class LifeEngineRuntime:
             due = _relationship.notes_due_for_followup(self.conn, owner_id, None, limit=1)
             if due:
                 cap["meant_to_ask_you_about"] = str(due[0].get("content") or "")[:160]
+        except Exception:
+            pass
+        try:
+            from . import social_world as _social
+            reps = _social.list_reputation_accounts(self.conn, owner_kind, owner_id, limit=4)
+            rumors = _social.list_rumors(self.conn, owner_kind, owner_id, limit=3)
+            evaluations = _social.list_evaluations(self.conn, owner_kind, owner_id, limit=3)
+            compact_social: dict[str, Any] = {}
+            if reps:
+                compact_social["reputation"] = [
+                    {"subject": r.get("subject_entity_id"), "audience": r.get("audience_entity_id"),
+                     "axis": r.get("axis"), "value": r.get("value")}
+                    for r in reps
+                ]
+            if evaluations:
+                compact_social["evaluations"] = [
+                    {"subject": e.get("subject_entity_id"), "axis": e.get("axis"),
+                     "score": e.get("score"), "truth_layer": e.get("truth_layer")}
+                    for e in evaluations
+                ]
+            if rumors:
+                compact_social["rumors"] = [
+                    {"content": (r.get("content") or "")[:120], "channel": r.get("channel"),
+                     "truth_layer": r.get("truth_layer"), "heat": r.get("heat")}
+                    for r in rumors
+                ]
+            if compact_social:
+                cap["social_world"] = compact_social
         except Exception:
             pass
         return cap
@@ -4561,6 +4750,9 @@ class LifeEngineRuntime:
                 persona_capsule = _safe(lambda: persona.render_persona_capsule(persona.ensure_persona(self.conn, owner_kind, owner_id, canon)) if owner_kind == "agent" else {}, {})
                 mood_capsule = _safe(lambda: (lambda m: {"value": m, "band": emotion.mood_band(m), "note": emotion.mood_bias(m).get("note")})(emotion.current_mood(self.conn, owner_kind, owner_id)) if owner_kind == "agent" else {}, {})
                 inner_life = _safe(lambda: self._inner_life_capsule(owner_kind, owner_id) if owner_kind == "agent" else {}, {})
+                social_world = inner_life.get("social_world") if isinstance(inner_life, dict) else {}
+                if social_world:
+                    inner_life = {k: v for k, v in inner_life.items() if k != "social_world"}
                 context_data = {
                     "owner_scope": scope.__dict__,
                     "engine_state": control["engine_state"],
@@ -4569,6 +4761,7 @@ class LifeEngineRuntime:
                     "persona": persona_capsule,
                     "mood": mood_capsule,
                     "inner_life": inner_life,
+                    "social_world": social_world or {},
                     "canon_brief": {"identity": (canon or {}).get("identity"), "worldview": (canon or {}).get("worldview"), "truth_sources": (canon or {}).get("truth_sources")},
                     "realtime": get_realtime_state(self.conn, owner_kind, owner_id),
                     "resources": [{"resource_key": a["resource_key"], "current_value": a["current_value"], "unit": a.get("unit"), "state": a.get("state")} for a in (resources.get("accounts", [])[:20])],

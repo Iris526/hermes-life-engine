@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from ..social_world import WORLD_AUDIENCE, slots_from_canon
+
 
 def _now() -> _dt.datetime:
     return _dt.datetime.now(_dt.timezone.utc)
@@ -127,7 +129,7 @@ class LifeEngineReader:
     def owners(self) -> list[dict[str, str]]:
         owners: set[tuple[str, str]] = set()
         with self._connect() as conn:
-            for table in ["engine_control", "events", "schedule_blocks", "agent_realtime_state", "resource_accounts", "memories"]:
+            for table in ["engine_control", "events", "schedule_blocks", "agent_realtime_state", "resource_accounts", "memories", "world_entities"]:
                 if self._table_exists(conn, table):
                     try:
                         for r in conn.execute(f"SELECT DISTINCT owner_kind, owner_id FROM {table} WHERE owner_kind IS NOT NULL AND owner_id IS NOT NULL LIMIT 200"):
@@ -230,6 +232,220 @@ class LifeEngineReader:
                 "role": ident.get("role") or ident.get("title") or ident.get("occupation"),
                 "gender": ident.get("gender"),
                 "age": ident.get("age"),
+            }
+
+    def social_world(self, owner_kind: str, owner_id: str, limit: int = 80) -> dict[str, Any]:
+        """Worldview-defined social layer: entities, factions, reputation, evaluations and rumors."""
+        empty = {
+            "slots": [],
+            "entities": [],
+            "affiliations": [],
+            "edges": [],
+            "reputation": [],
+            "reputation_events": [],
+            "evaluations": [],
+            "rumors": [],
+            "rumor_exposures": [],
+            "counts": {
+                "slots": 0,
+                "entities": 0,
+                "affiliations": 0,
+                "edges": 0,
+                "reputation": 0,
+                "evaluations": 0,
+                "rumors": 0,
+            },
+        }
+        with self._connect() as conn:
+            canon = {}
+            if self._table_exists(conn, "canon_versions"):
+                row = self._first(
+                    conn,
+                    "SELECT data_json FROM canon_versions WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY version DESC LIMIT 1",
+                    (owner_kind, owner_id),
+                )
+                canon = _safe_json((row or {}).get("data_json"), {}) or {}
+
+            merged_slots: dict[tuple[str, str], dict[str, Any]] = {}
+            for slot in slots_from_canon(canon):
+                merged_slots[(slot.get("slot_type"), slot.get("key"))] = slot
+            if self._table_exists(conn, "worldview_slot_definitions"):
+                rows = self._all(
+                    conn,
+                    "SELECT * FROM worldview_slot_definitions WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY slot_type, key LIMIT ?",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for slot in rows:
+                    slot["config"] = _safe_json(slot.pop("config_json", None), {})
+                    slot.setdefault("origin", "db")
+                    merged_slots[(slot.get("slot_type"), slot.get("key"))] = slot
+            slots = list(merged_slots.values())
+
+            if not self._table_exists(conn, "world_entities"):
+                empty["slots"] = slots
+                empty["counts"]["slots"] = len(slots)
+                return empty
+
+            entities = self._all(
+                conn,
+                "SELECT * FROM world_entities WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+                (owner_kind, owner_id, int(limit)),
+            )
+            for entity in entities:
+                entity["traits"] = _safe_json(entity.pop("traits_json", None), {})
+                entity["metadata"] = _safe_json(entity.pop("metadata_json", None), {})
+
+            entity_names = {str(e.get("id")): str(e.get("display_name") or e.get("id")) for e in entities if e.get("id")}
+
+            def _label(entity_id: Any) -> str:
+                key = str(entity_id or "")
+                if key == WORLD_AUDIENCE:
+                    return "世界/默认圈层"
+                return entity_names.get(key) or key
+
+            affiliations: list[dict[str, Any]] = []
+            if self._table_exists(conn, "world_affiliations"):
+                affiliations = self._all(
+                    conn,
+                    """SELECT a.*, s.display_name AS subject_name, s.entity_kind AS subject_kind,
+                              f.display_name AS faction_name, f.entity_kind AS faction_kind
+                       FROM world_affiliations a
+                       LEFT JOIN world_entities s ON s.id=a.subject_entity_id
+                       LEFT JOIN world_entities f ON f.id=a.faction_entity_id
+                       WHERE a.owner_kind=? AND a.owner_id=? AND a.status='active'
+                       ORDER BY a.updated_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for item in affiliations:
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+                    item["subject_name"] = item.get("subject_name") or _label(item.get("subject_entity_id"))
+                    item["faction_name"] = item.get("faction_name") or _label(item.get("faction_entity_id"))
+
+            edges: list[dict[str, Any]] = []
+            if self._table_exists(conn, "social_edges"):
+                edges = self._all(
+                    conn,
+                    """SELECT e.*, s.display_name AS source_name, s.entity_kind AS source_kind,
+                              t.display_name AS target_name, t.entity_kind AS target_kind
+                       FROM social_edges e
+                       LEFT JOIN world_entities s ON s.id=e.source_entity_id
+                       LEFT JOIN world_entities t ON t.id=e.target_entity_id
+                       WHERE e.owner_kind=? AND e.owner_id=? AND e.status='active'
+                       ORDER BY ABS(e.value) DESC, e.updated_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for item in edges:
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+                    item["source_name"] = item.get("source_name") or _label(item.get("source_entity_id"))
+                    item["target_name"] = item.get("target_name") or _label(item.get("target_entity_id"))
+
+            reputation: list[dict[str, Any]] = []
+            if self._table_exists(conn, "reputation_accounts"):
+                reputation = self._all(
+                    conn,
+                    """SELECT r.*, s.display_name AS subject_name, s.entity_kind AS subject_kind,
+                              a.display_name AS audience_name, a.entity_kind AS audience_kind
+                       FROM reputation_accounts r
+                       LEFT JOIN world_entities s ON s.id=r.subject_entity_id
+                       LEFT JOIN world_entities a ON a.id=r.audience_entity_id
+                       WHERE r.owner_kind=? AND r.owner_id=? AND r.status='active'
+                       ORDER BY ABS(r.value) DESC, r.updated_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for item in reputation:
+                    item["subject_name"] = item.get("subject_name") or _label(item.get("subject_entity_id"))
+                    item["audience_name"] = item.get("audience_name") or _label(item.get("audience_entity_id"))
+
+            reputation_events: list[dict[str, Any]] = []
+            if self._table_exists(conn, "reputation_events"):
+                reputation_events = self._all(
+                    conn,
+                    """SELECT ev.*, s.display_name AS subject_name, a.display_name AS audience_name
+                       FROM reputation_events ev
+                       LEFT JOIN world_entities s ON s.id=ev.subject_entity_id
+                       LEFT JOIN world_entities a ON a.id=ev.audience_entity_id
+                       WHERE ev.owner_kind=? AND ev.owner_id=?
+                       ORDER BY ev.created_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, min(int(limit), 30)),
+                )
+                for item in reputation_events:
+                    item["subject_name"] = item.get("subject_name") or _label(item.get("subject_entity_id"))
+                    item["audience_name"] = item.get("audience_name") or _label(item.get("audience_entity_id"))
+
+            evaluations: list[dict[str, Any]] = []
+            if self._table_exists(conn, "social_evaluations"):
+                evaluations = self._all(
+                    conn,
+                    """SELECT ev.*, e.display_name AS evaluator_name, s.display_name AS subject_name
+                       FROM social_evaluations ev
+                       LEFT JOIN world_entities e ON e.id=ev.evaluator_entity_id
+                       LEFT JOIN world_entities s ON s.id=ev.subject_entity_id
+                       WHERE ev.owner_kind=? AND ev.owner_id=? AND ev.status='active'
+                       ORDER BY ev.created_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for item in evaluations:
+                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+                    item["evaluator_name"] = item.get("evaluator_name") or _label(item.get("evaluator_entity_id"))
+                    item["subject_name"] = item.get("subject_name") or _label(item.get("subject_entity_id"))
+
+            rumors: list[dict[str, Any]] = []
+            exposure_counts: dict[str, int] = {}
+            if self._table_exists(conn, "rumor_exposures"):
+                for row in self._all(
+                    conn,
+                    "SELECT rumor_id, COUNT(*) AS exposure_count FROM rumor_exposures WHERE owner_kind=? AND owner_id=? GROUP BY rumor_id",
+                    (owner_kind, owner_id),
+                ):
+                    exposure_counts[str(row.get("rumor_id"))] = int(row.get("exposure_count") or 0)
+            if self._table_exists(conn, "rumors"):
+                rumors = self._all(
+                    conn,
+                    """SELECT r.*, s.display_name AS subject_name, s.entity_kind AS subject_kind
+                       FROM rumors r
+                       LEFT JOIN world_entities s ON s.id=r.subject_entity_id
+                       WHERE r.owner_kind=? AND r.owner_id=? AND r.status='active'
+                       ORDER BY r.heat DESC, r.updated_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, int(limit)),
+                )
+                for item in rumors:
+                    item["subject_name"] = item.get("subject_name") or _label(item.get("subject_entity_id"))
+                    item["exposure_count"] = exposure_counts.get(str(item.get("id")), 0)
+
+            rumor_exposures: list[dict[str, Any]] = []
+            if self._table_exists(conn, "rumor_exposures"):
+                rumor_exposures = self._all(
+                    conn,
+                    """SELECT x.*, e.display_name AS entity_name, r.content AS rumor_content
+                       FROM rumor_exposures x
+                       LEFT JOIN world_entities e ON e.id=x.entity_id
+                       LEFT JOIN rumors r ON r.id=x.rumor_id
+                       WHERE x.owner_kind=? AND x.owner_id=?
+                       ORDER BY x.updated_at DESC LIMIT ?""",
+                    (owner_kind, owner_id, min(int(limit), 40)),
+                )
+                for item in rumor_exposures:
+                    item["entity_name"] = item.get("entity_name") or _label(item.get("entity_id"))
+
+            return {
+                "slots": slots,
+                "entities": entities,
+                "affiliations": affiliations,
+                "edges": edges,
+                "reputation": reputation,
+                "reputation_events": reputation_events,
+                "evaluations": evaluations,
+                "rumors": rumors,
+                "rumor_exposures": rumor_exposures,
+                "counts": {
+                    "slots": len(slots),
+                    "entities": len(entities),
+                    "affiliations": len(affiliations),
+                    "edges": len(edges),
+                    "reputation": len(reputation),
+                    "evaluations": len(evaluations),
+                    "rumors": len(rumors),
+                },
             }
 
     def schedule(self, owner_kind: str, owner_id: str, period: str = "today", date: str | None = None, include_completed: bool = True, limit: int = 500) -> dict[str, Any]:
@@ -855,6 +1071,7 @@ class LifeEngineReader:
         campaigns = self.campaigns(owner_kind, owner_id, limit=12)
         inner_life = self.inner_life(owner_kind, owner_id)
         relationship = self.relationship_notes(owner_kind, owner_id, limit=20)
+        social_world = self.social_world(owner_kind, owner_id, limit=80)
         sprite = map_avatar_state(state, current, sleep_day, review, delayed)
         workspace = self.workspace_docs(limit=20, include_content=False)
         payload = {
@@ -876,6 +1093,7 @@ class LifeEngineReader:
             "campaigns": campaigns,
             "inner_life": inner_life,
             "relationship": relationship,
+            "social_world": social_world,
             "workspace": workspace,
             "doctor": self.doctor_latest(owner_kind, owner_id),
             "persona": self.persona(owner_kind, owner_id),

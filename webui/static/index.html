@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>归明观 · 废土观星台</title>
-<link rel="stylesheet" href="/static/styles.css?v=20260618-rename">
+<link rel="stylesheet" href="/static/styles.css?v=20260622-social">
 </head>
 <body>
 <div id="app">
@@ -261,6 +261,47 @@
         </div>
       </div>
 
+      <!-- 社会世界面板 -->
+      <div id="overlay-social" class="overlay-panel">
+        <div class="panel-full-header">
+          <span class="panel-title">🌐 社会·声望</span>
+          <button class="panel-close" data-close>✕</button>
+        </div>
+        <div class="panel-full-body social-body">
+          <div id="social-overview" class="social-overview"></div>
+          <div class="social-grid">
+            <section class="social-section">
+              <h3 class="section-label">世界观槽位</h3>
+              <div id="social-slots" class="social-chip-list"></div>
+            </section>
+            <section class="social-section">
+              <h3 class="section-label">实体 / 势力</h3>
+              <div id="social-entities" class="social-card-list"></div>
+            </section>
+            <section class="social-section">
+              <h3 class="section-label">归属</h3>
+              <div id="social-affiliations" class="social-card-list compact"></div>
+            </section>
+            <section class="social-section">
+              <h3 class="section-label">关系</h3>
+              <div id="social-edges" class="social-card-list compact"></div>
+            </section>
+            <section class="social-section">
+              <h3 class="section-label">声望</h3>
+              <div id="social-reputation" class="social-card-list"></div>
+            </section>
+            <section class="social-section">
+              <h3 class="section-label">评价</h3>
+              <div id="social-evaluations" class="social-card-list"></div>
+            </section>
+            <section class="social-section wide">
+              <h3 class="section-label">流言</h3>
+              <div id="social-rumors" class="social-card-list"></div>
+            </section>
+          </div>
+        </div>
+      </div>
+
       <!-- 心相 / 内境面板 -->
       <div id="overlay-innerlife" class="overlay-panel">
         <div class="panel-full-header">
@@ -342,6 +383,9 @@
       <button class="hotbar-btn" data-overlay="campaigns" title="事变·资料片">
         <span class="hotbar-icon">🗺️</span><span class="hotbar-label">事变</span>
       </button>
+      <button class="hotbar-btn" data-overlay="social" title="社会·声望">
+        <span class="hotbar-icon">🌐</span><span class="hotbar-label">社会</span>
+      </button>
       <button class="hotbar-btn" data-overlay="innerlife" title="心相·内境">
         <span class="hotbar-icon">🌱</span><span class="hotbar-label">心相</span>
       </button>
@@ -361,6 +405,6 @@
 
   </div>
 </div>
-<script src="/static/app.js?v=20260618-rename"></script>
+<script src="/static/app.js?v=20260622-social"></script>
 </body>
 </html>
