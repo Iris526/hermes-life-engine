@@ -284,6 +284,16 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
     if feedback and not work_compact:
         capsule["internal_feedback"] = feedback[:2]
         capsule["internal_final_gate_feedback"] = feedback[:2]
+    pending_dream_share = data.get("pending_dream_share") or {}
+    if pending_dream_share and not work_compact:
+        capsule["pending_dream_share"] = {
+            "instruction": "This is the first reply after waking; naturally include share_text once, then do not repeat it.",
+            "dream_run_id": pending_dream_share.get("dream_run_id"),
+            "dream_entry_id": pending_dream_share.get("dream_entry_id"),
+            "share_text": pending_dream_share.get("share_text"),
+            "truth_layer": pending_dream_share.get("truth_layer") or "dream_symbolic",
+            "share_status": "marked_shared_in_first_reply",
+        }
     for domain in domains:
         capsule.update(_section_for_domain(domain, data))
     if policy.mode in {"balanced", "debug"} and not work_compact:
@@ -325,6 +335,8 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
             if feedback and not work_compact:
                 minimal_capsule["internal_final_gate_feedback"] = feedback[:2]
                 minimal_capsule["internal_feedback"] = feedback[:2]
+            if pending_dream_share and not work_compact:
+                minimal_capsule["pending_dream_share"] = capsule.get("pending_dream_share")
             text = "\n<LIFEENGINE_CONTEXT mode=\"progressive_slim\">\n" + json.dumps(minimal_capsule, ensure_ascii=False, indent=2, sort_keys=True) + "\n</LIFEENGINE_CONTEXT>"
             capsule = minimal_capsule
     meta = {

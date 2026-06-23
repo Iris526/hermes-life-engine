@@ -73,7 +73,7 @@ DEFAULT_POLICY: dict[str, Any] = {
         "audit_on_dream": True,
         "repair_policy": "manual",
         "share_on_wake": True,
-        "share_mode": "pending_intent",
+        "share_mode": "first_reply",
         "auto_send": False,
         "truth_layer": "dream_symbolic",
         "share_template": "我刚醒，梦到了一点和最近生活有关的东西：{summary}",
@@ -93,7 +93,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "profile": "gentle",
         "sleep": {"target_sleep_minutes": 480, "max_sleep_delay_minutes": 90, "nap": {"trigger_recovery_pressure": 50, "default_minutes": 35}},
         "reply": {"gate_mode": "advisory", "sleeping_message_policy": "prefer_defer", "uninterruptible_policy": "prefer_defer"},
-        "dream": {"share_mode": "pending_intent", "auto_send": False},
+        "dream": {"share_mode": "first_reply", "auto_send": False},
     },
     "night_owl": {
         "profile": "night_owl",
@@ -104,7 +104,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "profile": "workday",
         "sleep": {"bedtime_window": ["22:30", "00:00"], "wake_window": ["06:30", "07:30"], "target_sleep_minutes": 450, "alarm_policy": "prefer_alarm"},
         "reply": {"gate_mode": "advisory", "leases": {"uninterruptible_minutes": 90}},
-        "dream": {"share_on_wake": True, "share_mode": "pending_intent"},
+        "dream": {"share_on_wake": True, "share_mode": "first_reply"},
     },
     "private": {
         "profile": "private",

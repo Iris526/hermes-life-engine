@@ -42,7 +42,7 @@ def test_v0113_schema_and_dream_tables(tmp_path):
         rt.close()
 
 
-def test_manual_dream_run_after_core_sleep_creates_entry_memory_and_proactive_intent(tmp_path):
+def test_manual_dream_run_after_core_sleep_creates_entry_memory_and_first_reply_share(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
@@ -58,9 +58,18 @@ def test_manual_dream_run_after_core_sleep_creates_entry_memory_and_proactive_in
         assert ev["truth_layer"] == "dream_symbolic"
         status = rt.dream("status")
         assert status["recent_entries"][0]["truth_layer"] == "dream_symbolic"
-        assert status["recent_runs"][0]["proactive_intent_id"]
+        assert status["recent_runs"][0]["share_status"] == "first_reply_pending"
+        assert not status["recent_runs"][0].get("proactive_intent_id")
         proactive = rt.proactive("list")
-        assert any(i["intent_type"] == "self_reflection_share" for i in proactive["intents"])
+        assert not any(i["intent_type"] == "self_reflection_share" for i in proactive["intents"])
+
+        ctx = rt.build_context_for_turn("qq-session", "turn-1", "明灯醒了吗", sender_id="ringo", platform="qqbot")
+        assert "pending_dream_share" in ctx
+        assert status["recent_entries"][0]["share_text"] in ctx
+        assert rt.dream("status")["recent_runs"][0]["share_status"] == "shared_in_first_reply"
+
+        ctx2 = rt.build_context_for_turn("qq-session", "turn-2", "再说一遍", sender_id="ringo", platform="qqbot")
+        assert "pending_dream_share" not in ctx2
     finally:
         rt.close()
 

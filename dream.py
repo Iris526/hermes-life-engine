@@ -127,6 +127,42 @@ def get_dream_entry(conn, dream_entry_id: str) -> dict[str, Any]:
     return _decode_row(row)
 
 
+def consume_first_reply_dream_share(conn, owner_kind: str, owner_id: str, *,
+                                    source: str = "context_injection") -> dict[str, Any] | None:
+    """Return the latest wake dream that should be shared in the next reply, once.
+
+    Dream sharing is a reply-time affordance, not a proactive push: after waking,
+    a dream can be folded naturally into the first user-facing answer.  We mark
+    it consumed while building that turn's context so later turns do not repeat
+    the same dream.
+    """
+    row = conn.execute(
+        """SELECT r.id AS dream_run_id, r.sleep_session_id, r.created_at AS run_created_at,
+                  e.id AS dream_entry_id, e.share_text, e.summary, e.truth_layer
+             FROM dream_runs r
+             JOIN dream_entries e ON e.id=r.created_entry_id
+            WHERE r.owner_kind=? AND r.owner_id=?
+              AND r.status='completed'
+              AND r.share_status='first_reply_pending'
+              AND COALESCE(e.privacy, 'safe_to_share')='safe_to_share'
+            ORDER BY COALESCE(r.completed_at, r.created_at) DESC
+            LIMIT 1""",
+        (owner_kind, owner_id),
+    ).fetchone()
+    if not row:
+        return None
+    out = dict(row)
+    conn.execute(
+        "UPDATE dream_runs SET share_status='shared_in_first_reply', updated_at=datetime('now') WHERE id=?",
+        (out["dream_run_id"],),
+    )
+    append_journal(conn, owner_kind, owner_id, "dream_shared_in_first_reply", {
+        "dream_run_id": out["dream_run_id"],
+        "dream_entry_id": out["dream_entry_id"],
+    }, source)
+    return out
+
+
 def _insert_finding(conn, owner_kind: str, owner_id: str, dream_run_id: str, *, finding_type: str, severity: str,
                     message: str, target_kind: str | None = None, target_id: str | None = None,
                     proposed_ops: list[dict[str, Any]] | None = None, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -522,7 +558,11 @@ def run_dream_cycle(conn, owner_kind: str, owner_id: str, *, sleep_session_id: s
         _vivid = False
 
     proactive_intent = None
-    if create_share_intent and owner_kind == "agent":
+    share_mode = str(policy.get("share_mode", "first_reply") or "first_reply")
+    should_share = bool(policy.get("share_on_wake", True))
+    if should_share and share_mode == "first_reply":
+        conn.execute("UPDATE dream_runs SET share_status='first_reply_pending' WHERE id=?", (run_id,))
+    elif create_share_intent and owner_kind == "agent" and share_mode not in {"self_journal", "first_reply"}:
         proactive_intent = create_proactive_intent(
             conn, owner_id,
             target_type="user", target_id=target_user_id,

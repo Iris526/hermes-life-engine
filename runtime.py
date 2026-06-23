@@ -70,6 +70,7 @@ from .doctor import run_doctor
 from .dream import (
     author_dream_preview,
     collect_open_dream_repair_ops,
+    consume_first_reply_dream_share,
     create_dream_entry,
     dream_status,
     get_dream_entry,
@@ -5107,6 +5108,11 @@ class LifeEngineRuntime:
                     except Exception:
                         pass
                 dreams = _safe(lambda: dream_status(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}, {})
+                pending_dream_share = None
+                if owner_kind == "agent" and str(platform or "").strip().lower() not in {"feishu", "lark", "dingtalk", "wecom", "slack", "teams"}:
+                    pending_dream_share = _safe(lambda: consume_first_reply_dream_share(self.conn, owner_kind, owner_id, source="context_first_reply"), None)
+                    if pending_dream_share:
+                        dreams = _safe(lambda: dream_status(self.conn, owner_kind, owner_id), dreams or {})
                 srd_policy = _safe(lambda: get_srd_policy(self.conn, owner_kind, owner_id) if owner_kind == "agent" else {}, {})
                 final_gate_feedback = _safe(lambda: consume_final_gate_feedback(self.conn, owner_kind, owner_id, limit=3), [])
                 required = _safe(lambda: check_required_settings(self.conn, owner_kind, owner_id, canon, persist=False) if owner_kind == "agent" else {"ok": True}, {"ok": True})
@@ -5158,6 +5164,7 @@ class LifeEngineRuntime:
                     "sleep": sleep or {},
                     "reply_gate": reply_gate or {},
                     "dreams": dreams or {},
+                    "pending_dream_share": pending_dream_share or {},
                     "srd_policy": srd_policy or {},
                     "final_gate_feedback": final_gate_feedback or [],
                     # Compact summary only: the full items/missing lists (with
