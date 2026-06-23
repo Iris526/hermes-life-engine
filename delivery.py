@@ -91,10 +91,12 @@ def _due_outbox(conn, agent_id: str, limit: int) -> list[dict[str, Any]]:
     ``_claim_due_outbox`` 的原子占用，避免多个 worker 同时外发同一条消息。
     """
     rows = conn.execute(
-        """SELECT * FROM proactive_outbox
-              WHERE agent_id=? AND status='queued'
-                AND (send_after IS NULL OR send_after <= datetime('now'))
-              ORDER BY created_at ASC
+        """SELECT o.* FROM proactive_outbox o
+              LEFT JOIN proactive_intents i ON i.id=o.intent_id
+              WHERE o.agent_id=? AND o.status='queued'
+                AND (o.send_after IS NULL OR o.send_after <= datetime('now'))
+                AND (o.intent_id IS NULL OR i.status IN ('generated','queued'))
+              ORDER BY o.created_at ASC
               LIMIT ?""",
         (agent_id, int(limit)),
     ).fetchall()
@@ -182,10 +184,12 @@ def _claim_due_outbox(conn, agent_id: str, limit: int, channel_override: str | N
     claimed: list[dict[str, Any]] = []
     with transaction(conn):
         rows = conn.execute(
-            """SELECT * FROM proactive_outbox
-                  WHERE agent_id=? AND status='queued'
-                    AND (send_after IS NULL OR send_after <= datetime('now'))
-                  ORDER BY created_at ASC
+            """SELECT o.* FROM proactive_outbox o
+                  LEFT JOIN proactive_intents i ON i.id=o.intent_id
+                  WHERE o.agent_id=? AND o.status='queued'
+                    AND (o.send_after IS NULL OR o.send_after <= datetime('now'))
+                    AND (o.intent_id IS NULL OR i.status IN ('generated','queued'))
+                  ORDER BY o.created_at ASC
                   LIMIT ?""",
             (agent_id, int(limit)),
         ).fetchall()

@@ -581,6 +581,12 @@ def suppress_intent(conn, agent_id: str, intent_id: str, reason: str = "manual s
         "UPDATE proactive_intents SET status='suppressed', suppressed_at=datetime('now'), suppression_reason=?, updated_at=datetime('now') WHERE id=?",
         (reason, intent_id),
     )
+    conn.execute(
+        """UPDATE proactive_outbox
+              SET status='suppressed', suppression_reason=?, error=NULL
+            WHERE intent_id=? AND status IN ('drafted','queued')""",
+        (reason, intent_id),
+    )
     _update_state_pending(conn, agent_id, user_id, intent_id, "suppressed_by_policy")
     append_journal(conn, "agent", agent_id, "proactive_intent_suppressed", {"intent_id": intent_id, "reason": reason}, "proactive")
     return get_proactive_intent(conn, intent_id)

@@ -260,3 +260,45 @@ def test_doctor_errors_when_queued_outbox_has_no_delivery_adapter(tmp_path, monk
         assert checks["proactive_delivery"]["config"]["enabled"] is False
     finally:
         rt.close()
+
+
+def test_suppress_intent_suppresses_existing_queued_outbox(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="这条被撤回的梦不应该再发。")
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        intent_id = outbox[outbox_id]["intent_id"]
+
+        rt.proactive("suppress", intent_id=intent_id, reason="用户不想收到这类主动消息")
+
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        assert outbox[outbox_id]["status"] == "suppressed"
+        assert outbox[outbox_id]["suppression_reason"] == "用户不想收到这类主动消息"
+    finally:
+        rt.close()
+
+
+def test_delivery_skips_queued_outbox_when_intent_is_suppressed(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    sink = tmp_path / "should_not_exist.json"
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="这条消息被旧数据留在 queued，但 intent 已终止。")
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        intent_id = outbox[outbox_id]["intent_id"]
+        rt.conn.execute("UPDATE proactive_intents SET status='suppressed' WHERE id=?", (intent_id,))
+
+        result = rt.proactive(
+            "deliver",
+            delivery_mode="command",
+            delivery_command=_success_command(tmp_path, sink),
+        )
+
+        assert result["status"] == "noop"
+        assert result["candidate_count"] == 0
+        assert not sink.exists()
+    finally:
+        rt.close()
