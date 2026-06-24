@@ -3500,6 +3500,19 @@ class LifeEngineRuntime:
                 output = plan_recovery_sleep_if_needed(self.conn, owner_kind, owner_id, threshold=int(payload.get("threshold", 60)), duration_minutes=int(payload.get("duration_minutes", 30)), source="life_review_action")
             elif app_type == "direct" and plan.get("tool") == "life_proactive":
                 output = cleanup_proactive_lifecycle(self.conn, owner_id, limit=int(payload.get("limit", 100)))
+            elif app_type == "direct" and plan.get("tool") == "life_social" and plan.get("action") == "retry_projection":
+                if plan.get("projection_kind") == "venture_sale_settled":
+                    from .social_projector import project_venture_sale_settlement
+                    output = project_venture_sale_settlement(
+                        self.conn, owner_kind, owner_id, str(plan.get("occurrence_id") or ""),
+                        source="life_review_action",
+                    )
+                else:
+                    from .social_projector import project_completed_event
+                    output = project_completed_event(
+                        self.conn, owner_kind, owner_id, str(plan.get("event_id") or ""),
+                        source="life_review_action",
+                    )
             elif app_type == "dream_repair":
                 repair_plan = collect_open_dream_repair_ops(self.conn, owner_kind, owner_id, dream_run_id=plan.get("dream_run_id"), finding_ids=[plan.get("finding_id")] if plan.get("finding_id") else None, limit=50)
                 ops = repair_plan.get("ops") or []

@@ -167,7 +167,7 @@ def test_sale_settled_occurrence_projects_once(tmp_path):
 
 
 def test_event_completion_survives_social_projection_failure_and_can_retry(tmp_path):
-    """社交投影失败不应阻断事件完成；失败投影回滚后可按 event_id 补投影。"""
+    """社交投影失败不应阻断事件完成；review 应给出可执行补投影入口。"""
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
@@ -198,10 +198,27 @@ def test_event_completion_survives_social_projection_failure_and_can_retry(tmp_p
         assert _count(rt, "social_requests") == 0
         assert _count(rt, "rumors") == 0
 
-        retry = project_completed_event(rt.conn, "agent", "default-agent", ev["id"], summary="卖符顺利，香客愿意再来。")
-        assert retry["projected"] is True
+        review = rt.review("summary")
+        items = [i for i in review["items"] if i["item_type"] == "social_projection_failed"]
+        assert items
+        assert review["summary"]["social_projection"]["open_failures"] == 1
+        assert "社会投影：待补投影 1 条" in review["rendered"]
+        assert items[0]["action_hint"]["action"] == "retry_projection"
+        assert items[0]["action_hint"]["event_id"] == ev["id"]
+
+        plan = rt.review("preview_action", item_id=items[0]["id"])
+        assert plan["plan"]["tool"] == "life_social"
+        assert plan["plan"]["action"] == "retry_projection"
+
+        retry = rt.review("apply", item_id=items[0]["id"])
+        assert retry["ok"] is True
+        assert retry["applied"] is True
+        assert retry["output"]["projected"] is True
         assert _count(rt, "social_projection_runs") == 1
         assert rt.social("requests", request_type="wish")["requests"]
+
+        repaired_review = rt.review("summary")
+        assert not [i for i in repaired_review["items"] if i["item_type"] == "social_projection_failed"]
     finally:
         rt.close()
 

@@ -215,6 +215,75 @@ def _proactive_outbox_message(outbox: dict[str, Any]) -> tuple[str, str, dict[st
     return "主动消息在 outbox 等待处理", preview, hint
 
 
+def _open_social_projection_failures(conn, owner_kind: str, owner_id: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Return recent retryable social projection failures that still lack an applied run."""
+    rows = conn.execute(
+        """SELECT * FROM audit_log
+             WHERE owner_kind=? AND owner_id=? AND audit_type='social_projection_failed'
+             ORDER BY created_at DESC LIMIT ?""",
+        (owner_kind, owner_id, max(int(limit) * 4, int(limit))),
+    ).fetchall()
+    failures: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        d = dict(row)
+        payload = loads(d.get("payload_json"), {}) or {}
+        kind = str(payload.get("projection_kind") or "").strip()
+        source_id = str(payload.get("event_id") or payload.get("occurrence_id") or "").strip()
+        if kind not in {"event_completed", "venture_sale_settled"} or not source_id:
+            continue
+        key = (kind, source_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        if kind == "event_completed":
+            applied = conn.execute(
+                """SELECT 1 FROM social_projection_runs
+                   WHERE owner_kind=? AND owner_id=? AND projection_kind=?
+                     AND event_id=? AND status='applied' LIMIT 1""",
+                (owner_kind, owner_id, kind, source_id),
+            ).fetchone()
+        else:
+            applied = conn.execute(
+                """SELECT 1 FROM social_projection_runs
+                   WHERE owner_kind=? AND owner_id=? AND projection_kind=?
+                     AND occurrence_id=? AND status='applied' LIMIT 1""",
+                (owner_kind, owner_id, kind, source_id),
+            ).fetchone()
+        if applied:
+            continue
+        d["payload"] = payload
+        failures.append(d)
+        if len(failures) >= int(limit):
+            break
+    return failures
+
+
+def _social_projection_failure_message(audit: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    payload = audit.get("payload") or loads(audit.get("payload_json"), {}) or {}
+    kind = str(payload.get("projection_kind") or "")
+    event_id = payload.get("event_id")
+    occurrence_id = payload.get("occurrence_id")
+    if kind == "venture_sale_settled":
+        target_label = f"occurrence {occurrence_id}"
+        retry_payload = {"projection_kind": kind, "occurrence_id": occurrence_id}
+    else:
+        target_label = f"event {event_id}"
+        retry_payload = {"projection_kind": "event_completed", "event_id": event_id}
+    message = str(audit.get("message") or "社会投影失败").strip()
+    hint = {
+        "tool": "life_social",
+        "action": "retry_projection",
+        **retry_payload,
+        "audit_id": audit.get("id"),
+    }
+    return (
+        "社会世界投影失败，等待补投影",
+        f"{target_label} 的关系/声望/请求事实没有写入；错误：{message}",
+        hint,
+    )
+
+
 def _doctor_summary(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
     from .doctor import run_doctor
 
@@ -359,6 +428,17 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
         except Exception:
             pass
 
+    social_failures = _open_social_projection_failures(conn, owner_kind, owner_id, limit)
+    if social_failures:
+        summary["social_projection"] = {"open_failures": len(social_failures)}
+    for failure in social_failures:
+        title, message, hint = _social_projection_failure_message(failure)
+        items.append(_item(
+            "social_projection_failed", "warning", title, message,
+            source_table="audit_log", source_id=failure.get("id"), section="world",
+            when=failure.get("created_at"), action_hint=hint,
+        ))
+
     # Missed meals today: surface skipped/pending meals so the owner can nudge
     # the agent to eat (or knows why it didn't).
     if owner_kind == "agent":
@@ -491,6 +571,9 @@ def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) ->
         lines.append(f"最近延迟回复摘要：{summary.get('recent_reply_digest')[:180]}")
     if summary.get("doctor"):
         lines.append(f"Doctor：{'ok' if summary['doctor'].get('ok') else '有提醒'}，issues={summary['doctor'].get('issue_count')}")
+    social_projection = summary.get("social_projection") or {}
+    if social_projection:
+        lines.append(f"社会投影：待补投影 {social_projection.get('open_failures', 0)} 条")
     lines.append("")
 
     if not items:
@@ -500,6 +583,8 @@ def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) ->
         def bucket(it: dict[str, Any]) -> str:
             if it.get("item_type") in {"user_confirmation", "required_settings", "policy_conflict", "canon_consistency"}:
                 return "需要用户决定 / 设定补齐"
+            if it.get("section") in {"world", "social", "social_world"}:
+                return "世界 / 社交层待整理"
             if it.get("section") in {"sleep", "reply", "dream", "proactive", "policy"} and it.get("item_type") not in {"proactive_outbox"}:
                 return "Agent 可自行处理 / 可预览执行"
             if it.get("item_type") in {"doctor_warning", "final_gate_feedback", "final_gate_report"} or it.get("section") in {"doctor", "final_gate"}:
@@ -508,7 +593,7 @@ def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) ->
         groups: dict[str, list[dict[str, Any]]] = {}
         for it in items:
             groups.setdefault(bucket(it), []).append(it)
-        order = ["需要用户决定 / 设定补齐", "Agent 可自行处理 / 可预览执行", "系统维护 / 开发者可见", "其他提醒"]
+        order = ["需要用户决定 / 设定补齐", "Agent 可自行处理 / 可预览执行", "世界 / 社交层待整理", "系统维护 / 开发者可见", "其他提醒"]
         idx = 1
         for group in order:
             group_items = groups.get(group) or []
@@ -654,6 +739,17 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
             plan.update({"application_type": "lifeops", "tool": "life_proactive", "action": "suppress", "safe_auto": False, "ops": [{"type": "SUPPRESS_PROACTIVE_INTENT", "payload": {"intent_id": hint.get("intent_id") or item.get("source_id"), "reason": "suppressed from /life review", "source": "life_review_action"}}], "message": "Suppress the related proactive intent."})
     elif item_type == "proactive_lifecycle_cleanup":
         plan.update({"application_type": "direct", "tool": "life_proactive", "action": "cleanup", "safe_auto": True, "message": "Clean stale proactive outbox/state rows that point at terminal or missing intents."})
+    elif item_type == "social_projection_failed":
+        plan.update({
+            "application_type": "direct",
+            "tool": "life_social",
+            "action": "retry_projection",
+            "safe_auto": True,
+            "projection_kind": hint.get("projection_kind"),
+            "event_id": hint.get("event_id"),
+            "occurrence_id": hint.get("occurrence_id"),
+            "message": "Retry the idempotent social/world projection for the failed event or occurrence.",
+        })
     elif item_type == "user_confirmation":
         if choice not in {"confirm", "reject"}:
             plan.update({"application_type": "manual_choice", "requires_choice": True, "choices": ["confirm", "reject"], "safe_auto": False, "message": "Choose confirm or reject for user-life confirmation items."})
