@@ -25,6 +25,7 @@ from .time_utils import parse_datetime, to_epoch
 ACTIVE_INTENT_STATUSES = {"generated", "queued"}
 TERMINAL_INTENT_STATUSES = {"sent", "suppressed", "expired", "cancelled", "merged"}
 PROACTIVE_MODES = {"off", "pending_only", "manual_send", "auto_send"}
+TEMPORARY_WAIT_DECISIONS = {"quiet_hours", "cooldown", "daily_limit"}
 _OUTBOX_AUTHOR_KIND = "proactive_outbox"
 # 主动消息写作的旧机械开场：用于清理历史模板和模型偶发复述，作用域仅限
 # proactive outbox 文案落库前的轻量保护，不参与策略判定。
@@ -687,6 +688,99 @@ def evaluate_proactive_intent(
         append_journal(conn, "agent", agent_id, "proactive_intent_evaluated", {"intent_id": intent["id"], "decision": decision, "reason": reason, "score": score, "outbox_id": outbox.get("id") if outbox else None}, "proactive")
         evaluated.append({"evaluation_id": eval_id, "intent_id": intent["id"], "decision": decision, "reason": reason, "score": score, "outbox": outbox, "state": ensure_proactive_state(conn, agent_id, user_id)})
     return {"evaluated": evaluated, "policy": policy}
+
+
+def _has_active_outbox(conn, intent_id: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM proactive_outbox WHERE intent_id=? AND status IN ('drafted','queued','delivering') LIMIT 1",
+        (intent_id,),
+    ).fetchone()
+    return bool(row)
+
+
+def _temporary_wait_has_cleared(conn, agent_id: str, intent: dict[str, Any], policy: dict[str, Any]) -> bool:
+    """Return True when a queued intent's last pacing block is no longer active."""
+    decision = intent.get("decision") or {}
+    wait = str(decision.get("decision") or "").strip()
+    if wait not in TEMPORARY_WAIT_DECISIONS:
+        return False
+    user_id = _target_user(intent, policy)
+    state = ensure_proactive_state(conn, agent_id, user_id)
+    if wait == "quiet_hours":
+        return not _quiet_hours_active(policy)
+    if wait == "cooldown":
+        return not _within_cooldown(state)
+    if wait == "daily_limit":
+        return int(state.get("daily_sent_count") or 0) < int(policy.get("max_per_day") or 1)
+    return False
+
+
+def reconsider_waiting_proactive_intents(
+    conn,
+    agent_id: str,
+    *,
+    control: dict[str, Any] | None = None,
+    trace_id: str | None = None,
+    limit: int = 10,
+    allow_authoring: bool = False,
+) -> dict[str, Any]:
+    """Re-evaluate queued proactive intents whose temporary wait has cleared.
+
+    Quiet hours, cooldown, and daily-budget gates are pacing constraints, not
+    final decisions. Heartbeat uses this pass before evaluating new generated
+    intents so a warm line held at bedtime can naturally move to outbox after
+    the block clears without requiring a manual review action.
+    """
+    canon_policy = _get_canon_policy(conn, agent_id)
+    policy = _gate_policy(control, canon_policy)
+    if policy.get("mode") != "auto_send":
+        return {"reconsidered": [], "count": 0, "policy": policy, "reason": "mode does not create outbox automatically"}
+    rows = conn.execute(
+        """SELECT * FROM proactive_intents
+             WHERE agent_id=? AND status='queued'
+             ORDER BY queued_at ASC, updated_at ASC
+             LIMIT ?""",
+        (agent_id, max(1, int(limit) * 4)),
+    ).fetchall()
+    reconsidered: list[dict[str, Any]] = []
+    for row in rows:
+        intent = _as_dict(row) or {}
+        if not intent:
+            continue
+        if _has_active_outbox(conn, str(intent.get("id") or "")):
+            continue
+        if _is_expired(intent):
+            continue
+        if not _temporary_wait_has_cleared(conn, agent_id, intent, policy):
+            continue
+        out = evaluate_proactive_intent(
+            conn,
+            agent_id,
+            str(intent["id"]),
+            control=control,
+            trace_id=trace_id,
+            allow_authoring=allow_authoring,
+        )
+        item = (out.get("evaluated") or [{}])[0]
+        reconsidered.append({
+            "intent_id": intent["id"],
+            "previous_decision": (intent.get("decision") or {}).get("decision"),
+            "decision": item.get("decision"),
+            "reason": item.get("reason"),
+            "outbox_id": (item.get("outbox") or {}).get("id") if isinstance(item.get("outbox"), dict) else None,
+        })
+        if len(reconsidered) >= int(limit):
+            break
+    if reconsidered:
+        append_journal(
+            conn,
+            "agent",
+            agent_id,
+            "proactive_waiting_intents_reconsidered",
+            {"reconsidered": reconsidered},
+            "proactive",
+        )
+    return {"reconsidered": reconsidered, "count": len(reconsidered), "policy": policy}
 
 
 def mark_outbox_sent(conn, agent_id: str, outbox_id: str, *, result: dict[str, Any] | None = None, manual: bool = True) -> dict[str, Any]:

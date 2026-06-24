@@ -219,6 +219,7 @@ from .proactive import (
     list_proactive_states,
     mark_outbox_sent,
     proactive_lifecycle_status,
+    reconsider_waiting_proactive_intents,
     suppress_intent,
     ensure_proactive_state,
 )
@@ -782,6 +783,15 @@ class LifeEngineRuntime:
             return create_proactive_intent(self.conn, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
         elif op_type == "EVALUATE_PROACTIVE_INTENT":
             return evaluate_proactive_intent(self.conn, owner_id, payload.get("intent_id"), control=ensure_control(self.conn, "agent", owner_id), target_user_id=payload.get("target_user_id"), manual=bool(payload.get("manual", False)), trace_id=payload.get("trace_id"), draft_text=payload.get("draft_text"), allow_authoring=bool(payload.get("allow_authoring", False)))
+        elif op_type == "RECONSIDER_WAITING_PROACTIVE_INTENTS":
+            return reconsider_waiting_proactive_intents(
+                self.conn,
+                owner_id,
+                control=ensure_control(self.conn, "agent", owner_id),
+                trace_id=payload.get("trace_id"),
+                limit=int(payload.get("limit", 10)),
+                allow_authoring=bool(payload.get("allow_authoring", False)),
+            )
         elif op_type == "MARK_PROACTIVE_SENT":
             return mark_outbox_sent(self.conn, owner_id, payload["outbox_id"], result=payload.get("result") or {}, manual=bool(payload.get("manual", True)))
         elif op_type == "SUPPRESS_PROACTIVE_INTENT":
@@ -2373,6 +2383,7 @@ class LifeEngineRuntime:
             with trace.span("proactive_evaluate", {"mode": mode}):
                 commit = self._commit_ops_locked([
                     {"type": "EXPIRE_PROACTIVE_INTENTS", "payload": {}},
+                    {"type": "RECONSIDER_WAITING_PROACTIVE_INTENTS", "payload": {"trace_id": trace.id, "allow_authoring": False}},
                     {"type": "EVALUATE_PROACTIVE_INTENT", "payload": {"manual": False, "trace_id": trace.id, "allow_authoring": False}},
                 ], owner_kind, owner_id, "proactive_heartbeat", session_id=None, turn_id=tick_id, trace=trace, control=control)
             return {"commit": commit}

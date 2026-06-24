@@ -71,6 +71,16 @@ def _set_quiet_hours_covering_now(rt: LifeEngineRuntime) -> dict[str, str]:
     return {"start": start, "end": end}
 
 
+def _clear_quiet_hours(rt: LifeEngineRuntime) -> None:
+    row = rt.conn.execute(
+        "SELECT id, data_json FROM canon_versions WHERE owner_kind='agent' AND owner_id='default-agent' AND status='active' ORDER BY version DESC LIMIT 1"
+    ).fetchone()
+    data = json.loads(row["data_json"])
+    data.setdefault("proactive", {})
+    data["proactive"]["quiet_hours"] = {}
+    rt.conn.execute("UPDATE canon_versions SET data_json=? WHERE id=?", (json.dumps(data, ensure_ascii=False), row["id"]))
+
+
 def _success_command(tmp_path: Path, sink: Path) -> str:
     script = tmp_path / "deliver_success.py"
     script.write_text(
@@ -599,5 +609,104 @@ def test_human_review_surfaces_and_applies_proactive_lifecycle_cleanup(tmp_path,
         outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
         assert outbox[outbox_id]["status"] == "suppressed"
         assert outbox[outbox_id]["suppression_reason"] == "intent missing"
+    finally:
+        rt.close()
+
+
+def test_heartbeat_reconsiders_quiet_hours_pending_intent_after_window_clears(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        _set_quiet_hours_covering_now(rt)
+        created = rt.proactive(
+            "create",
+            summary="我想等不打扰的时候再轻轻问一句近况。",
+            target_type="user",
+            target_id="u1",
+            intent_type="ask_about_user",
+            importance=95,
+            urgency=90,
+            novelty=80,
+            relationship_relevance=95,
+            privacy_level="safe_to_share",
+        )
+        intent_id = created["results"][0]["result"]["id"]
+        evaluated = rt.proactive("evaluate", intent_id=intent_id, draft_text="这句现在应该先不发。")
+        item = evaluated["results"][0]["result"]["evaluated"][0]
+        assert item["decision"] == "queue_pending"
+        assert item["reason"] == "quiet hours active"
+        assert rt.proactive("outbox")["outbox"] == []
+
+        _clear_quiet_hours(rt)
+        tick = rt.tick(manual=False)
+
+        assert tick["status"] in {"done", "partial"}, tick
+        assert "error" not in tick["proactive"], tick["proactive"]
+        reconsidered = next(
+            result["result"] for result in tick["proactive"]["commit"]["results"]
+            if result["type"] == "RECONSIDER_WAITING_PROACTIVE_INTENTS"
+        )
+        assert reconsidered["count"] == 1
+        assert reconsidered["reconsidered"][0]["intent_id"] == intent_id
+        assert reconsidered["reconsidered"][0]["previous_decision"] == "quiet_hours"
+        assert reconsidered["reconsidered"][0]["decision"] == "outbox_queued"
+        outbox = rt.proactive("outbox")["outbox"]
+        assert any(o["intent_id"] == intent_id and o["status"] == "queued" for o in outbox)
+    finally:
+        rt.close()
+
+
+def test_heartbeat_reconsiders_cooldown_pending_intent_after_next_allowed(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        row = rt.conn.execute(
+            "SELECT id, data_json FROM canon_versions WHERE owner_kind='agent' AND owner_id='default-agent' AND status='active' ORDER BY version DESC LIMIT 1"
+        ).fetchone()
+        data = json.loads(row["data_json"])
+        data.setdefault("proactive", {})
+        data["proactive"].update({"max_per_day": 5, "cooldown_minutes": 180})
+        rt.conn.execute("UPDATE canon_versions SET data_json=? WHERE id=?", (json.dumps(data, ensure_ascii=False), row["id"]))
+
+        first_outbox_id = _queue_outbox(rt, draft_text="第一条已经发过了。")
+        rt.proactive("send", outbox_id=first_outbox_id)
+        created = rt.proactive(
+            "create",
+            summary="冷却过了以后，我想补一句更自然的近况。",
+            target_type="user",
+            target_id="u1",
+            intent_type="report_progress",
+            importance=95,
+            urgency=90,
+            novelty=80,
+            relationship_relevance=90,
+            privacy_level="safe_to_share",
+        )
+        intent_id = created["results"][0]["result"]["id"]
+        evaluated = rt.proactive("evaluate", intent_id=intent_id, draft_text="这句应该先等一等。")
+        assert evaluated["results"][0]["result"]["evaluated"][0]["reason"] == "within proactive cooldown window"
+        rt.conn.execute(
+            """UPDATE agent_user_proactive_state
+                  SET next_allowed_proactive_at=?, daily_sent_count=0
+                WHERE agent_id='default-agent' AND user_id='u1'""",
+            ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),),
+        )
+
+        tick = rt.tick(manual=False)
+
+        assert tick["status"] in {"done", "partial"}, tick
+        assert "error" not in tick["proactive"], tick["proactive"]
+        reconsidered = next(
+            result["result"] for result in tick["proactive"]["commit"]["results"]
+            if result["type"] == "RECONSIDER_WAITING_PROACTIVE_INTENTS"
+        )
+        assert reconsidered["count"] == 1
+        assert reconsidered["reconsidered"][0]["intent_id"] == intent_id
+        assert reconsidered["reconsidered"][0]["previous_decision"] == "cooldown"
+        assert reconsidered["reconsidered"][0]["decision"] == "outbox_queued"
+        outbox = rt.proactive("outbox")["outbox"]
+        assert any(o["intent_id"] == intent_id and o["status"] == "queued" for o in outbox)
     finally:
         rt.close()

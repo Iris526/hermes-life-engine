@@ -66,6 +66,7 @@ ALLOWED_OPS = {
     "CREATE_DIARY",
     "CREATE_PROACTIVE_INTENT",
     "EVALUATE_PROACTIVE_INTENT",
+    "RECONSIDER_WAITING_PROACTIVE_INTENTS",
     "MARK_PROACTIVE_SENT",
     "SUPPRESS_PROACTIVE_INTENT",
     "EXPIRE_PROACTIVE_INTENTS",
@@ -425,6 +426,8 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
                 _validate_0_100(key, payload.get(key))
     elif op_type == "EVALUATE_PROACTIVE_INTENT":
         # intent_id is optional: absent means evaluate due generated intents.
+        pass
+    elif op_type == "RECONSIDER_WAITING_PROACTIVE_INTENTS":
         pass
     elif op_type == "MARK_PROACTIVE_SENT":
         _require(payload, "outbox_id")
@@ -893,7 +896,7 @@ def validate_life_ops(conn, owner_kind: str, owner_id: str, control: dict[str, A
             validate_schedule_block_against_db(conn, owner_kind, owner_id, {"start": payload.get("start"), "end": payload.get("end"), **payload})
         if op_type == "CREATE_SERENDIPITY_EVENT":
             _assert_event_exists(conn, owner_kind, owner_id, payload.get("trigger_event_id"), "trigger event")
-        if op_type in {"CREATE_PROACTIVE_INTENT", "EVALUATE_PROACTIVE_INTENT", "MARK_PROACTIVE_SENT", "SUPPRESS_PROACTIVE_INTENT", "EXPIRE_PROACTIVE_INTENTS"}:
+        if op_type in {"CREATE_PROACTIVE_INTENT", "EVALUATE_PROACTIVE_INTENT", "RECONSIDER_WAITING_PROACTIVE_INTENTS", "MARK_PROACTIVE_SENT", "SUPPRESS_PROACTIVE_INTENT", "EXPIRE_PROACTIVE_INTENTS"}:
             if owner_kind != "agent":
                 raise ValidationError("proactive LifeOps are only valid for agent self-life")
             if op_type in {"EVALUATE_PROACTIVE_INTENT", "SUPPRESS_PROACTIVE_INTENT"} and payload.get("intent_id"):
