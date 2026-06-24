@@ -514,8 +514,10 @@ def test_proactive_status_and_review_surface_expired_active_intents(tmp_path, mo
         assert items
         assert items[0]["source_id"] == intent_id
         assert items[0]["action_hint"]["expired_active_intent_count"] == 1
+        assert items[0]["action_hint"]["expired_active_intent_ids"] == [intent_id]
         assert "过期待说 intent 1 条" in review["rendered"]
         assert "1 条待说 intent 已过期" in review["rendered"]
+        assert f"expired_active_intent_ids={intent_id}" in review["rendered"]
     finally:
         rt.close()
 
@@ -680,8 +682,10 @@ def test_proactive_lifecycle_cleanup_requeues_abandoned_active_delivery_claim(tm
         assert items
         assert items[0]["source_id"] == outbox_id
         assert items[0]["action_hint"]["stale_delivery_attempt_count"] == 1
+        assert items[0]["action_hint"]["stale_delivery_attempt_ids"] == ["prodel_cleanup_active_running"]
         assert "卡住投递 1 个" in review["rendered"]
         assert "1 个投递 attempt 还停在 running" in review["rendered"]
+        assert "stale_delivery_attempt_ids=prodel_cleanup_active_running" in review["rendered"]
 
         applied = rt.review("apply", item_id=items[0]["id"])
 
@@ -717,11 +721,15 @@ def test_human_review_surfaces_and_applies_proactive_lifecycle_cleanup(tmp_path,
         assert "陈旧待说状态 1 条" in review["summary"]["proactive_lifecycle"]["render_bits"]
         assert items[0]["action_hint"]["stale_outbox_count"] == 1
         assert items[0]["action_hint"]["stale_state_count"] == 1
+        assert items[0]["action_hint"]["stale_outbox_ids"] == [outbox_id]
+        assert items[0]["action_hint"]["stale_state_user_ids"] == ["u1"]
         assert "主动消息队列需要整理" in review["rendered"]
         assert "主动消息：需要整理" in review["rendered"]
         assert "陈旧 outbox 1 条" in review["rendered"]
         assert "陈旧待说状态 1 条" in review["rendered"]
         assert "数量：stale_outbox_count=1，stale_state_count=1" in review["rendered"]
+        assert f"stale_outbox_ids={outbox_id}" in review["rendered"]
+        assert "stale_state_user_ids=u1" in review["rendered"]
 
         applied = rt.review("apply", item_id=items[0]["id"])
 

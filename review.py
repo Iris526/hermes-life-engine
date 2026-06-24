@@ -726,6 +726,18 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                         "stale_outbox_count": len(stale_outbox),
                         "stale_state_count": len(stale_states),
                         "stale_delivery_attempt_count": stale_delivery_attempt_count,
+                        "expired_active_intent_ids": [
+                            str(i.get("id")) for i in expired_active_intents if i.get("id")
+                        ],
+                        "stale_outbox_ids": [
+                            str(o.get("id")) for o in stale_outbox if o.get("id")
+                        ],
+                        "stale_state_user_ids": [
+                            str(s.get("user_id")) for s in stale_states if s.get("user_id")
+                        ],
+                        "stale_delivery_attempt_ids": [
+                            str(a.get("id")) for a in stale_delivery_attempts if a.get("id")
+                        ],
                     },
                 ))
         except Exception:
@@ -930,6 +942,12 @@ _ACTION_HINT_COUNT_KEYS = (
     "expired_active_intent_count",
     "stale_delivery_attempt_count",
 )
+_ACTION_HINT_LIST_KEYS = (
+    "expired_active_intent_ids",
+    "stale_outbox_ids",
+    "stale_state_user_ids",
+    "stale_delivery_attempt_ids",
+)
 
 
 def _render_action_hint(hint: dict[str, Any]) -> str | None:
@@ -949,6 +967,17 @@ def _render_action_hint(hint: dict[str, Any]) -> str | None:
     counts = [f"{key}={hint.get(key)}" for key in _ACTION_HINT_COUNT_KEYS if hint.get(key) is not None]
     if counts:
         parts.append("数量：" + "，".join(counts))
+    list_bits = []
+    for key in _ACTION_HINT_LIST_KEYS:
+        values = hint.get(key) or []
+        if not isinstance(values, list) or not values:
+            continue
+        shown = [str(v) for v in values if v][:3]
+        more = "..." if len(values) > len(shown) else ""
+        if shown:
+            list_bits.append(f"{key}={','.join(shown)}{more}")
+    if list_bits:
+        parts.append("线索：" + "，".join(list_bits))
     suggested = hint.get("suggested_actions") or []
     if isinstance(suggested, list) and suggested:
         parts.append("可选：" + "/".join(str(a) for a in suggested if a))
