@@ -13,7 +13,7 @@ from typing import Any
 
 from .jsonutil import dumps, loads
 from .trace import append_audit, append_journal, new_id
-from .time_utils import now_iso
+from .time_utils import now_iso, to_epoch
 from .sleep_effects import get_sleep_day_state
 from .sleep_reply_dream_policy import get_policy, validate_policy, explain_policy
 from .canon import get_active_canon
@@ -201,6 +201,18 @@ def _proactive_waiting_message(intent: dict[str, Any]) -> tuple[str, str, dict[s
     return "我有想说的话", summary, hint
 
 
+def _outbox_send_after_is_future(outbox: dict[str, Any]) -> bool:
+    send_after = outbox.get("send_after")
+    if not send_after:
+        return False
+    try:
+        ts = to_epoch(str(send_after), default_tz="UTC")
+        now_ts = to_epoch(now_iso(), default_tz="UTC")
+        return ts is not None and now_ts is not None and ts > now_ts
+    except Exception:
+        return False
+
+
 def _proactive_outbox_message(outbox: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     draft = str(outbox.get("draft_text") or "").strip()
     preview = draft[:220] if draft else "主动消息草稿为空，需要先检查。"
@@ -210,8 +222,12 @@ def _proactive_outbox_message(outbox: dict[str, Any]) -> tuple[str, str, dict[st
         "outbox_id": outbox.get("id"),
         "intent_id": outbox.get("intent_id"),
     }
-    if outbox.get("send_after"):
+    if _outbox_send_after_is_future(outbox):
+        hint["action"] = "wait_until_send_after"
+        hint["send_after"] = outbox.get("send_after")
         return "主动消息已排队，等安静时段结束再送", f"{preview}（不早于 {outbox.get('send_after')}）", hint
+    if outbox.get("send_after"):
+        return "主动消息已到可投递时间", f"{preview}（原定不早于 {outbox.get('send_after')}）", hint
     return "我写好的主动消息在等待处理", preview, hint
 
 
@@ -575,7 +591,8 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
         items.append(_item("proactive_intent", "action" if p.get("target_type") != "self_journal" else "info", title, message, source_table="proactive_intents", source_id=p.get("id"), section="proactive", when=p.get("created_at"), action_hint=hint))
     for o in outbox:
         title, message, hint = _proactive_outbox_message(o)
-        items.append(_item("proactive_outbox", "action", title, message, source_table="proactive_outbox", source_id=o.get("id"), section="proactive", when=o.get("created_at"), action_hint=hint))
+        severity = "info" if _outbox_send_after_is_future(o) else "action"
+        items.append(_item("proactive_outbox", severity, title, message, source_table="proactive_outbox", source_id=o.get("id"), section="proactive", when=o.get("created_at"), action_hint=hint))
     if owner_kind == "agent":
         try:
             from .proactive import proactive_lifecycle_status
@@ -837,6 +854,8 @@ def _render_action_hint(hint: dict[str, Any]) -> str | None:
     suggested = hint.get("suggested_actions") or []
     if isinstance(suggested, list) and suggested:
         parts.append("可选：" + "/".join(str(a) for a in suggested if a))
+    if hint.get("send_after"):
+        parts.append(f"等待到：{hint.get('send_after')}")
     if hint.get("manual"):
         parts.append("需要人工放行")
     return "   " + "；".join(parts)

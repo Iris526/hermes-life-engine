@@ -194,6 +194,38 @@ def test_proactive_deliver_defers_queued_outbox_during_quiet_hours(tmp_path, mon
         rt.close()
 
 
+def test_review_treats_future_send_after_outbox_as_waiting_not_manual_action(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    sink = tmp_path / "quiet_review_payload.json"
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="我等安静时段过了再轻轻说。")
+        _set_quiet_hours_covering_now(rt)
+
+        delivered = rt.proactive(
+            "deliver",
+            delivery_mode="command",
+            delivery_command=_success_command(tmp_path, sink),
+            delivery_channel="qq",
+        )
+
+        assert delivered["status"] == "deferred_quiet_hours"
+        review = rt.review("summary")
+        item = next(i for i in review["items"] if i["item_type"] == "proactive_outbox" and i["source_id"] == outbox_id)
+
+        assert item["severity"] == "info"
+        assert item["title"] == "主动消息已排队，等安静时段结束再送"
+        assert item["action_hint"]["action"] == "wait_until_send_after"
+        assert item["action_hint"]["send_after"] == delivered["quiet_hours"]["next_allowed_at"]
+        assert "等待到：" in review["rendered"]
+        assert "action=wait_until_send_after" in review["rendered"]
+        assert "需要人工放行" not in item["message"]
+        assert not sink.exists()
+    finally:
+        rt.close()
+
+
 def test_proactive_deliver_dry_run_does_not_reap_stale_claim(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     rt = LifeEngineRuntime()
