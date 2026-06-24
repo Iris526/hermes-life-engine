@@ -603,32 +603,38 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                 "stale_outbox_count": lifecycle.get("stale_outbox_count", 0),
                 "stale_state_count": lifecycle.get("stale_state_count", 0),
                 "stale_delivery_attempt_count": lifecycle.get("stale_delivery_attempt_count", 0),
+                "stale_delivery_attempts": lifecycle.get("stale_delivery_attempts") or [],
                 "active_states": lifecycle.get("active_states") or [],
                 "render_bits": _proactive_lifecycle_render_bits(lifecycle),
             }
             stale_outbox = lifecycle.get("stale_outbox") or []
             stale_states = lifecycle.get("stale_states") or []
-            if stale_outbox or stale_states:
+            stale_delivery_attempts = lifecycle.get("stale_delivery_attempts") or []
+            stale_delivery_attempt_count = int(lifecycle.get("stale_delivery_attempt_count") or 0)
+            if stale_outbox or stale_states or stale_delivery_attempts:
                 bits = []
                 if stale_outbox:
                     bits.append(f"{len(stale_outbox)} 条 outbox 已不该再发送")
                 if stale_states:
                     bits.append(f"{len(stale_states)} 条用户主动状态还挂着旧意图")
-                stale_delivery_attempts = int(lifecycle.get("stale_delivery_attempt_count") or 0)
-                if stale_delivery_attempts:
-                    bits.append(f"{stale_delivery_attempts} 个投递 attempt 还停在 running")
+                if stale_delivery_attempt_count:
+                    bits.append(f"{stale_delivery_attempt_count} 个投递 attempt 还停在 running")
                 items.append(_item(
                     "proactive_lifecycle_cleanup", "warning",
                     "主动消息队列需要整理",
                     "，".join(bits) + "。建议先清理，再继续投递。",
                     section="proactive", source_table="proactive_outbox",
-                    source_id=(stale_outbox[0].get("id") if stale_outbox else stale_states[0].get("user_id")),
+                    source_id=(
+                        stale_outbox[0].get("id")
+                        if stale_outbox
+                        else (stale_states[0].get("user_id") if stale_states else stale_delivery_attempts[0].get("outbox_id"))
+                    ),
                     action_hint={
                         "tool": "life_proactive",
                         "action": "cleanup",
                         "stale_outbox_count": len(stale_outbox),
                         "stale_state_count": len(stale_states),
-                        "stale_delivery_attempt_count": stale_delivery_attempts,
+                        "stale_delivery_attempt_count": stale_delivery_attempt_count,
                     },
                 ))
         except Exception:

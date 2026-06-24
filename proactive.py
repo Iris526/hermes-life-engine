@@ -890,6 +890,29 @@ def _running_delivery_attempt_count(conn, agent_id: str, outbox_ids: list[str] |
     return int(row[0] if row else 0)
 
 
+def _stale_running_delivery_attempt_rows(conn, agent_id: str, *, limit: int = 20, stale_minutes: float = 30.0) -> list[dict[str, Any]]:
+    """Return delivery claims old enough to be considered abandoned.
+
+    Delivery workers normally reap these before sending. Review/status also
+    needs this read-only view, because a disabled or crashed worker can leave a
+    valid outbox stuck in ``delivering`` with no future cleanup trigger.
+    """
+    stale = f"-{max(1.0, float(stale_minutes)):g} minutes"
+    rows = conn.execute(
+        """SELECT d.id, d.outbox_id, d.intent_id, d.target_user_id, d.delivery_channel,
+                  d.created_at, d.error, o.status AS outbox_status, i.status AS intent_status
+             FROM proactive_deliveries d
+             LEFT JOIN proactive_outbox o ON o.id=d.outbox_id
+             LEFT JOIN proactive_intents i ON i.id=d.intent_id
+            WHERE d.agent_id=? AND d.status='running'
+              AND d.created_at <= datetime('now', ?)
+            ORDER BY d.created_at ASC
+            LIMIT ?""",
+        (agent_id, stale, int(limit)),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _active_state_rows(conn, agent_id: str, limit: int = 20) -> list[dict[str, Any]]:
     """Return compact per-user proactive state rows for status/review surfaces.
 
@@ -987,16 +1010,20 @@ def proactive_lifecycle_status(conn, agent_id: str, *, limit: int = 20) -> dict[
     stale_outbox = _stale_outbox_rows(conn, agent_id, limit=limit)
     stale_states = _stale_pending_state_rows(conn, agent_id, limit=limit)
     active_states = _active_state_rows(conn, agent_id, limit=limit)
-    stale_delivery_attempt_count = _running_delivery_attempt_count(
-        conn, agent_id, {r["id"] for r in stale_outbox}
-    )
+    stale_delivery_attempts = _stale_running_delivery_attempt_rows(conn, agent_id, limit=limit)
+    terminal_stale_attempts = _running_delivery_attempt_count(conn, agent_id, {r["id"] for r in stale_outbox})
+    stale_delivery_attempt_ids = {str(r.get("id")) for r in stale_delivery_attempts}
+    # Keep compatibility with the previous terminal-intent count while extending
+    # status to abandoned active delivery claims.
+    stale_delivery_attempt_count = max(len(stale_delivery_attempts), terminal_stale_attempts)
     counts["active_state_rows"] = len(active_states)
     return {
-        "ok": not stale_outbox and not stale_states,
+        "ok": not stale_outbox and not stale_states and not stale_delivery_attempt_ids,
         "counts": counts,
         "stale_outbox_count": len(stale_outbox),
         "stale_state_count": len(stale_states),
         "stale_delivery_attempt_count": stale_delivery_attempt_count,
+        "stale_delivery_attempts": stale_delivery_attempts,
         "stale_outbox": stale_outbox,
         "stale_states": stale_states,
         "active_states": active_states,
@@ -1050,6 +1077,28 @@ def cleanup_proactive_lifecycle(conn, agent_id: str, *, limit: int = 100) -> dic
             "closed_delivery_attempts": int(closed_attempts or 0),
         })
 
+    stale_delivery_attempts = _stale_running_delivery_attempt_rows(conn, agent_id, limit=limit)
+    requeued_delivery_claims: list[dict[str, Any]] = []
+    stale_outbox_ids = {str(row.get("id")) for row in stale_outbox}
+    for row in stale_delivery_attempts:
+        outbox_id = str(row.get("outbox_id") or "")
+        if not outbox_id or outbox_id in stale_outbox_ids:
+            continue
+        error = "delivery claim timed out during proactive cleanup"
+        conn.execute(
+            """UPDATE proactive_deliveries
+                  SET status='failed', error=?, completed_at=datetime('now')
+                WHERE agent_id=? AND id=? AND status='running'""",
+            (error, agent_id, row["id"]),
+        )
+        changed = conn.execute(
+            """UPDATE proactive_outbox
+                  SET status='queued', error=?
+                WHERE agent_id=? AND id=? AND status='delivering'""",
+            (error, agent_id, outbox_id),
+        ).rowcount
+        requeued_delivery_claims.append({**row, "requeued_outbox": bool(changed)})
+
     stale_states = _stale_pending_state_rows(conn, agent_id, limit=limit)
     changed_states: list[dict[str, Any]] = []
     for row in stale_states:
@@ -1064,21 +1113,23 @@ def cleanup_proactive_lifecycle(conn, agent_id: str, *, limit: int = 100) -> dic
         )
         changed_states.append({**row, "next_state": next_state, "kept_intent_ids": kept})
 
-    if retired_outbox or changed_states:
+    if retired_outbox or changed_states or requeued_delivery_claims:
         append_journal(
             conn,
             "agent",
             agent_id,
             "proactive_lifecycle_cleaned",
-            {"retired_outbox": retired_outbox, "changed_states": changed_states},
+            {"retired_outbox": retired_outbox, "changed_states": changed_states, "requeued_delivery_claims": requeued_delivery_claims},
             "proactive",
         )
     return {
         "ok": True,
         "retired_outbox_count": len(retired_outbox),
         "state_rows_changed": len(changed_states),
+        "requeued_delivery_claim_count": len(requeued_delivery_claims),
         "retired_outbox": retired_outbox,
         "changed_states": changed_states,
+        "requeued_delivery_claims": requeued_delivery_claims,
     }
 
 

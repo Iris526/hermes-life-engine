@@ -577,6 +577,53 @@ def test_proactive_lifecycle_cleanup_closes_stale_running_delivery_attempt(tmp_p
         rt.close()
 
 
+def test_proactive_lifecycle_cleanup_requeues_abandoned_active_delivery_claim(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="这条投递卡住后应该回到待送。")
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        intent_id = outbox[outbox_id]["intent_id"]
+        rt.conn.execute("UPDATE proactive_outbox SET status='delivering' WHERE id=?", (outbox_id,))
+        rt.conn.execute(
+            """INSERT INTO proactive_deliveries(
+                 id, outbox_id, intent_id, agent_id, target_user_id, status,
+                 delivery_channel, payload_json, created_at
+               ) VALUES(?,?,?,?,?,?,?,?,datetime('now','-45 minutes'))""",
+            ("prodel_cleanup_active_running", outbox_id, intent_id, "default-agent", "u1", "running", "qq", "{}"),
+        )
+
+        status = rt.proactive("status")
+        assert status["proactive"]["ok"] is False
+        assert status["proactive"]["stale_outbox_count"] == 0
+        assert status["proactive"]["stale_delivery_attempt_count"] == 1
+        assert status["proactive"]["stale_delivery_attempts"][0]["id"] == "prodel_cleanup_active_running"
+
+        review = rt.review("summary")
+        items = [i for i in review["items"] if i["item_type"] == "proactive_lifecycle_cleanup"]
+        assert items
+        assert items[0]["source_id"] == outbox_id
+        assert items[0]["action_hint"]["stale_delivery_attempt_count"] == 1
+        assert "卡住投递 1 个" in review["rendered"]
+        assert "1 个投递 attempt 还停在 running" in review["rendered"]
+
+        applied = rt.review("apply", item_id=items[0]["id"])
+
+        assert applied["ok"] is True
+        assert applied["output"]["requeued_delivery_claim_count"] == 1
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        assert outbox[outbox_id]["status"] == "queued"
+        assert "delivery claim timed out" in outbox[outbox_id]["error"]
+        attempt = rt.conn.execute("SELECT status, error, completed_at FROM proactive_deliveries WHERE id='prodel_cleanup_active_running'").fetchone()
+        assert attempt["status"] == "failed"
+        assert "delivery claim timed out" in attempt["error"]
+        assert attempt["completed_at"] is not None
+        assert rt.proactive("status")["proactive"]["stale_delivery_attempt_count"] == 0
+    finally:
+        rt.close()
+
+
 def test_human_review_surfaces_and_applies_proactive_lifecycle_cleanup(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     rt = LifeEngineRuntime()
