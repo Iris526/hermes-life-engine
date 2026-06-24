@@ -155,3 +155,69 @@ def test_proactive_outbox_fallback_avoids_mechanical_system_phrase(tmp_path):
         assert "稳一点" in text
     finally:
         rt.close()
+
+
+def test_proactive_outbox_rejects_report_like_model_draft_and_audits(tmp_path):
+    """模型偶发返回报告腔时，outbox 应退回短句兜底并留下可查审计。"""
+    _fresh_home(tmp_path)
+    fake = _FakeLlm({
+        "message_text": "状态报告：\n1. LifeEngine 已完成调度。\n2. 建议用户查看 outbox。",
+        "emotional_tone": "formal",
+    })
+    life_author.set_test_llm(fake)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        intent_id = _create_resource_shortage_intent(rt)
+
+        evaluated = rt.proactive("evaluate", intent_id=intent_id)
+
+        item = evaluated["results"][0]["result"]["evaluated"][0]
+        text = item["outbox"]["draft_text"]
+        assert item["decision"] == "outbox_queued"
+        assert "\n" not in text
+        assert "状态报告" not in text
+        assert "LifeEngine" not in text
+        assert "outbox" not in text
+        assert "资源不足" not in text
+        assert len(text) <= 91
+        audit = rt.conn.execute(
+            "SELECT * FROM audit_log WHERE audit_type='proactive_outbox_author_rejected' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert audit is not None
+        assert "draft rejected" in audit["message"]
+        assert "multiline" in audit["payload_json"]
+    finally:
+        life_author.set_test_llm(None)
+        rt.close()
+
+
+def test_proactive_outbox_fallback_inserts_first_person_for_bare_summary(tmp_path):
+    """兜底文案不应把无主语摘要原样推给 QQ，对外要像本人一句话。"""
+    _fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        rt.control("module", key="life_author", value="off")
+        created = rt.proactive(
+            "create",
+            summary="午后摆摊卖净符收得不错",
+            target_type="user",
+            target_id="u1",
+            intent_type="report_progress",
+            importance=95,
+            urgency=90,
+            novelty=80,
+            relationship_relevance=90,
+            privacy_level="safe_to_share",
+        )
+        intent_id = created["results"][0]["result"]["id"]
+
+        evaluated = rt.proactive("evaluate", intent_id=intent_id)
+
+        text = evaluated["results"][0]["result"]["evaluated"][0]["outbox"]["draft_text"]
+        assert text.startswith("我这边")
+        assert "午后摆摊卖净符收得不错" in text
+        assert "\n" not in text
+    finally:
+        rt.close()

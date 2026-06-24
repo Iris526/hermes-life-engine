@@ -33,6 +33,20 @@ _MECHANICAL_OUTBOX_PREFIXES = (
     "我有一件事想跟你说",
     "有件事想跟你说",
 )
+_OUTBOX_SYSTEM_PHRASES = (
+    "LifeEngine",
+    "outbox",
+    "调度",
+    "数据库",
+    "tick",
+    "心跳",
+    "trace",
+    "资源不足",
+    "重新规划",
+    "状态报告",
+    "完成了以下",
+)
+_OUTBOX_MAX_CHARS = 90
 # LifeAuthor 为 outbox 生成最终消息时使用的结构化输出合同。调用方只读取
 # message_text 写入 proactive_outbox.draft_text，emotional_tone 仅供审计和
 # 后续扩展，不改变当前发送状态机。
@@ -435,12 +449,33 @@ def _trim_message_text(text: str) -> str:
     到 proactive_outbox.draft_text 的短消息。它不访问外部服务，只做空白、
     引号和旧模板前缀的规整；如果最终为空，调用方继续走兜底。
     """
-    msg = str(text or "").strip().strip("\"'“”")
+    msg = " ".join(str(text or "").strip().strip("\"'“”").split())
     for prefix in _MECHANICAL_OUTBOX_PREFIXES:
         if msg.startswith(prefix):
             msg = msg[len(prefix):].lstrip("：:，,。 ")
             break
     return msg.strip()
+
+
+def _outbox_rejection_reason(text: str) -> str | None:
+    """Return why a proactive outbox line is not fit for direct QQ delivery."""
+    raw = str(text or "")
+    msg = _trim_message_text(raw)
+    if not msg:
+        return "empty"
+    if len(msg) > _OUTBOX_MAX_CHARS:
+        return "too_long"
+    if "\n" in raw or "\r" in raw:
+        return "multiline"
+    for phrase in _OUTBOX_SYSTEM_PHRASES:
+        if phrase in msg:
+            return f"system_phrase:{phrase}"
+    if any(marker in msg for marker in ("1.", "2.", "首先", "其次", "建议：", "总结：")):
+        return "report_like"
+    sentence_marks = sum(msg.count(ch) for ch in "。！？!?")
+    if sentence_marks > 2:
+        return "too_many_sentences"
+    return None
 
 
 def _fallback_outbox_text(intent: dict[str, Any]) -> str:
@@ -453,11 +488,17 @@ def _fallback_outbox_text(intent: dict[str, Any]) -> str:
     """
     summary = _trim_message_text(str(intent.get("summary") or ""))
     if not summary:
-        return "这边有点卡住，我想先缓一缓，换个更稳的做法。"
+        return "我这会儿有点卡住，先缓一缓，换个稳点的做法。"
     summary = summary.replace("遇到资源不足，想重新规划", "这边手头有点不够，我想先缓一下，重新盘算个稳一点的做法")
     summary = summary.replace("遇到资源不足", "这边手头有点不够")
     summary = summary.replace("资源不足", "手头有点不够")
     summary = summary.replace("重新规划", "重新盘算一下")
+    summary = summary.replace("完成了以下", "刚做完一点事")
+    if not any(token in summary for token in ("我", "这边", "咱", "师兄")):
+        summary = f"我这边{summary}"
+    summary = _trim_message_text(summary)
+    if len(summary) > _OUTBOX_MAX_CHARS:
+        summary = summary[:_OUTBOX_MAX_CHARS].rstrip("，,。；;：: ")
     if not summary.endswith(("。", "！", "？", "…", ".", "!", "?")):
         summary += "。"
     return summary
@@ -517,8 +558,21 @@ def _author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any
     )
     if not parsed:
         return None
-    msg = _trim_message_text(str(parsed.get("message_text") or ""))
-    if not msg or "资源不足" in msg or "LifeEngine" in msg or "outbox" in msg:
+    raw_msg = str(parsed.get("message_text") or "")
+    msg = _trim_message_text(raw_msg)
+    reason = _outbox_rejection_reason(raw_msg)
+    if reason:
+        append_audit(
+            conn, "agent", agent_id, "proactive_outbox_author_rejected", "warning",
+            "LifeAuthor proactive outbox draft rejected",
+            {
+                "intent_id": intent.get("id"),
+                "target_user_id": user_id,
+                "reason": reason,
+                "draft_preview": msg[:160],
+            },
+            trace_id=trace_id,
+        )
         return None
     return msg
 
