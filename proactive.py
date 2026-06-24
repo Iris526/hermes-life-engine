@@ -45,6 +45,8 @@ _OUTBOX_SYSTEM_PHRASES = (
     "资源不足",
     "重新规划",
     "状态报告",
+    "任务报告",
+    "系统提示",
     "完成了以下",
 )
 _OUTBOX_MAX_CHARS = 90
@@ -479,6 +481,44 @@ def _outbox_rejection_reason(text: str) -> str | None:
     return None
 
 
+def _audit_outbox_rejection(conn, agent_id: str, user_id: str, intent: dict[str, Any], *,
+                            reason: str, draft_preview: str, source: str,
+                            trace_id: str | None = None) -> None:
+    """Record that a candidate proactive message was not fit for direct QQ delivery."""
+    append_audit(
+        conn, "agent", agent_id, "proactive_outbox_author_rejected", "warning",
+        "Proactive outbox draft rejected",
+        {
+            "intent_id": intent.get("id"),
+            "target_user_id": user_id,
+            "reason": reason,
+            "source": source,
+            "draft_preview": draft_preview[:160],
+        },
+        trace_id=trace_id,
+    )
+
+
+def _usable_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any],
+                        text: str | None, *, source: str,
+                        trace_id: str | None = None) -> str | None:
+    """Return a sanitized one-line outbox message, or audit and reject it."""
+    if text is None:
+        return None
+    msg = _trim_message_text(text)
+    reason = _outbox_rejection_reason(text)
+    if reason:
+        _audit_outbox_rejection(
+            conn, agent_id, user_id, intent,
+            reason=reason,
+            draft_preview=msg,
+            source=source,
+            trace_id=trace_id,
+        )
+        return None
+    return msg
+
+
 def _fallback_outbox_text(intent: dict[str, Any]) -> str:
     """生成无模型时的主动消息兜底文案。
 
@@ -560,22 +600,7 @@ def _author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any
     if not parsed:
         return None
     raw_msg = str(parsed.get("message_text") or "")
-    msg = _trim_message_text(raw_msg)
-    reason = _outbox_rejection_reason(raw_msg)
-    if reason:
-        append_audit(
-            conn, "agent", agent_id, "proactive_outbox_author_rejected", "warning",
-            "LifeAuthor proactive outbox draft rejected",
-            {
-                "intent_id": intent.get("id"),
-                "target_user_id": user_id,
-                "reason": reason,
-                "draft_preview": msg[:160],
-            },
-            trace_id=trace_id,
-        )
-        return None
-    return msg
+    return _usable_outbox_text(conn, agent_id, user_id, intent, raw_msg, source="life_author", trace_id=trace_id)
 
 
 def author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any], *,
@@ -671,7 +696,7 @@ def evaluate_proactive_intent(
                 decision, reason = "queue_pending", "score below auto-send threshold"
             else:
                 msg = (
-                    draft_text
+                    _usable_outbox_text(conn, agent_id, user_id, intent, draft_text, source="provided_draft", trace_id=trace_id)
                     or (_author_outbox_text(conn, agent_id, user_id, intent, trace_id=trace_id) if allow_authoring else None)
                     or _fallback_outbox_text(intent)
                 )

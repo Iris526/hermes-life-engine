@@ -192,6 +192,69 @@ def test_proactive_outbox_rejects_report_like_model_draft_and_audits(tmp_path):
         rt.close()
 
 
+def test_proactive_outbox_rejects_single_line_system_report_model_draft(tmp_path):
+    """单行“状态报告”也不能绕过换行/列表检查进入 QQ outbox。"""
+    _fresh_home(tmp_path)
+    fake = _FakeLlm({
+        "message_text": "状态报告：LifeEngine 已完成调度，可以查看执行结果。",
+        "emotional_tone": "formal",
+    })
+    life_author.set_test_llm(fake)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        intent_id = _create_resource_shortage_intent(rt)
+
+        evaluated = rt.proactive("evaluate", intent_id=intent_id)
+
+        item = evaluated["results"][0]["result"]["evaluated"][0]
+        text = item["outbox"]["draft_text"]
+        assert item["decision"] == "outbox_queued"
+        assert "状态报告" not in text
+        assert "LifeEngine" not in text
+        assert "调度" not in text
+        audit = rt.conn.execute(
+            "SELECT * FROM audit_log WHERE audit_type='proactive_outbox_author_rejected' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert audit is not None
+        assert "system_phrase:LifeEngine" in audit["payload_json"] or "system_phrase:状态报告" in audit["payload_json"]
+        assert '"source":"life_author"' in audit["payload_json"]
+    finally:
+        life_author.set_test_llm(None)
+        rt.close()
+
+
+def test_proactive_outbox_rejects_provided_report_draft_before_queue(tmp_path):
+    """事务外预生成/调用方传入的 draft_text 也必须走同一条自然度护栏。"""
+    _fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        rt.control("module", key="life_author", value="off")
+        intent_id = _create_resource_shortage_intent(rt)
+
+        evaluated = rt.proactive(
+            "evaluate",
+            intent_id=intent_id,
+            draft_text="状态报告：LifeEngine 已完成调度，可以发送 outbox。",
+        )
+
+        item = evaluated["results"][0]["result"]["evaluated"][0]
+        text = item["outbox"]["draft_text"]
+        assert item["decision"] == "outbox_queued"
+        assert "状态报告" not in text
+        assert "LifeEngine" not in text
+        assert "outbox" not in text
+        assert "资源不足" not in text
+        audit = rt.conn.execute(
+            "SELECT * FROM audit_log WHERE audit_type='proactive_outbox_author_rejected' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert audit is not None
+        assert '"source":"provided_draft"' in audit["payload_json"]
+    finally:
+        rt.close()
+
+
 def test_proactive_outbox_fallback_inserts_first_person_for_bare_summary(tmp_path):
     """兜底文案不应把无主语摘要原样推给 QQ，对外要像本人一句话。"""
     _fresh_home(tmp_path)
