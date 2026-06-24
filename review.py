@@ -494,6 +494,9 @@ def _social_request_message(req: dict[str, Any]) -> tuple[str, str, dict[str, An
     summary = str(req.get("summary") or "").strip()
     requester = str(req.get("requester_name") or "未命名来访者").strip()
     target = str(req.get("target_name") or "未指定对象").strip()
+    details = req.get("details") if isinstance(req.get("details"), dict) else {}
+    quote = req.get("quote") if isinstance(req.get("quote"), dict) else {}
+    billing = req.get("billing") if isinstance(req.get("billing"), dict) else {}
     linked = req.get("linked_event_id") or req.get("linked_commission_id") or req.get("linked_activity_id")
     base = summary or f"{requester} -> {target}，{request_type}:{topic}"
     if status == "open":
@@ -511,16 +514,39 @@ def _social_request_message(req: dict[str, Any]) -> tuple[str, str, dict[str, An
     if linked:
         tail = f"{tail} 已关联：{linked}。"
     age = _age_hint(req.get("created_at"), stale_after_hours=24 if status == "open" else 48)
+    due_source = (
+        details.get("due_at") or details.get("deadline_at") or details.get("deadline")
+        or details.get("requested_before") or details.get("preferred_before")
+        or details.get("time_window_end") or details.get("ends_at")
+    )
+    due = _due_hint(str(due_source)) if due_source else {}
     if age.get("age_label"):
         stale_note = "，已经偏久" if age.get("stale") else ""
         tail = f"{tail} 已等待 {age.get('age_label')}{stale_note}。"
+    if due.get("due_label"):
+        tail = f"{tail} {due.get('due_label')}。"
+        if due.get("due_state") == "overdue" and "expire" not in action:
+            action = f"{action}/expire"
+    money_bits = []
+    amount = quote.get("amount") or quote.get("total") or quote.get("price")
+    currency = quote.get("currency") or quote.get("unit")
+    if amount is not None:
+        money_bits.append(f"报价 {amount}{currency or ''}")
+    paid = billing.get("paid") or billing.get("amount_paid")
+    if paid is not None:
+        money_bits.append(f"已结算 {paid}{billing.get('currency') or currency or ''}")
+    if money_bits:
+        tail = f"{tail} {'；'.join(money_bits)}。"
     hint = {
         "tool": "life_social",
         "action": "request_transition",
         "request_id": req.get("id"),
         "status": status,
         "suggested_actions": action.split("/"),
+        "has_quote": bool(quote),
+        "has_billing": bool(billing),
         **age,
+        **due,
     }
     return title, f"{base}（{status}）。{tail}", hint
 
@@ -877,7 +903,7 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                 }
             for req_item in social_requests:
                 title, message, hint = _social_request_message(req_item)
-                severity = "warning" if hint.get("stale") else "action"
+                severity = "warning" if hint.get("stale") or hint.get("due_state") == "overdue" else "action"
                 items.append(_item(
                     "social_request", severity, title, message,
                     source_table="social_requests", source_id=req_item.get("id"), section="social_world",

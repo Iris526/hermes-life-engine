@@ -263,6 +263,47 @@ def test_human_review_surfaces_active_social_requests_without_closing_them(tmp_p
         rt.close()
 
 
+def test_human_review_explains_social_request_due_and_quote_context(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        requester = _result(rt.social("create_entity", entity_kind="client", display_name="委托人丙"))
+        target = _result(rt.social("create_entity", entity_kind="shrine", display_name="归明观"))
+        request = _result(rt.social(
+            "record_request",
+            requester_entity_id=requester["id"],
+            target_entity_id=target["id"],
+            request_type="fieldwork_request",
+            topic="urgent_window",
+            summary="委托人丙想请明灯在时限前确认一处异常。",
+            details={"deadline_at": "2000-01-01T00:00:00+00:00"},
+        ))
+        rt.social(
+            "request_transition",
+            request_id=request["id"],
+            transition_action="accept",
+            quote={"amount": 80, "currency": "灵铢"},
+            reason="先接下，等安排事件。",
+        )
+
+        review = rt.review("summary")
+        item = next(i for i in review["items"] if i["item_type"] == "social_request")
+
+        assert item["source_id"] == request["id"]
+        assert item["severity"] == "warning"
+        assert item["action_hint"]["due_state"] == "overdue"
+        assert item["action_hint"]["has_quote"] is True
+        assert "expire" in item["action_hint"]["suggested_actions"]
+        assert "已超过时间窗" in item["message"]
+        assert "报价 80灵铢" in item["message"]
+        assert "已接下，等待安排" in item["title"]
+        assert "已超过时间窗" in review["rendered"]
+        assert "可选：convert_event/complete/cancel/expire" in review["rendered"]
+    finally:
+        rt.close()
+
+
 def test_social_world_surfaces_in_inner_life_context(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
