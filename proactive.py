@@ -14,6 +14,7 @@ traceable.
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from . import life_author
@@ -128,6 +129,7 @@ def _gate_policy(control: dict[str, Any] | None, canon_policy: dict[str, Any] | 
         "min_score_to_auto_send": int(canon_policy.get("min_score_to_auto_send", 75)),
         "cooldown_minutes": int(canon_policy.get("cooldown_minutes", 180)),
         "quiet_hours": canon_policy.get("quiet_hours") or {},
+        "timezone": canon_policy.get("timezone") or (canon_policy.get("quiet_hours") or {}).get("timezone") or "Asia/Shanghai",
         "default_target_user_id": canon_policy.get("default_target_user_id") or "anonymous-user",
     }
 
@@ -295,9 +297,14 @@ def _quiet_hours_active(policy: dict[str, Any]) -> bool:
     qh = policy.get("quiet_hours") or {}
     if not isinstance(qh, dict) or not qh.get("start") or not qh.get("end"):
         return False
-    # Conservative local-clock check. Full timezone support belongs in Canon's
-    # truth-source/time policy; this keeps v0.8 deterministic and safe.
-    now_hm = _now().strftime("%H:%M")
+    # Use the user's/agent's local clock for quiet hours. Earlier versions used
+    # UTC here, so QQ bedtime (e.g. 02:46 Asia/Shanghai) could be misread as
+    # daytime and an idle push would slip through right after “晚安”.
+    tz_name = str(policy.get("timezone") or qh.get("timezone") or "Asia/Shanghai")
+    try:
+        now_hm = _now().astimezone(ZoneInfo(tz_name)).strftime("%H:%M")
+    except Exception:
+        now_hm = _now().strftime("%H:%M")
     start = str(qh.get("start"))
     end = str(qh.get("end"))
     if start <= end:

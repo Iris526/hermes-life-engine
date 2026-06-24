@@ -119,6 +119,34 @@ def _minutes_since_last_idle(conn, agent_id: str, user_id: str | None = None) ->
     return float(row["mins"]) if row and row["mins"] is not None else None
 
 
+def _recent_user_bedtime_signal(conn, agent_id: str, user_id: str, *, minutes: int = 480) -> bool:
+    """Return True when the latest user turn looks like a bedtime sign-off.
+
+    QQ companion idle messages should not fire right after Ringo says 困困/晚安.
+    ReplyGate decisions are the closest always-on record of incoming messages;
+    use only the latest message so a later real conversation naturally clears
+    the sleep cue.
+    """
+    row = conn.execute(
+        """SELECT incoming_message_preview,
+                  (julianday('now') - julianday(created_at)) * 1440.0 AS mins
+             FROM reply_gate_decisions
+            WHERE owner_kind='agent' AND owner_id=? AND source='incoming_message'
+            ORDER BY created_at DESC LIMIT 1""",
+        (agent_id,),
+    ).fetchone()
+    if not row:
+        return False
+    try:
+        if float(row["mins"] or 999999) > float(minutes):
+            return False
+    except Exception:
+        return False
+    text = str(row["incoming_message_preview"] or "").strip().lower()
+    bedtime_words = ("晚安", "困困", "睡觉", "睡了", "睡啦", "睡咯", "困了", "good night", "gn")
+    return any(w in text for w in bedtime_words)
+
+
 def _recent_life(conn, agent_id: str, *, limit: int = 4) -> dict[str, list[str]]:
     mem = conn.execute(
         "SELECT content FROM memories WHERE owner_kind='agent' AND owner_id=? "
@@ -155,6 +183,8 @@ def _candidate(conn, agent_id: str, *, control: dict[str, Any] | None = None,
     if not pol.get("enabled", True):
         return None
     user_id = user_id or str(pol.get("default_user_id") or "anonymous-user")
+    if _recent_user_bedtime_signal(conn, agent_id, user_id):
+        return None
     if _has_pending_idle(conn, agent_id, user_id):
         return None
     if _today_idle_count(conn, agent_id, user_id) >= int(pol.get("idle_max_per_day") or 3):
