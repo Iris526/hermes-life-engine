@@ -917,6 +917,38 @@ def _stale_pending_state_rows(conn, agent_id: str, limit: int = 20) -> list[dict
     return stale
 
 
+def _elapsed_cooldown_state_rows(conn, agent_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    """Return cooldown-only state rows whose next allowed time has passed.
+
+    These rows are not harmful for policy, but they make status/review read as
+    if the agent is still waiting before it can speak. Once no pending intent is
+    attached and the timestamp is in the past, cleanup can safely return the row
+    to ``silent``.
+    """
+    rows = conn.execute(
+        """SELECT user_id, state, pending_intent_ids_json, last_proactive_sent_at,
+                  next_allowed_proactive_at, updated_at
+             FROM agent_user_proactive_state
+            WHERE agent_id=?
+              AND state='cooldown'
+              AND pending_intent_ids_json='[]'
+              AND next_allowed_proactive_at IS NOT NULL
+            ORDER BY next_allowed_proactive_at ASC
+            LIMIT ?""",
+        (agent_id, int(limit)),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    now_ts = int(_now().timestamp())
+    for row in rows:
+        try:
+            next_ts = to_epoch(row["next_allowed_proactive_at"])
+        except Exception:
+            next_ts = None
+        if next_ts is not None and int(next_ts) <= now_ts:
+            out.append(dict(row))
+    return out
+
+
 def _running_delivery_attempt_count(conn, agent_id: str, outbox_ids: list[str] | set[str]) -> int:
     """Count running delivery attempts that belong to stale outbox rows."""
     ids = [str(i) for i in outbox_ids if i]
@@ -1019,6 +1051,11 @@ def _active_state_rows(conn, agent_id: str, limit: int = 20) -> list[dict[str, A
         # rhythm. Mixed rows still show the valid pending ids.
         if not valid_pending and stale_pending and not has_future_cooldown:
             continue
+        # Cooldown-only rows with a past next_allowed timestamp are cleanup
+        # debt, not an active rhythm. Keeping them out of active_states avoids
+        # telling review that the agent is still waiting when it can speak again.
+        if not valid_pending and not stale_pending and wait_reason == "cooldown" and not has_future_cooldown:
+            continue
         out.append({
             "user_id": d.get("user_id"),
             "state": d.get("state"),
@@ -1052,6 +1089,7 @@ def proactive_lifecycle_status(conn, agent_id: str, *, limit: int = 20) -> dict[
     stale_outbox = _stale_outbox_rows(conn, agent_id, limit=limit)
     expired_active_intents = _expired_active_intent_rows(conn, agent_id, limit=limit)
     stale_states = _stale_pending_state_rows(conn, agent_id, limit=limit)
+    elapsed_cooldowns = _elapsed_cooldown_state_rows(conn, agent_id, limit=limit)
     active_states = _active_state_rows(conn, agent_id, limit=limit)
     stale_delivery_attempts = _stale_running_delivery_attempt_rows(conn, agent_id, limit=limit)
     terminal_stale_attempts = _running_delivery_attempt_count(conn, agent_id, {r["id"] for r in stale_outbox})
@@ -1062,16 +1100,18 @@ def proactive_lifecycle_status(conn, agent_id: str, *, limit: int = 20) -> dict[
     counts["active_state_rows"] = len(active_states)
     counts["expired_active_intents"] = len(expired_active_intents)
     return {
-        "ok": not stale_outbox and not expired_active_intents and not stale_states and not stale_delivery_attempt_ids,
+        "ok": not stale_outbox and not expired_active_intents and not stale_states and not stale_delivery_attempt_ids and not elapsed_cooldowns,
         "counts": counts,
         "stale_outbox_count": len(stale_outbox),
         "expired_active_intent_count": len(expired_active_intents),
         "stale_state_count": len(stale_states),
+        "elapsed_cooldown_state_count": len(elapsed_cooldowns),
         "stale_delivery_attempt_count": stale_delivery_attempt_count,
         "stale_delivery_attempts": stale_delivery_attempts,
         "stale_outbox": stale_outbox,
         "expired_active_intents": expired_active_intents,
         "stale_states": stale_states,
+        "elapsed_cooldown_states": elapsed_cooldowns,
         "active_states": active_states,
     }
 
@@ -1160,13 +1200,32 @@ def cleanup_proactive_lifecycle(conn, agent_id: str, *, limit: int = 100) -> dic
         )
         changed_states.append({**row, "next_state": next_state, "kept_intent_ids": kept})
 
-    if expired.get("count") or retired_outbox or changed_states or requeued_delivery_claims:
+    elapsed_cooldowns = _elapsed_cooldown_state_rows(conn, agent_id, limit=limit)
+    cleared_cooldowns: list[dict[str, Any]] = []
+    for row in elapsed_cooldowns:
+        changed = conn.execute(
+            """UPDATE agent_user_proactive_state
+                  SET state='silent', next_allowed_proactive_at=NULL, updated_at=datetime('now')
+                WHERE agent_id=? AND user_id=? AND state='cooldown'
+                  AND pending_intent_ids_json='[]'""",
+            (agent_id, row["user_id"]),
+        ).rowcount
+        if changed:
+            cleared_cooldowns.append({**row, "next_state": "silent"})
+
+    if expired.get("count") or retired_outbox or changed_states or requeued_delivery_claims or cleared_cooldowns:
         append_journal(
             conn,
             "agent",
             agent_id,
             "proactive_lifecycle_cleaned",
-            {"expired_intents": expired, "retired_outbox": retired_outbox, "changed_states": changed_states, "requeued_delivery_claims": requeued_delivery_claims},
+            {
+                "expired_intents": expired,
+                "retired_outbox": retired_outbox,
+                "changed_states": changed_states,
+                "requeued_delivery_claims": requeued_delivery_claims,
+                "cleared_cooldown_states": cleared_cooldowns,
+            },
             "proactive",
         )
     return {
@@ -1176,9 +1235,11 @@ def cleanup_proactive_lifecycle(conn, agent_id: str, *, limit: int = 100) -> dic
         "expired_state_rows_changed": int(expired.get("state_rows_changed") or 0),
         "retired_outbox_count": len(retired_outbox),
         "state_rows_changed": len(changed_states),
+        "cleared_cooldown_state_count": len(cleared_cooldowns),
         "requeued_delivery_claim_count": len(requeued_delivery_claims),
         "retired_outbox": retired_outbox,
         "changed_states": changed_states,
+        "cleared_cooldown_states": cleared_cooldowns,
         "requeued_delivery_claims": requeued_delivery_claims,
     }
 

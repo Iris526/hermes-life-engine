@@ -441,6 +441,52 @@ def test_proactive_status_and_review_explain_cooldown_state(tmp_path, monkeypatc
         rt.close()
 
 
+def test_proactive_lifecycle_cleanup_clears_elapsed_cooldown_only_state(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="这条发完后会进入冷却。")
+        rt.proactive("send", outbox_id=outbox_id)
+        rt.conn.execute(
+            """UPDATE agent_user_proactive_state
+                  SET next_allowed_proactive_at=?
+                WHERE agent_id='default-agent' AND user_id='u1'""",
+            ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),),
+        )
+
+        status = rt.proactive("status")
+
+        assert status["proactive"]["ok"] is False
+        assert status["proactive"]["elapsed_cooldown_state_count"] == 1
+        assert status["proactive"]["counts"]["active_state_rows"] == 0
+        assert status["proactive"]["active_states"] == []
+
+        review = rt.review("summary")
+        items = [i for i in review["items"] if i["item_type"] == "proactive_lifecycle_cleanup"]
+
+        assert items
+        assert review["summary"]["proactive_lifecycle"]["elapsed_cooldown_state_count"] == 1
+        assert "已结束冷却状态 1 条" in review["summary"]["proactive_lifecycle"]["render_bits"]
+        assert items[0]["source_id"] == "u1"
+        assert items[0]["action_hint"]["elapsed_cooldown_state_count"] == 1
+        assert items[0]["action_hint"]["elapsed_cooldown_user_ids"] == ["u1"]
+        assert "1 条冷却状态已经结束" in review["rendered"]
+        assert "elapsed_cooldown_user_ids=u1" in review["rendered"]
+        assert "用户节奏" not in review["rendered"]
+
+        applied = rt.review("apply", item_id=items[0]["id"])
+
+        assert applied["ok"] is True
+        assert applied["output"]["cleared_cooldown_state_count"] == 1
+        state = rt.proactive("state", user_id="u1")["state"]
+        assert state["state"] == "silent"
+        assert state["next_allowed_proactive_at"] is None
+        assert rt.proactive("status")["proactive"]["ok"] is True
+    finally:
+        rt.close()
+
+
 def test_suppress_intent_suppresses_existing_queued_outbox(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     rt = LifeEngineRuntime()

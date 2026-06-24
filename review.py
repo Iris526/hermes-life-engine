@@ -369,12 +369,15 @@ def _proactive_lifecycle_render_bits(lifecycle: dict[str, Any]) -> list[str]:
     stale_outbox = int(lifecycle.get("stale_outbox_count") or 0)
     stale_states = int(lifecycle.get("stale_state_count") or 0)
     stale_attempts = int(lifecycle.get("stale_delivery_attempt_count") or 0)
+    elapsed_cooldowns = int(lifecycle.get("elapsed_cooldown_state_count") or 0)
     if stale_outbox:
         bits.append(f"陈旧 outbox {stale_outbox} 条")
     if stale_states:
         bits.append(f"陈旧待说状态 {stale_states} 条")
     if stale_attempts:
         bits.append(f"卡住投递 {stale_attempts} 个")
+    if elapsed_cooldowns:
+        bits.append(f"已结束冷却状态 {elapsed_cooldowns} 条")
     active_states = lifecycle.get("active_states") or []
     if active_states:
         reason_labels = {
@@ -785,7 +788,9 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                 "stale_outbox_count": lifecycle.get("stale_outbox_count", 0),
                 "stale_state_count": lifecycle.get("stale_state_count", 0),
                 "stale_delivery_attempt_count": lifecycle.get("stale_delivery_attempt_count", 0),
+                "elapsed_cooldown_state_count": lifecycle.get("elapsed_cooldown_state_count", 0),
                 "stale_delivery_attempts": lifecycle.get("stale_delivery_attempts") or [],
+                "elapsed_cooldown_states": lifecycle.get("elapsed_cooldown_states") or [],
                 "active_states": lifecycle.get("active_states") or [],
                 "render_bits": _proactive_lifecycle_render_bits(lifecycle),
             }
@@ -794,7 +799,8 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
             stale_states = lifecycle.get("stale_states") or []
             stale_delivery_attempts = lifecycle.get("stale_delivery_attempts") or []
             stale_delivery_attempt_count = int(lifecycle.get("stale_delivery_attempt_count") or 0)
-            if stale_outbox or expired_active_intents or stale_states or stale_delivery_attempts:
+            elapsed_cooldown_states = lifecycle.get("elapsed_cooldown_states") or []
+            if stale_outbox or expired_active_intents or stale_states or stale_delivery_attempts or elapsed_cooldown_states:
                 bits = []
                 if expired_active_intents:
                     bits.append(f"{len(expired_active_intents)} 条待说 intent 已过期")
@@ -804,6 +810,8 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                     bits.append(f"{len(stale_states)} 条用户主动状态还挂着旧意图")
                 if stale_delivery_attempt_count:
                     bits.append(f"{stale_delivery_attempt_count} 个投递 attempt 还停在 running")
+                if elapsed_cooldown_states:
+                    bits.append(f"{len(elapsed_cooldown_states)} 条冷却状态已经结束")
                 items.append(_item(
                     "proactive_lifecycle_cleanup", "warning",
                     "主动消息队列需要整理",
@@ -815,7 +823,15 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                         else (
                             expired_active_intents[0].get("id")
                             if expired_active_intents
-                            else (stale_states[0].get("user_id") if stale_states else stale_delivery_attempts[0].get("outbox_id"))
+                            else (
+                                stale_states[0].get("user_id")
+                                if stale_states
+                                else (
+                                    stale_delivery_attempts[0].get("outbox_id")
+                                    if stale_delivery_attempts
+                                    else elapsed_cooldown_states[0].get("user_id")
+                                )
+                            )
                         )
                     ),
                     action_hint={
@@ -825,6 +841,7 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                         "stale_outbox_count": len(stale_outbox),
                         "stale_state_count": len(stale_states),
                         "stale_delivery_attempt_count": stale_delivery_attempt_count,
+                        "elapsed_cooldown_state_count": len(elapsed_cooldown_states),
                         "expired_active_intent_ids": [
                             str(i.get("id")) for i in expired_active_intents if i.get("id")
                         ],
@@ -836,6 +853,9 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                         ],
                         "stale_delivery_attempt_ids": [
                             str(a.get("id")) for a in stale_delivery_attempts if a.get("id")
+                        ],
+                        "elapsed_cooldown_user_ids": [
+                            str(s.get("user_id")) for s in elapsed_cooldown_states if s.get("user_id")
                         ],
                     },
                 ))
@@ -1041,12 +1061,14 @@ _ACTION_HINT_COUNT_KEYS = (
     "stale_state_count",
     "expired_active_intent_count",
     "stale_delivery_attempt_count",
+    "elapsed_cooldown_state_count",
 )
 _ACTION_HINT_LIST_KEYS = (
     "expired_active_intent_ids",
     "stale_outbox_ids",
     "stale_state_user_ids",
     "stale_delivery_attempt_ids",
+    "elapsed_cooldown_user_ids",
 )
 
 
