@@ -327,12 +327,20 @@ def _due_hint(ends_at: str | None) -> dict[str, Any]:
 def _proactive_outbox_message(outbox: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     draft = str(outbox.get("draft_text") or "").strip()
     preview = draft[:220] if draft else "主动消息草稿为空，需要先检查。"
+    error = str(outbox.get("error") or "").strip()
     hint = {
         "tool": "life_proactive",
         "action": "send/suppress",
         "outbox_id": outbox.get("id"),
         "intent_id": outbox.get("intent_id"),
     }
+    if error:
+        hint.update({
+            "action": "inspect_delivery_failure",
+            "delivery_channel": outbox.get("delivery_channel"),
+            "suggested_actions": ["fix_adapter_then_retry", "suppress"],
+        })
+        return "主动消息投递失败，等待检查", f"{preview}（上次投递失败：{error[:180]}）", hint
     if _outbox_send_after_is_future(outbox):
         hint["action"] = "wait_until_send_after"
         hint["send_after"] = outbox.get("send_after")
@@ -752,7 +760,7 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
         items.append(_item("proactive_intent", "action" if p.get("target_type") != "self_journal" else "info", title, message, source_table="proactive_intents", source_id=p.get("id"), section="proactive", when=p.get("created_at"), action_hint=hint))
     for o in outbox:
         title, message, hint = _proactive_outbox_message(o)
-        severity = "info" if _outbox_send_after_is_future(o) else "action"
+        severity = "warning" if o.get("error") else ("info" if _outbox_send_after_is_future(o) else "action")
         items.append(_item("proactive_outbox", severity, title, message, source_table="proactive_outbox", source_id=o.get("id"), section="proactive", when=o.get("created_at"), action_hint=hint))
     suppressed_intents = _recent_suppressed_proactive_intents(conn, owner_kind, owner_id, limit=limit)
     if suppressed_intents:
@@ -1293,7 +1301,17 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
     elif item_type == "proactive_intent":
         plan.update({"application_type": "lifeops", "tool": "life_proactive", "action": "evaluate", "safe_auto": True, "ops": [{"type": "EVALUATE_PROACTIVE_INTENT", "payload": {"intent_id": hint.get("intent_id") or item.get("source_id"), "manual": True, "source": "life_review_action"}}], "message": "Evaluate this proactive intent against delivery policy."})
     elif item_type == "proactive_outbox":
-        if choice not in {"send", "suppress"}:
+        if hint.get("action") == "inspect_delivery_failure":
+            plan.update({
+                "application_type": "manual_review",
+                "tool": "life_proactive",
+                "action": "inspect_delivery_failure",
+                "safe_auto": False,
+                "requires_choice": True,
+                "choices": hint.get("suggested_actions") or ["fix_adapter_then_retry", "suppress"],
+                "message": "Inspect the delivery adapter failure before retrying or suppressing this proactive outbox item.",
+            })
+        elif choice not in {"send", "suppress"}:
             plan.update({"application_type": "manual_choice", "requires_choice": True, "safe_auto": False, "choices": ["send", "suppress"], "message": "Choose send or suppress for proactive outbox items."})
         elif choice == "send":
             plan.update({"application_type": "lifeops", "tool": "life_proactive", "action": "send", "safe_auto": False, "ops": [{"type": "MARK_PROACTIVE_SENT", "payload": {"outbox_id": hint.get("outbox_id") or item.get("source_id"), "manual": True, "source": "life_review_action"}}], "message": "Mark this outbox message as sent."})

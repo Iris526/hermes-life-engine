@@ -173,6 +173,42 @@ def test_proactive_deliver_failure_keeps_outbox_queued(tmp_path, monkeypatch):
         rt.close()
 
 
+def test_review_surfaces_failed_proactive_delivery_as_adapter_attention(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="这条失败后要等我检查投递器。")
+
+        result = rt.proactive(
+            "deliver",
+            delivery_mode="command",
+            delivery_command=_failure_command(tmp_path),
+            delivery_channel="qq",
+        )
+
+        assert result["status"] == "failed"
+        review = rt.review("summary")
+        item = next(i for i in review["items"] if i["item_type"] == "proactive_outbox" and i["source_id"] == outbox_id)
+
+        assert item["severity"] == "warning"
+        assert item["title"] == "主动消息投递失败，等待检查"
+        assert item["action_hint"]["action"] == "inspect_delivery_failure"
+        assert item["action_hint"]["delivery_channel"] == "qq"
+        assert item["action_hint"]["suggested_actions"] == ["fix_adapter_then_retry", "suppress"]
+        assert "上次投递失败" in item["message"]
+        assert "action=inspect_delivery_failure" in review["rendered"]
+        assert "可选：fix_adapter_then_retry/suppress" in review["rendered"]
+
+        preview = rt.review("preview_action", item_id=item["id"])
+        plan = preview["plan"]
+        assert plan["application_type"] == "manual_review"
+        assert plan["requires_choice"] is True
+        assert plan["choices"] == ["fix_adapter_then_retry", "suppress"]
+    finally:
+        rt.close()
+
+
 def test_proactive_deliver_defers_queued_outbox_during_quiet_hours(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     sink = tmp_path / "quiet_payload.json"
