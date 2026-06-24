@@ -383,6 +383,43 @@ def test_proactive_lifecycle_cleanup_retires_stale_outbox_and_state(tmp_path, mo
         rt.close()
 
 
+def test_proactive_lifecycle_cleanup_closes_stale_running_delivery_attempt(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="这条投递卡住后也不应该继续显示 running。")
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        intent_id = outbox[outbox_id]["intent_id"]
+        rt.conn.execute("UPDATE proactive_outbox SET status='delivering' WHERE id=?", (outbox_id,))
+        rt.conn.execute("UPDATE proactive_intents SET status='suppressed', suppression_reason='legacy direct edit' WHERE id=?", (intent_id,))
+        rt.conn.execute(
+            """INSERT INTO proactive_deliveries(
+                 id, outbox_id, intent_id, agent_id, target_user_id, status,
+                 delivery_channel, payload_json, created_at
+               ) VALUES(?,?,?,?,?,?,?,?,datetime('now','-20 minutes'))""",
+            ("prodel_cleanup_running", outbox_id, intent_id, "default-agent", "u1", "running", "qq", "{}"),
+        )
+
+        status = rt.proactive("status")
+        assert status["proactive"]["stale_outbox_count"] == 1
+        assert status["proactive"]["stale_delivery_attempt_count"] == 1
+
+        cleaned = rt.proactive("cleanup")
+
+        assert cleaned["retired_outbox_count"] == 1
+        assert cleaned["retired_outbox"][0]["closed_delivery_attempts"] == 1
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        assert outbox[outbox_id]["status"] == "suppressed"
+        attempt = rt.conn.execute("SELECT status, error, completed_at FROM proactive_deliveries WHERE id='prodel_cleanup_running'").fetchone()
+        assert attempt["status"] == "failed"
+        assert "outbox retired during proactive cleanup" in attempt["error"]
+        assert attempt["completed_at"] is not None
+        assert rt.proactive("status")["proactive"]["stale_delivery_attempt_count"] == 0
+    finally:
+        rt.close()
+
+
 def test_human_review_surfaces_and_applies_proactive_lifecycle_cleanup(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     rt = LifeEngineRuntime()

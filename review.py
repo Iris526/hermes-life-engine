@@ -391,6 +391,7 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                 "counts": lifecycle.get("counts") or {},
                 "stale_outbox_count": lifecycle.get("stale_outbox_count", 0),
                 "stale_state_count": lifecycle.get("stale_state_count", 0),
+                "stale_delivery_attempt_count": lifecycle.get("stale_delivery_attempt_count", 0),
             }
             stale_outbox = lifecycle.get("stale_outbox") or []
             stale_states = lifecycle.get("stale_states") or []
@@ -400,6 +401,9 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                     bits.append(f"{len(stale_outbox)} 条 outbox 已不该再发送")
                 if stale_states:
                     bits.append(f"{len(stale_states)} 条用户主动状态还挂着旧意图")
+                stale_delivery_attempts = int(lifecycle.get("stale_delivery_attempt_count") or 0)
+                if stale_delivery_attempts:
+                    bits.append(f"{stale_delivery_attempts} 个投递 attempt 还停在 running")
                 items.append(_item(
                     "proactive_lifecycle_cleanup", "warning",
                     "主动消息队列需要整理",
