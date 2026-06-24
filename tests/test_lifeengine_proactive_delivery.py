@@ -429,11 +429,16 @@ def test_proactive_status_and_review_explain_cooldown_state(tmp_path, monkeypatc
         assert state["pending_count"] == 1
         assert state["next_pending_intent"]["id"] == second_intent_id
         assert state["next_allowed_proactive_at"]
+        assert state["action_hint"]["action"] == "wait_until_cooldown_ends"
+        assert state["action_hint"]["user_id"] == "u1"
+        assert state["action_hint"]["pending_intent_ids"] == [second_intent_id]
+        assert state["action_hint"]["next_allowed_proactive_at"] == state["next_allowed_proactive_at"]
         assert status["proactive"]["counts"]["active_state_rows"] == 1
 
         review = rt.review("summary")
 
         assert review["summary"]["proactive_lifecycle"]["active_states"][0]["wait_reason"] == "cooldown"
+        assert review["summary"]["proactive_lifecycle"]["active_states"][0]["action_hint"]["action"] == "wait_until_cooldown_ends"
         assert any("用户节奏 u1=冷却/1 条" in bit for bit in review["summary"]["proactive_lifecycle"]["render_bits"])
         assert "用户节奏 u1=冷却/1 条" in review["rendered"]
         assert "主动消息：正常" in review["rendered"]

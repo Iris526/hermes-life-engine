@@ -1056,6 +1056,24 @@ def _active_state_rows(conn, agent_id: str, limit: int = 20) -> list[dict[str, A
         # telling review that the agent is still waiting when it can speak again.
         if not valid_pending and not stale_pending and wait_reason == "cooldown" and not has_future_cooldown:
             continue
+        if wait_reason == "cooldown":
+            action = "wait_until_cooldown_ends" if has_future_cooldown else "cleanup_elapsed_cooldown"
+            human_hint = "等冷却结束后再评估待说内容。" if has_future_cooldown else "冷却已结束，可清理状态。"
+        elif wait_reason == "quiet_hours":
+            action = "wait_until_quiet_hours_end"
+            human_hint = "安静时段内先不打扰，保留为待说。"
+        elif wait_reason == "daily_limit":
+            action = "wait_until_daily_budget_resets"
+            human_hint = "今天主动次数已用完，等明天再说。"
+        elif wait_reason in {"pending_only", "manual_send_pending"}:
+            action = "manual_review_pending"
+            human_hint = "策略要求只放入待说箱，人工确认后再发送。"
+        elif wait_reason == "score_below_auto_send":
+            action = "keep_pending_until_more_relevant"
+            human_hint = "主动分数不够高，先留在待说箱。"
+        else:
+            action = "inspect_pending_state" if valid_pending else "observe_state"
+            human_hint = "有待说内容，按当前节奏等待下一次评估。" if valid_pending else "当前主动状态可观察。"
         out.append({
             "user_id": d.get("user_id"),
             "state": d.get("state"),
@@ -1074,6 +1092,15 @@ def _active_state_rows(conn, agent_id: str, limit: int = 20) -> list[dict[str, A
             "last_proactive_sent_at": d.get("last_proactive_sent_at"),
             "next_allowed_proactive_at": next_allowed,
             "updated_at": d.get("updated_at"),
+            "action_hint": {
+                "tool": "life_proactive",
+                "action": action,
+                "message": human_hint,
+                "user_id": d.get("user_id"),
+                "pending_intent_ids": valid_pending[:5],
+                "stale_pending_count": len(stale_pending),
+                "next_allowed_proactive_at": next_allowed,
+            },
         })
     return out
 
