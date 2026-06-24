@@ -48,6 +48,10 @@ _OUTBOX_SYSTEM_PHRASES = (
     "任务报告",
     "系统提示",
     "完成了以下",
+    "进度更新",
+    "执行结果",
+    "已处理",
+    "处理完成",
 )
 _OUTBOX_MAX_CHARS = 90
 # LifeAuthor 为 outbox 生成最终消息时使用的结构化输出合同。调用方只读取

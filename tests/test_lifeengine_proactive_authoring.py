@@ -255,6 +255,50 @@ def test_proactive_outbox_rejects_provided_report_draft_before_queue(tmp_path):
         rt.close()
 
 
+def test_proactive_outbox_rejects_progress_update_draft_before_queue(tmp_path):
+    """“进度更新/执行结果”这类单行报告腔也不能直接进 QQ outbox。"""
+    _fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        rt.control("module", key="life_author", value="off")
+        created = rt.proactive(
+            "create",
+            summary="晚饭后整理了今天的符纸账和明早要补的材料。",
+            target_type="user",
+            target_id="u1",
+            intent_type="report_progress",
+            importance=95,
+            urgency=90,
+            novelty=80,
+            relationship_relevance=90,
+            privacy_level="safe_to_share",
+        )
+        intent_id = created["results"][0]["result"]["id"]
+
+        evaluated = rt.proactive(
+            "evaluate",
+            intent_id=intent_id,
+            draft_text="进度更新：晚饭后符纸账已处理，执行结果正常。",
+        )
+
+        item = evaluated["results"][0]["result"]["evaluated"][0]
+        text = item["outbox"]["draft_text"]
+        assert item["decision"] == "outbox_queued"
+        assert "进度更新" not in text
+        assert "执行结果" not in text
+        assert "已处理" not in text
+        assert text.startswith("我这边")
+        audit = rt.conn.execute(
+            "SELECT * FROM audit_log WHERE audit_type='proactive_outbox_author_rejected' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert audit is not None
+        assert "system_phrase:进度更新" in audit["payload_json"]
+        assert '"source":"provided_draft"' in audit["payload_json"]
+    finally:
+        rt.close()
+
+
 def test_proactive_outbox_fallback_inserts_first_person_for_bare_summary(tmp_path):
     """兜底文案不应把无主语摘要原样推给 QQ，对外要像本人一句话。"""
     _fresh_home(tmp_path)
