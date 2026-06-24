@@ -23,7 +23,7 @@ from .trace import append_audit, new_id
 SCENARIOS: list[tuple[str, str]] = [
     ("CRD01_CHAT_DELAYS_SLEEP_ACTUAL_DIFFERS", "Conversation can delay actual sleep beyond planned sleep time"),
     ("CRD02_CALL_WAKES_SLEEP_AND_RELEASES_DIGEST", "life_call wakes sleep, releases delayed replies, and creates an aggregate digest"),
-    ("CRD03_WAKE_DREAM_SHARE_INTENT", "After waking, DreamRun creates a dream entry and a shareable proactive intent"),
+    ("CRD03_WAKE_DREAM_SHARE_INTENT", "After waking, DreamRun creates a dream entry and a shareable wake topic"),
     ("CRD04_DREAM_AUDIT_REPAIR_AND_WAKE_REPLY", "DreamAudit can find stale schedule/reply state and apply safe repairs through LifeOps"),
     ("CRD05_INTERRUPTED_SLEEP_AFFECTS_NEXT_EXECUTION", "Interrupted/short sleep affects next-day execution outcome"),
     ("CRD06_TRACE_COVERS_USER_VISIBLE_CHAIN", "Trace surfaces the event/sleep/reply/dream/execution chain for explanation"),
@@ -159,12 +159,15 @@ def run_sleep_reply_dream_conversation_acceptance(rt: Any, owner_kind: str, owne
         sess = _latest_sleep_session(rt, synthetic_owner_id)
         dream = rt.dream("run", owner_id=synthetic_owner_id, sleep_session_id=sess["id"], force=True, target_user_id="acceptance-user")
         entries = rt.dream("entries", owner_id=synthetic_owner_id)["entries"]
+        runs = rt.dream("runs", owner_id=synthetic_owner_id, limit=5)["runs"]
         intents = rt.proactive("list", owner_id=synthetic_owner_id, limit=20)["intents"]
         assert entries
-        assert any(i.get("generated_by") == "dream" or i.get("intent_type") == "self_reflection_share" for i in intents)
+        share_status = str((runs[0] if runs else {}).get("share_status") or "")
+        has_dream_intent = any(i.get("generated_by") == "dream" or i.get("intent_type") == "self_reflection_share" for i in intents)
+        assert share_status in {"first_reply_pending", "intent_generated"} or has_dream_intent
         context["dream_run_id"] = (dream.get("dream_run") or {}).get("id")
         context["dream_entry_id"] = entries[0]["id"]
-        return {"ok": True, "sleep_session_id": sess["id"], "dream_run_id": context["dream_run_id"], "dream_entry_id": entries[0]["id"], "intent_count": len(intents)}
+        return {"ok": True, "sleep_session_id": sess["id"], "dream_run_id": context["dream_run_id"], "dream_entry_id": entries[0]["id"], "share_status": share_status, "intent_count": len(intents)}
 
     def s4_dream_audit_repair_and_wake_reply() -> dict[str, Any]:
         ev = rt.event_tool("create", owner_id=synthetic_owner_id, title="过期未结算小任务", event_type="maintenance", event_category="maintenance", status="planned", source="acceptance", importance=20)

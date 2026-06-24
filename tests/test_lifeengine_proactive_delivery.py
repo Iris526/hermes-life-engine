@@ -660,6 +660,38 @@ def test_human_review_surfaces_and_applies_proactive_lifecycle_cleanup(tmp_path,
         rt.close()
 
 
+def test_review_batch_safely_applies_proactive_lifecycle_cleanup(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="这条孤儿消息应该能被安全批处理整理。")
+        intent_id = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}[outbox_id]["intent_id"]
+        rt.conn.execute("DELETE FROM proactive_intents WHERE id=?", (intent_id,))
+
+        policy = rt.review("policy")["review_action_policy"]["policy"]
+        assert "proactive_lifecycle_cleanup" in policy["safe_item_types"]
+
+        review = rt.review("summary")
+        preview = rt.review("batch_preview", review_run_id=review["review_run_id"], section="proactive")
+
+        assert preview["plan"]["selected_count"] == 1
+        assert preview["plan"]["items"][0]["item_type"] == "proactive_lifecycle_cleanup"
+        assert preview["plan"]["items"][0]["plan"]["safe_auto"] is True
+
+        applied = rt.review("apply_all", review_run_id=review["review_run_id"], section="proactive")
+
+        assert applied["ok"] is True
+        assert applied["status"] == "applied"
+        assert applied["results"][0]["output"]["retired_outbox_count"] == 1
+        assert rt.proactive("status")["proactive"]["ok"] is True
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        assert outbox[outbox_id]["status"] == "suppressed"
+        assert outbox[outbox_id]["suppression_reason"] == "intent missing"
+    finally:
+        rt.close()
+
+
 def test_heartbeat_reconsiders_quiet_hours_pending_intent_after_window_clears(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     rt = LifeEngineRuntime()

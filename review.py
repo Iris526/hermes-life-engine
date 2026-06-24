@@ -1257,6 +1257,7 @@ DEFAULT_REVIEW_ACTION_POLICY: dict[str, Any] = {
         "delayed_reply",
         "dream_audit_finding",
         "proactive_intent",
+        "proactive_lifecycle_cleanup",
         "social_projection_failed",
         "policy_warning",
     ],
