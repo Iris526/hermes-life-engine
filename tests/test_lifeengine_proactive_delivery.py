@@ -435,6 +435,69 @@ def test_proactive_lifecycle_cleanup_retires_stale_outbox_and_state(tmp_path, mo
         rt.close()
 
 
+def test_proactive_status_does_not_render_stale_pending_as_active_rhythm(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="这条孤儿消息需要被整理掉。")
+        intent_id = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}[outbox_id]["intent_id"]
+        rt.conn.execute("DELETE FROM proactive_intents WHERE id=?", (intent_id,))
+
+        status = rt.proactive("status")
+
+        assert status["proactive"]["ok"] is False
+        assert status["proactive"]["stale_state_count"] == 1
+        assert status["proactive"]["active_states"] == []
+        assert status["proactive"]["counts"]["active_state_rows"] == 0
+
+        review = rt.review("summary")
+
+        assert "主动消息：需要整理" in review["rendered"]
+        assert "陈旧待说状态 1 条" in review["rendered"]
+        assert all("用户节奏" not in bit for bit in review["summary"]["proactive_lifecycle"]["render_bits"])
+        assert "用户节奏" not in review["rendered"]
+    finally:
+        rt.close()
+
+
+def test_proactive_status_keeps_valid_pending_when_state_also_has_stale_ids(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        first_outbox_id = _queue_outbox(rt, draft_text="这条旧消息已经不能再发。")
+        stale_intent_id = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}[first_outbox_id]["intent_id"]
+        rt.conn.execute("UPDATE proactive_intents SET status='suppressed', suppression_reason='legacy direct edit' WHERE id=?", (stale_intent_id,))
+
+        second = rt.proactive(
+            "create",
+            summary="我想晚点再问一句近况。",
+            target_type="user",
+            target_id="u1",
+            intent_type="ask_about_user",
+            importance=90,
+            urgency=80,
+            novelty=80,
+            relationship_relevance=95,
+            privacy_level="safe_to_share",
+        )
+        valid_intent_id = second["results"][0]["result"]["id"]
+        rt.proactive("evaluate", intent_id=valid_intent_id, draft_text="这句应该还在等待。")
+
+        status = rt.proactive("status")
+        state = status["proactive"]["active_states"][0]
+
+        assert status["proactive"]["stale_state_count"] == 1
+        assert state["pending_count"] == 1
+        assert state["pending_intent_ids"] == [valid_intent_id]
+        assert state["stale_pending_count"] == 1
+        assert state["next_pending_intent"]["id"] == valid_intent_id
+        assert stale_intent_id not in state["pending_intent_ids"]
+    finally:
+        rt.close()
+
+
 def test_proactive_lifecycle_cleanup_closes_stale_running_delivery_attempt(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     rt = LifeEngineRuntime()

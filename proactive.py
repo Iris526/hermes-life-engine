@@ -816,18 +816,30 @@ def _active_state_rows(conn, agent_id: str, limit: int = 20) -> list[dict[str, A
         d = _as_dict(row) or {}
         pending = [str(pid) for pid in (d.get("pending_intent_ids") or []) if pid]
         pending_intent = None
+        valid_pending: list[str] = []
+        stale_pending: list[str] = []
         if pending:
             placeholders = ",".join("?" for _ in pending)
-            found = conn.execute(
+            found_rows = conn.execute(
                 f"""SELECT id, intent_type, summary, status, decision_json, updated_at
                       FROM proactive_intents
                      WHERE agent_id=? AND id IN ({placeholders})
-                     ORDER BY updated_at DESC LIMIT 1""",
+                     ORDER BY updated_at DESC""",
                 (agent_id, *pending),
-            ).fetchone()
-            if found:
+            ).fetchall()
+            found_by_id = {str(r["id"]): dict(r) for r in found_rows}
+            for pid in pending:
+                status = str((found_by_id.get(pid) or {}).get("status") or "")
+                if not status or status in TERMINAL_INTENT_STATUSES:
+                    stale_pending.append(pid)
+                else:
+                    valid_pending.append(pid)
+            for found in found_rows:
+                if str(found["id"]) not in valid_pending:
+                    continue
                 pending_intent = dict(found)
                 pending_intent["decision"] = loads(pending_intent.pop("decision_json"), {})
+                break
         wait_reason = str(d.get("state") or "silent")
         next_allowed = d.get("next_allowed_proactive_at")
         try:
@@ -838,11 +850,22 @@ def _active_state_rows(conn, agent_id: str, limit: int = 20) -> list[dict[str, A
         decision = (pending_intent or {}).get("decision") or {}
         if decision.get("decision") in {"quiet_hours", "daily_limit", "pending_only", "manual_send_pending", "score_below_auto_send"}:
             wait_reason = str(decision.get("decision"))
+        has_future_cooldown = False
+        try:
+            has_future_cooldown = bool(next_allowed and to_epoch(next_allowed) > int(_now().timestamp()))
+        except Exception:
+            has_future_cooldown = False
+        # If a state row only points at terminal/missing intents, lifecycle
+        # status should ask for cleanup without also presenting a live waiting
+        # rhythm. Mixed rows still show the valid pending ids.
+        if not valid_pending and stale_pending and not has_future_cooldown:
+            continue
         out.append({
             "user_id": d.get("user_id"),
             "state": d.get("state"),
-            "pending_count": len(pending),
-            "pending_intent_ids": pending[:5],
+            "pending_count": len(valid_pending),
+            "pending_intent_ids": valid_pending[:5],
+            "stale_pending_count": len(stale_pending),
             "next_pending_intent": {
                 "id": pending_intent.get("id"),
                 "intent_type": pending_intent.get("intent_type"),
