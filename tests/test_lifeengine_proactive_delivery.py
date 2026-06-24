@@ -477,6 +477,81 @@ def test_proactive_lifecycle_cleanup_retires_stale_outbox_and_state(tmp_path, mo
         rt.close()
 
 
+def test_proactive_status_and_review_surface_expired_active_intents(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        created = rt.proactive(
+            "create",
+            summary="这句主动问候已经过了合适的时机。",
+            target_type="user",
+            target_id="u1",
+            intent_type="ask_about_user",
+            importance=95,
+            urgency=90,
+            novelty=80,
+            relationship_relevance=95,
+            privacy_level="safe_to_share",
+        )
+        intent_id = created["results"][0]["result"]["id"]
+        rt.proactive("evaluate", intent_id=intent_id, draft_text="这句过期后不该再发。")
+        rt.conn.execute(
+            "UPDATE proactive_intents SET expires_at_ts=?, expires_at=datetime('now','-1 hour') WHERE id=?",
+            (int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()), intent_id),
+        )
+
+        status = rt.proactive("status")
+
+        assert status["proactive"]["ok"] is False
+        assert status["proactive"]["expired_active_intent_count"] == 1
+        assert status["proactive"]["expired_active_intents"][0]["id"] == intent_id
+        assert status["proactive"]["counts"]["expired_active_intents"] == 1
+
+        review = rt.review("summary")
+        items = [i for i in review["items"] if i["item_type"] == "proactive_lifecycle_cleanup"]
+
+        assert items
+        assert items[0]["source_id"] == intent_id
+        assert items[0]["action_hint"]["expired_active_intent_count"] == 1
+        assert "过期待说 intent 1 条" in review["rendered"]
+        assert "1 条待说 intent 已过期" in review["rendered"]
+    finally:
+        rt.close()
+
+
+def test_proactive_lifecycle_cleanup_expires_due_active_intent(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="这条过期后应该被清掉。")
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        intent_id = outbox[outbox_id]["intent_id"]
+        rt.conn.execute(
+            "UPDATE proactive_intents SET expires_at_ts=?, expires_at=datetime('now','-1 hour') WHERE id=?",
+            (int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp()), intent_id),
+        )
+
+        cleaned = rt.proactive("cleanup")
+
+        assert cleaned["expired_intent_count"] == 1
+        assert cleaned["expired_intents"] == [intent_id]
+        assert cleaned["expired_state_rows_changed"] == 1
+        assert cleaned["retired_outbox_count"] == 0
+        intent = rt.proactive("get", intent_id=intent_id)["intent"]
+        assert intent["status"] == "expired"
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        assert outbox[outbox_id]["status"] == "expired"
+        assert outbox[outbox_id]["suppression_reason"] == "intent expired"
+        state = rt.proactive("state", user_id="u1")["state"]
+        assert state["state"] == "silent"
+        assert state["pending_intent_ids"] == []
+        assert rt.proactive("status")["proactive"]["ok"] is True
+    finally:
+        rt.close()
+
+
 def test_proactive_status_does_not_render_stale_pending_as_active_rhythm(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     rt = LifeEngineRuntime()

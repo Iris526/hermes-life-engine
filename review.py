@@ -301,6 +301,9 @@ def _proactive_lifecycle_render_bits(lifecycle: dict[str, Any]) -> list[str]:
         bits.append(f"投递中 outbox {delivering_outbox} 条")
     if generated or queued_intents:
         bits.append(f"待评估/待说 intent {generated + queued_intents} 条")
+    expired_active = int(lifecycle.get("expired_active_intent_count") or 0)
+    if expired_active:
+        bits.append(f"过期待说 intent {expired_active} 条")
     stale_outbox = int(lifecycle.get("stale_outbox_count") or 0)
     stale_states = int(lifecycle.get("stale_state_count") or 0)
     stale_attempts = int(lifecycle.get("stale_delivery_attempt_count") or 0)
@@ -678,6 +681,8 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
             summary["proactive_lifecycle"] = {
                 "ok": lifecycle.get("ok"),
                 "counts": lifecycle.get("counts") or {},
+                "expired_active_intent_count": lifecycle.get("expired_active_intent_count", 0),
+                "expired_active_intents": lifecycle.get("expired_active_intents") or [],
                 "stale_outbox_count": lifecycle.get("stale_outbox_count", 0),
                 "stale_state_count": lifecycle.get("stale_state_count", 0),
                 "stale_delivery_attempt_count": lifecycle.get("stale_delivery_attempt_count", 0),
@@ -686,11 +691,14 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                 "render_bits": _proactive_lifecycle_render_bits(lifecycle),
             }
             stale_outbox = lifecycle.get("stale_outbox") or []
+            expired_active_intents = lifecycle.get("expired_active_intents") or []
             stale_states = lifecycle.get("stale_states") or []
             stale_delivery_attempts = lifecycle.get("stale_delivery_attempts") or []
             stale_delivery_attempt_count = int(lifecycle.get("stale_delivery_attempt_count") or 0)
-            if stale_outbox or stale_states or stale_delivery_attempts:
+            if stale_outbox or expired_active_intents or stale_states or stale_delivery_attempts:
                 bits = []
+                if expired_active_intents:
+                    bits.append(f"{len(expired_active_intents)} 条待说 intent 已过期")
                 if stale_outbox:
                     bits.append(f"{len(stale_outbox)} 条 outbox 已不该再发送")
                 if stale_states:
@@ -705,11 +713,16 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                     source_id=(
                         stale_outbox[0].get("id")
                         if stale_outbox
-                        else (stale_states[0].get("user_id") if stale_states else stale_delivery_attempts[0].get("outbox_id"))
+                        else (
+                            expired_active_intents[0].get("id")
+                            if expired_active_intents
+                            else (stale_states[0].get("user_id") if stale_states else stale_delivery_attempts[0].get("outbox_id"))
+                        )
                     ),
                     action_hint={
                         "tool": "life_proactive",
                         "action": "cleanup",
+                        "expired_active_intent_count": len(expired_active_intents),
                         "stale_outbox_count": len(stale_outbox),
                         "stale_state_count": len(stale_states),
                         "stale_delivery_attempt_count": stale_delivery_attempt_count,
@@ -914,6 +927,7 @@ _ACTION_HINT_ID_KEYS = (
 _ACTION_HINT_COUNT_KEYS = (
     "stale_outbox_count",
     "stale_state_count",
+    "expired_active_intent_count",
     "stale_delivery_attempt_count",
 )
 
@@ -1163,7 +1177,7 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
         else:
             plan.update({"application_type": "lifeops", "tool": "life_proactive", "action": "suppress", "safe_auto": False, "ops": [{"type": "SUPPRESS_PROACTIVE_INTENT", "payload": {"intent_id": hint.get("intent_id") or item.get("source_id"), "reason": "suppressed from /life review", "source": "life_review_action"}}], "message": "Suppress the related proactive intent."})
     elif item_type == "proactive_lifecycle_cleanup":
-        plan.update({"application_type": "direct", "tool": "life_proactive", "action": "cleanup", "safe_auto": True, "message": "Clean stale proactive outbox/state rows that point at terminal or missing intents."})
+        plan.update({"application_type": "direct", "tool": "life_proactive", "action": "cleanup", "safe_auto": True, "message": "Expire due proactive intents and clean stale outbox/state rows."})
     elif item_type == "social_projection_failed":
         plan.update({
             "application_type": "direct",

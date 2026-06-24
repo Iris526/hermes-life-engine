@@ -869,6 +869,23 @@ def _stale_outbox_rows(conn, agent_id: str, limit: int = 20) -> list[dict[str, A
     return [dict(r) for r in rows]
 
 
+def _expired_active_intent_rows(conn, agent_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    """Return generated/queued intents that should already be retired by TTL."""
+    now_ts = int(_now().timestamp())
+    rows = conn.execute(
+        """SELECT id, status, intent_type, summary, target_type, target_id,
+                  created_at, expires_at, expires_at_ts, updated_at
+             FROM proactive_intents
+            WHERE agent_id=? AND status IN ('generated','queued')
+              AND ( (expires_at_ts IS NOT NULL AND expires_at_ts <= ?)
+                    OR created_at <= datetime('now', ?) )
+            ORDER BY COALESCE(expires_at_ts, 0) ASC, created_at ASC
+            LIMIT ?""",
+        (agent_id, now_ts, f"-{_STALE_MAX_HOURS:g} hours", int(limit)),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _stale_pending_state_rows(conn, agent_id: str, limit: int = 20) -> list[dict[str, Any]]:
     """Return proactive state rows that still point at retired or missing intents."""
     rows = conn.execute(
@@ -1033,6 +1050,7 @@ def proactive_lifecycle_status(conn, agent_id: str, *, limit: int = 20) -> dict[
         "delivering_outbox": _count_status(conn, "proactive_outbox", agent_id, "delivering"),
     }
     stale_outbox = _stale_outbox_rows(conn, agent_id, limit=limit)
+    expired_active_intents = _expired_active_intent_rows(conn, agent_id, limit=limit)
     stale_states = _stale_pending_state_rows(conn, agent_id, limit=limit)
     active_states = _active_state_rows(conn, agent_id, limit=limit)
     stale_delivery_attempts = _stale_running_delivery_attempt_rows(conn, agent_id, limit=limit)
@@ -1042,14 +1060,17 @@ def proactive_lifecycle_status(conn, agent_id: str, *, limit: int = 20) -> dict[
     # status to abandoned active delivery claims.
     stale_delivery_attempt_count = max(len(stale_delivery_attempts), terminal_stale_attempts)
     counts["active_state_rows"] = len(active_states)
+    counts["expired_active_intents"] = len(expired_active_intents)
     return {
-        "ok": not stale_outbox and not stale_states and not stale_delivery_attempt_ids,
+        "ok": not stale_outbox and not expired_active_intents and not stale_states and not stale_delivery_attempt_ids,
         "counts": counts,
         "stale_outbox_count": len(stale_outbox),
+        "expired_active_intent_count": len(expired_active_intents),
         "stale_state_count": len(stale_states),
         "stale_delivery_attempt_count": stale_delivery_attempt_count,
         "stale_delivery_attempts": stale_delivery_attempts,
         "stale_outbox": stale_outbox,
+        "expired_active_intents": expired_active_intents,
         "stale_states": stale_states,
         "active_states": active_states,
     }
@@ -1061,12 +1082,13 @@ def _count_status(conn, table: str, agent_id: str, status: str) -> int:
 
 
 def cleanup_proactive_lifecycle(conn, agent_id: str, *, limit: int = 100) -> dict[str, Any]:
-    """Retire stale active outbox rows and remove terminal/missing ids from state.
+    """Expire due intents, retire stale outbox, and remove stale ids from state.
 
     This is an explicit maintenance action, not part of review reads. It handles
     old live-plugin divergence where an intent was suppressed/expired manually
     but a queued outbox or pending state entry was left behind.
     """
+    expired = expire_intents(conn, agent_id)
     stale_outbox = _stale_outbox_rows(conn, agent_id, limit=limit)
     retired_outbox: list[dict[str, Any]] = []
     for row in stale_outbox:
@@ -1138,17 +1160,20 @@ def cleanup_proactive_lifecycle(conn, agent_id: str, *, limit: int = 100) -> dic
         )
         changed_states.append({**row, "next_state": next_state, "kept_intent_ids": kept})
 
-    if retired_outbox or changed_states or requeued_delivery_claims:
+    if expired.get("count") or retired_outbox or changed_states or requeued_delivery_claims:
         append_journal(
             conn,
             "agent",
             agent_id,
             "proactive_lifecycle_cleaned",
-            {"retired_outbox": retired_outbox, "changed_states": changed_states, "requeued_delivery_claims": requeued_delivery_claims},
+            {"expired_intents": expired, "retired_outbox": retired_outbox, "changed_states": changed_states, "requeued_delivery_claims": requeued_delivery_claims},
             "proactive",
         )
     return {
         "ok": True,
+        "expired_intent_count": int(expired.get("count") or 0),
+        "expired_intents": expired.get("expired") or [],
+        "expired_state_rows_changed": int(expired.get("state_rows_changed") or 0),
         "retired_outbox_count": len(retired_outbox),
         "state_rows_changed": len(changed_states),
         "requeued_delivery_claim_count": len(requeued_delivery_claims),
