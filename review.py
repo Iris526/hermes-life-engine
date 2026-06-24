@@ -309,6 +309,64 @@ def _social_projection_failure_message(audit: dict[str, Any]) -> tuple[str, str,
     )
 
 
+def _open_social_requests(conn, owner_kind: str, owner_id: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Return active social/world requests that need scheduling or closure."""
+    rows = conn.execute(
+        """SELECT r.*, requester.display_name AS requester_name, target.display_name AS target_name
+             FROM social_requests r
+             LEFT JOIN world_entities requester ON requester.id=r.requester_entity_id
+             LEFT JOIN world_entities target ON target.id=r.target_entity_id
+             WHERE r.owner_kind=? AND r.owner_id=? AND r.status IN ('open','accepted','in_progress')
+             ORDER BY
+               CASE r.status WHEN 'accepted' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,
+               r.updated_at DESC,
+               r.created_at DESC
+             LIMIT ?""",
+        (owner_kind, owner_id, int(limit)),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        d = dict(row)
+        for key in ("details_json", "quote_json", "billing_json", "evidence_json"):
+            if key in d:
+                d[key[:-5]] = loads(d.pop(key), {})
+        out.append(d)
+    return out
+
+
+def _social_request_message(req: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    status = str(req.get("status") or "open")
+    topic = str(req.get("topic") or "unknown").strip()
+    request_type = str(req.get("request_type") or "request").strip()
+    summary = str(req.get("summary") or "").strip()
+    requester = str(req.get("requester_name") or "未命名来访者").strip()
+    target = str(req.get("target_name") or "未指定对象").strip()
+    linked = req.get("linked_event_id") or req.get("linked_commission_id") or req.get("linked_activity_id")
+    base = summary or f"{requester} -> {target}，{request_type}:{topic}"
+    if status == "open":
+        title = "有新的社会请求待决定"
+        action = "accept/reject/convert_event"
+        tail = "需要决定是否接下、拒绝，或转成事件/委托。"
+    elif status == "accepted":
+        title = "社会请求已接下，等待安排"
+        action = "convert_event/complete/cancel"
+        tail = "已接受但还没有完结；可转成事件、完成或取消。"
+    else:
+        title = "社会请求进行中，等待收尾"
+        action = "complete/cancel"
+        tail = "已经推进中，需要完成、取消，或补充关联进展。"
+    if linked:
+        tail = f"{tail} 已关联：{linked}。"
+    hint = {
+        "tool": "life_social",
+        "action": "request_transition",
+        "request_id": req.get("id"),
+        "status": status,
+        "suggested_actions": action.split("/"),
+    }
+    return title, f"{base}（{status}）。{tail}", hint
+
+
 def _doctor_summary(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
     from .doctor import run_doctor
 
@@ -474,6 +532,26 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
             source_table="audit_log", source_id=failure.get("id"), section="world",
             when=failure.get("created_at"), action_hint=hint,
         ))
+    if owner_kind == "agent":
+        try:
+            social_requests = _open_social_requests(conn, owner_kind, owner_id, limit)
+            if social_requests:
+                summary["social_requests"] = {
+                    "active": len(social_requests),
+                    "statuses": {
+                        status: sum(1 for r in social_requests if r.get("status") == status)
+                        for status in sorted({str(r.get("status") or "open") for r in social_requests})
+                    },
+                }
+            for req_item in social_requests:
+                title, message, hint = _social_request_message(req_item)
+                items.append(_item(
+                    "social_request", "action", title, message,
+                    source_table="social_requests", source_id=req_item.get("id"), section="social_world",
+                    when=req_item.get("updated_at") or req_item.get("created_at"), action_hint=hint,
+                ))
+        except Exception:
+            pass
 
     # Missed meals today: surface skipped/pending meals so the owner can nudge
     # the agent to eat (or knows why it didn't).
@@ -615,6 +693,11 @@ def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) ->
     social_projection = summary.get("social_projection") or {}
     if social_projection:
         lines.append(f"社会投影：待补投影 {social_projection.get('open_failures', 0)} 条")
+    social_requests = summary.get("social_requests") or {}
+    if social_requests:
+        statuses = social_requests.get("statuses") or {}
+        bits = [f"{k}={v}" for k, v in statuses.items()]
+        lines.append(f"社会请求：活跃 {social_requests.get('active', 0)} 条" + (f"（{'，'.join(bits)}）" if bits else ""))
     lines.append("")
 
     if not items:
@@ -791,6 +874,17 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
             "occurrence_id": hint.get("occurrence_id"),
             "message": "Retry the idempotent social/world projection for the failed event or occurrence.",
         })
+    elif item_type == "social_request":
+        plan.update({
+            "application_type": "manual_review",
+            "tool": "life_social",
+            "action": "request_transition",
+            "request_id": hint.get("request_id") or item.get("source_id"),
+            "safe_auto": False,
+            "requires_choice": True,
+            "choices": hint.get("suggested_actions") or ["accept", "reject", "convert_event", "complete"],
+            "message": "Choose the next social-request transition; LifeEngine will not invent an event or close it automatically.",
+        })
     elif item_type == "user_confirmation":
         if choice not in {"confirm", "reject"}:
             plan.update({"application_type": "manual_choice", "requires_choice": True, "choices": ["confirm", "reject"], "safe_auto": False, "message": "Choose confirm or reject for user-life confirmation items."})
@@ -853,6 +947,7 @@ DEFAULT_REVIEW_ACTION_POLICY: dict[str, Any] = {
         "user_confirmation",
         "proactive_outbox",
         "policy_conflict",
+        "social_request",
     ],
     "deny_item_types": [
         "doctor_warning",

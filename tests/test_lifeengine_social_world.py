@@ -211,6 +211,56 @@ def test_social_request_lifecycle_and_slot_advisories(tmp_path):
         rt.close()
 
 
+def test_human_review_surfaces_active_social_requests_without_closing_them(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        requester = _result(rt.social("create_entity", entity_kind="client", display_name="委托人乙"))
+        target = _result(rt.social("create_entity", entity_kind="shrine", display_name="归明观"))
+        open_request = _result(rt.social(
+            "record_request",
+            requester_entity_id=requester["id"],
+            target_entity_id=target["id"],
+            request_type="fieldwork_request",
+            topic="late_visit",
+            summary="想请明灯今晚去看一处响动。",
+        ))
+        completed_request = _result(rt.social(
+            "record_request",
+            requester_entity_id=requester["id"],
+            target_entity_id=target["id"],
+            request_type="wish",
+            topic="old_case",
+            summary="一件已经处理完的旧愿望。",
+            idempotency_key="test:completed-social-request",
+        ))
+        rt.social("request_transition", request_id=completed_request["id"], transition_action="complete")
+
+        review = rt.review("summary")
+        items = [i for i in review["items"] if i["item_type"] == "social_request"]
+
+        assert review["summary"]["social_requests"]["active"] == 1
+        assert "社会请求：活跃 1 条" in review["rendered"]
+        assert len(items) == 1
+        assert items[0]["source_id"] == open_request["id"]
+        assert items[0]["section"] == "social_world"
+        assert items[0]["action_hint"]["tool"] == "life_social"
+        assert items[0]["action_hint"]["action"] == "request_transition"
+        assert items[0]["action_hint"]["request_id"] == open_request["id"]
+        assert completed_request["id"] not in {i["source_id"] for i in items}
+
+        plan = rt.review("preview_action", item_id=items[0]["id"])
+        assert plan["plan"]["application_type"] == "manual_review"
+        assert plan["plan"]["requires_choice"] is True
+        assert plan["plan"]["request_id"] == open_request["id"]
+
+        still_open = rt.social("requests", status="open")["requests"]
+        assert any(r["id"] == open_request["id"] for r in still_open)
+    finally:
+        rt.close()
+
+
 def test_social_world_surfaces_in_inner_life_context(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
