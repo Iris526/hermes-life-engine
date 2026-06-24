@@ -337,6 +337,76 @@ def test_world_routes_and_conditions_feed_map_and_context(tmp_path: Path) -> Non
     assert world["map"]["counts"]["conditions"] >= 1
 
 
+def test_human_review_surfaces_world_model_hooks_without_auto_resolving(tmp_path: Path) -> None:
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        seeded = _seed_world(rt)
+        blocked_route = _result(rt.world(
+            "route",
+            key="route.blocked.rain_to_shrine",
+            name="雨棚巷封锁线",
+            route_type="road",
+            from_scope_kind="place",
+            from_scope_id=seeded["place"]["id"],
+            to_scope_kind="place",
+            to_scope_id=seeded["shrine"]["id"],
+            risk_level=88,
+            status="blocked",
+        ))
+        condition = _result(rt.world(
+            "condition",
+            key="cond.rain_shelter.hazard",
+            title="雨棚巷夜间异动",
+            condition_type="hazard",
+            scope_kind="place",
+            scope_id=seeded["place"]["id"],
+            severity=81,
+            intensity=73,
+            summary="符线节点在夜间持续波动。",
+        ))
+        presence = _result(rt.world(
+            "upsert_faction_presence",
+            faction_entity_id=seeded["faction"]["id"],
+            scope_kind="region",
+            scope_id=seeded["region"]["id"],
+            influence=86,
+            stance="contested",
+            summary="巡城司开始加强第七城巡查。",
+        ))
+
+        review = rt.review("summary")
+        items = {i["item_type"]: i for i in review["items"] if i["item_type"].startswith("world_")}
+
+        assert review["summary"]["world_review"] == {"conditions": 1, "routes": 1, "faction_presence": 1}
+        assert "世界模型：待整理 状态=1，路线=1，势力=1" in review["rendered"]
+        assert items["world_condition"]["source_id"] == condition["id"]
+        assert items["world_condition"]["action_hint"]["tool"] == "life_world"
+        assert items["world_condition"]["action_hint"]["condition_id"] == condition["id"]
+        assert items["world_route"]["source_id"] == blocked_route["id"]
+        assert items["world_route"]["action_hint"]["route_id"] == blocked_route["id"]
+        assert items["world_faction_presence"]["source_id"] == presence["id"]
+        assert items["world_faction_presence"]["action_hint"]["presence_id"] == presence["id"]
+
+        plan = rt.review("preview_action", item_id=items["world_condition"]["id"])
+        assert plan["plan"]["application_type"] == "manual_review"
+        assert plan["plan"]["tool"] == "life_world"
+        assert plan["plan"]["requires_choice"] is True
+        assert plan["plan"]["world_object_id"] == condition["id"]
+
+        preview = rt.review("apply_all", review_run_id=review["review_run_id"], section="world", dry_run=True)
+        selected_types = [item["item_type"] for item in preview["plan"]["items"]]
+        assert "world_condition" not in selected_types
+        assert "world_route" not in selected_types
+        assert "world_faction_presence" not in selected_types
+
+        assert rt.world("conditions")["conditions"][0]["status"] == "active"
+        assert any(r["id"] == blocked_route["id"] and r["status"] == "blocked" for r in rt.world("routes")["routes"])
+    finally:
+        rt.close()
+
+
 def test_world_chronicles_are_expandable_and_scope_bound(tmp_path: Path) -> None:
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()

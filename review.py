@@ -390,6 +390,94 @@ def _social_request_message(req: dict[str, Any]) -> tuple[str, str, dict[str, An
     return title, f"{base}（{status}）。{tail}", hint
 
 
+def _scope_label(item: dict[str, Any]) -> str:
+    scope_kind = str(item.get("scope_kind") or "").strip()
+    scope_id = str(item.get("scope_id") or "").strip()
+    if not scope_kind or scope_kind == "world":
+        return "全局"
+    return f"{scope_kind}:{scope_id}" if scope_id else scope_kind
+
+
+def _open_world_review_items(conn, owner_kind: str, owner_id: str, limit: int = 5) -> dict[str, list[dict[str, Any]]]:
+    """Return active world-model records that should be visible in human review.
+
+    This is deliberately read-only. The world model stores structured hooks like
+    hazards, blocked routes, and faction influence; review should make them
+    actionable without inventing a resolution or lore patch.
+    """
+    conditions = [dict(r) for r in conn.execute(
+        """SELECT * FROM world_conditions
+             WHERE owner_kind=? AND owner_id=? AND status='active'
+               AND (severity>=60 OR condition_type IN ('hazard','crisis','opportunity'))
+             ORDER BY severity DESC, updated_at DESC LIMIT ?""",
+        (owner_kind, owner_id, int(limit)),
+    ).fetchall()]
+    routes = [dict(r) for r in conn.execute(
+        """SELECT * FROM world_routes
+             WHERE owner_kind=? AND owner_id=? AND status IN ('blocked','closed')
+             ORDER BY risk_level DESC, updated_at DESC LIMIT ?""",
+        (owner_kind, owner_id, int(limit)),
+    ).fetchall()]
+    presence = [dict(r) for r in conn.execute(
+        """SELECT p.*, e.display_name AS faction_name
+             FROM world_faction_presence p
+             LEFT JOIN world_entities e ON e.id=p.faction_entity_id
+             WHERE p.owner_kind=? AND p.owner_id=? AND p.status='active'
+               AND (ABS(p.influence)>=70 OR p.stance IN ('hostile','contested','dominant'))
+             ORDER BY ABS(p.influence) DESC, p.updated_at DESC LIMIT ?""",
+        (owner_kind, owner_id, int(limit)),
+    ).fetchall()]
+    return {"conditions": conditions, "routes": routes, "faction_presence": presence}
+
+
+def _world_condition_message(condition: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    title = str(condition.get("title") or condition.get("key") or "世界状态").strip()
+    ctype = str(condition.get("condition_type") or "state").strip()
+    severity = int(float(condition.get("severity") or 0))
+    intensity = int(float(condition.get("intensity") or 0))
+    summary = str(condition.get("summary") or condition.get("content") or "").strip()
+    message = f"{_scope_label(condition)} 有 {ctype} 状态：{summary or title}（severity={severity}, intensity={intensity}）。需要人工决定是转成事件、继续观察，还是标记 resolved/expired。"
+    hint = {
+        "tool": "life_world",
+        "action": "condition_review",
+        "condition_id": condition.get("id"),
+        "key": condition.get("key"),
+        "suggested_actions": ["convert_event", "resolve", "expire", "keep_active"],
+    }
+    return "世界状态需要处理", message, hint
+
+
+def _world_route_message(route: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    name = str(route.get("name") or route.get("key") or "世界路线").strip()
+    status = str(route.get("status") or "blocked").strip()
+    risk = int(float(route.get("risk_level") or 0))
+    message = f"{name} 当前为 {status}，风险 {risk}。需要人工确认是否改道、关闭关联行程，或恢复路线状态。"
+    hint = {
+        "tool": "life_world",
+        "action": "route_review",
+        "route_id": route.get("id"),
+        "key": route.get("key"),
+        "suggested_actions": ["reroute", "reopen", "archive", "keep_blocked"],
+    }
+    return "世界路线受阻", message, hint
+
+
+def _world_faction_presence_message(presence: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    faction = str(presence.get("faction_name") or presence.get("faction_entity_id") or "未命名势力").strip()
+    influence = int(float(presence.get("influence") or 0))
+    stance = str(presence.get("stance") or "unknown").strip()
+    summary = str(presence.get("summary") or presence.get("content") or "").strip()
+    message = f"{faction} 在 {_scope_label(presence)} 的影响为 {influence}，立场 {stance}。{summary or '需要确认是否影响事件、请求或地图风险。'}"
+    hint = {
+        "tool": "life_world",
+        "action": "faction_presence_review",
+        "presence_id": presence.get("id"),
+        "faction_entity_id": presence.get("faction_entity_id"),
+        "suggested_actions": ["create_event", "update_stance", "archive", "keep_active"],
+    }
+    return "势力影响需要关注", message, hint
+
+
 def _doctor_summary(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
     from .doctor import run_doctor
 
@@ -558,6 +646,35 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
         ))
     if owner_kind == "agent":
         try:
+            world_review = _open_world_review_items(conn, owner_kind, owner_id, limit)
+            world_counts = {k: len(v) for k, v in world_review.items() if v}
+            if world_counts:
+                summary["world_review"] = world_counts
+            for condition in world_review.get("conditions") or []:
+                title, message, hint = _world_condition_message(condition)
+                items.append(_item(
+                    "world_condition", "action", title, message,
+                    source_table="world_conditions", source_id=condition.get("id"), section="world",
+                    when=condition.get("updated_at") or condition.get("created_at"), action_hint=hint,
+                ))
+            for route in world_review.get("routes") or []:
+                title, message, hint = _world_route_message(route)
+                items.append(_item(
+                    "world_route", "action", title, message,
+                    source_table="world_routes", source_id=route.get("id"), section="world",
+                    when=route.get("updated_at") or route.get("created_at"), action_hint=hint,
+                ))
+            for presence in world_review.get("faction_presence") or []:
+                title, message, hint = _world_faction_presence_message(presence)
+                items.append(_item(
+                    "world_faction_presence", "action", title, message,
+                    source_table="world_faction_presence", source_id=presence.get("id"), section="world",
+                    when=presence.get("updated_at") or presence.get("created_at"), action_hint=hint,
+                ))
+        except Exception:
+            pass
+    if owner_kind == "agent":
+        try:
             social_requests = _open_social_requests(conn, owner_kind, owner_id, limit)
             if social_requests:
                 summary["social_requests"] = {
@@ -722,6 +839,11 @@ def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) ->
         statuses = social_requests.get("statuses") or {}
         bits = [f"{k}={v}" for k, v in statuses.items()]
         lines.append(f"社会请求：活跃 {social_requests.get('active', 0)} 条" + (f"（{'，'.join(bits)}）" if bits else ""))
+    world_review = summary.get("world_review") or {}
+    if world_review:
+        labels = {"conditions": "状态", "routes": "路线", "faction_presence": "势力"}
+        bits = [f"{labels.get(k, k)}={v}" for k, v in world_review.items()]
+        lines.append("世界模型：待整理 " + "，".join(bits))
     lines.append("")
 
     if not items:
@@ -909,6 +1031,22 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
             "choices": hint.get("suggested_actions") or ["accept", "reject", "convert_event", "complete"],
             "message": "Choose the next social-request transition; LifeEngine will not invent an event or close it automatically.",
         })
+    elif item_type in {"world_condition", "world_route", "world_faction_presence"}:
+        plan.update({
+            "application_type": "manual_review",
+            "tool": "life_world",
+            "action": hint.get("action") or "review",
+            "safe_auto": False,
+            "requires_choice": True,
+            "choices": hint.get("suggested_actions") or ["review", "archive", "keep_active"],
+            "world_object_id": (
+                hint.get("condition_id")
+                or hint.get("route_id")
+                or hint.get("presence_id")
+                or item.get("source_id")
+            ),
+            "message": "Review this world-model hook manually; LifeEngine will not invent resolution, lore, or route changes.",
+        })
     elif item_type == "user_confirmation":
         if choice not in {"confirm", "reject"}:
             plan.update({"application_type": "manual_choice", "requires_choice": True, "choices": ["confirm", "reject"], "safe_auto": False, "message": "Choose confirm or reject for user-life confirmation items."})
@@ -972,6 +1110,9 @@ DEFAULT_REVIEW_ACTION_POLICY: dict[str, Any] = {
         "proactive_outbox",
         "policy_conflict",
         "social_request",
+        "world_condition",
+        "world_route",
+        "world_faction_presence",
     ],
     "deny_item_types": [
         "doctor_warning",
@@ -1121,7 +1262,9 @@ def _item_is_batch_safe(item: dict[str, Any], plan: dict[str, Any], policy: dict
             return False, "section_mismatch"
         if item_type in {"proactive_intent", "proactive_outbox"} and section != "proactive":
             return False, "section_mismatch"
-        if item_type == "social_projection_failed" and section != "world":
+        if item_type in {"social_projection_failed", "world_condition", "world_route", "world_faction_presence"} and section != "world":
+            return False, "section_mismatch"
+        if item_type == "social_request" and section not in {"world", "social_world"}:
             return False, "section_mismatch"
         if item_type == "user_confirmation" and section != "confirmations":
             return False, "section_mismatch"
