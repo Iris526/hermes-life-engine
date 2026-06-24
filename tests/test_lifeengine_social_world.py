@@ -242,6 +242,8 @@ def test_human_review_surfaces_active_social_requests_without_closing_them(tmp_p
 
         assert review["summary"]["social_requests"]["active"] == 1
         assert "社会请求：活跃 1 条" in review["rendered"]
+        assert f"request_id={open_request['id']}" in review["rendered"]
+        assert "可选：accept/reject/convert_event" in review["rendered"]
         assert len(items) == 1
         assert items[0]["source_id"] == open_request["id"]
         assert items[0]["section"] == "social_world"

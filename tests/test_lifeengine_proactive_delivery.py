@@ -494,6 +494,7 @@ def test_human_review_surfaces_and_applies_proactive_lifecycle_cleanup(tmp_path,
         assert "主动消息：需要整理" in review["rendered"]
         assert "陈旧 outbox 1 条" in review["rendered"]
         assert "陈旧待说状态 1 条" in review["rendered"]
+        assert "数量：stale_outbox_count=1，stale_state_count=1" in review["rendered"]
 
         applied = rt.review("apply", item_id=items[0]["id"])
 

@@ -203,6 +203,8 @@ def test_event_completion_survives_social_projection_failure_and_can_retry(tmp_p
         assert items
         assert review["summary"]["social_projection"]["open_failures"] == 1
         assert "社会投影：待补投影 1 条" in review["rendered"]
+        assert f"event_id={ev['id']}" in review["rendered"]
+        assert f"audit_id={items[0]['source_id']}" in review["rendered"]
         assert items[0]["action_hint"]["action"] == "retry_projection"
         assert items[0]["action_hint"]["event_id"] == ev["id"]
 

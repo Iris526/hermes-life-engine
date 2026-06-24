@@ -381,6 +381,11 @@ def test_human_review_surfaces_world_model_hooks_without_auto_resolving(tmp_path
 
         assert review["summary"]["world_review"] == {"conditions": 1, "routes": 1, "faction_presence": 1}
         assert "世界模型：待整理 状态=1，路线=1，势力=1" in review["rendered"]
+        assert f"condition_id={condition['id']}" in review["rendered"]
+        assert f"route_id={blocked_route['id']}" in review["rendered"]
+        assert f"presence_id={presence['id']}" in review["rendered"]
+        assert "可选：convert_event/resolve/expire/keep_active" in review["rendered"]
+        assert "可选：reroute/reopen/archive/keep_blocked" in review["rendered"]
         assert items["world_condition"]["source_id"] == condition["id"]
         assert items["world_condition"]["action_hint"]["tool"] == "life_world"
         assert items["world_condition"]["action_hint"]["condition_id"] == condition["id"]

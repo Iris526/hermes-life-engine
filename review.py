@@ -796,6 +796,52 @@ def _overall_severity(items: list[dict[str, Any]]) -> str:
     return "ok"
 
 
+_ACTION_HINT_ID_KEYS = (
+    "confirmation_id",
+    "dream_run_id",
+    "intent_id",
+    "outbox_id",
+    "audit_id",
+    "event_id",
+    "occurrence_id",
+    "request_id",
+    "condition_id",
+    "route_id",
+    "presence_id",
+    "faction_entity_id",
+)
+_ACTION_HINT_COUNT_KEYS = (
+    "stale_outbox_count",
+    "stale_state_count",
+    "stale_delivery_attempt_count",
+)
+
+
+def _render_action_hint(hint: dict[str, Any]) -> str | None:
+    """Render structured review hints without hiding the actionable IDs."""
+    if not hint:
+        return None
+    if hint.get("command"):
+        return f"   建议：{hint.get('command')}"
+    if not hint.get("tool"):
+        return None
+
+    action = hint.get("action")
+    parts = [f"建议工具：{hint.get('tool')}" + (f" action={action}" if action else "")]
+    ids = [f"{key}={hint.get(key)}" for key in _ACTION_HINT_ID_KEYS if hint.get(key)]
+    if ids:
+        parts.append("对象：" + "，".join(ids[:5]))
+    counts = [f"{key}={hint.get(key)}" for key in _ACTION_HINT_COUNT_KEYS if hint.get(key) is not None]
+    if counts:
+        parts.append("数量：" + "，".join(counts))
+    suggested = hint.get("suggested_actions") or []
+    if isinstance(suggested, list) and suggested:
+        parts.append("可选：" + "/".join(str(a) for a in suggested if a))
+    if hint.get("manual"):
+        parts.append("需要人工放行")
+    return "   " + "；".join(parts)
+
+
 def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) -> str:
     """Render a human-first review inbox.
 
@@ -874,12 +920,9 @@ def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) ->
             for it in group_items[:8]:
                 when = it.get("when") or "最近"
                 lines.append(f"{idx}. {when} · [{it.get('severity')}] {it.get('title')} — {it.get('message')}")
-                hint = it.get("action_hint") or {}
-                if hint:
-                    if hint.get("command"):
-                        lines.append(f"   建议：{hint.get('command')}")
-                    elif hint.get("tool"):
-                        lines.append(f"   建议工具：{hint.get('tool')} action={hint.get('action')}")
+                rendered_hint = _render_action_hint(it.get("action_hint") or {})
+                if rendered_hint:
+                    lines.append(rendered_hint)
                 idx += 1
             lines.append("")
     lines.append("常用：/life schedule 看日程；/life living 看生活节律和小纸条；/life call 立刻叫醒；/life config 查设定；/life advanced 看高级命令。")
