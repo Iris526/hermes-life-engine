@@ -73,7 +73,11 @@ def test_stall_event_completion_projects_social_world_idempotently(tmp_path):
             event_type="work",
             activity_domain="venture",
             tags=["摆摊", "归明观", "净符"],
-            attributes={"wish_topic": "general_blessing"},
+            attributes={
+                "wish_topic": "general_blessing",
+                "venue_name": "归明观",
+                "customer_group_name": "东市香客",
+            },
             location={"name": "东市摊位", "kind": "freeform"},
             resource_costs={},
         ))
@@ -98,6 +102,52 @@ def test_stall_event_completion_projects_social_world_idempotently(tmp_path):
         rep_evidence = loads(rt.conn.execute("SELECT evidence_json FROM reputation_events LIMIT 1").fetchone()["evidence_json"], {})
         assert rep_evidence["event_id"] == ev["id"]
         assert rep_evidence["source"].startswith("social_projector")
+        venue_meta = loads(rt.conn.execute("SELECT metadata_json FROM world_entities WHERE display_name='归明观'").fetchone()["metadata_json"], {})
+        audience_meta = loads(rt.conn.execute("SELECT metadata_json FROM world_entities WHERE display_name='东市香客'").fetchone()["metadata_json"], {})
+        assert venue_meta["name_source"] == "event_or_activity"
+        assert audience_meta["name_source"] == "event_attributes"
+    finally:
+        rt.close()
+
+
+def test_stall_projection_uses_unknown_placeholders_without_fixed_lore(tmp_path):
+    """没有结构化场所/客群证据时，社会投影不能写入固定归明观世界观名称。"""
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        rt.setup("一个未命名世界里的经营者，会做小型经营活动。")
+        rt.commit_canon()
+        rt.rename("阿澜")
+        rt.control("resume")
+        rt.living("init_resources")
+
+        ev = _result(rt.event_tool(
+            "create",
+            title="午后摆摊卖护符",
+            event_type="work",
+            activity_domain="venture",
+            tags=["摆摊", "护符"],
+            attributes={"wish_topic": "general_blessing", "goods_name": "护符"},
+            resource_costs={},
+        ))
+        rt.event_tool("complete", event_id=ev["id"], summary="卖得还算顺利。")
+
+        names = _names(rt)
+        assert "归明观" not in names
+        assert "东市香客" not in names
+        assert "明灯" not in names
+        assert "护符经营点" in names
+        assert "未具名来访者" in names
+        rumor = rt.conn.execute("SELECT content FROM rumors ORDER BY created_at DESC LIMIT 1").fetchone()
+        assert rumor is not None
+        assert "阿澜" in rumor["content"]
+        assert "归明观" not in rumor["content"]
+        venue_meta = loads(rt.conn.execute("SELECT metadata_json FROM world_entities WHERE display_name='护符经营点'").fetchone()["metadata_json"], {})
+        audience_meta = loads(rt.conn.execute("SELECT metadata_json FROM world_entities WHERE display_name='未具名来访者'").fetchone()["metadata_json"], {})
+        assert venue_meta["name_source"] == "generic_from_goods"
+        assert audience_meta["name_source"] == "generic_unknown"
+        assert venue_meta["worldview_slots"]["origin"] == "pending_slot"
+        assert audience_meta["worldview_slots"]["map_location"] == "unknown"
     finally:
         rt.close()
 

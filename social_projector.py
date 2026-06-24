@@ -156,22 +156,23 @@ def _project_stall(conn, owner_kind: str, owner_id: str, *, event: dict[str, Any
                    occurrence: dict[str, Any] | None, activity: dict[str, Any] | None,
                    evidence: dict[str, Any], summary: str | None, source: str) -> dict[str, int]:
     agent = _agent_entity(conn, owner_kind, owner_id, event, source)
+    ctx = _stall_context(event, activity)
     shrine = _get_or_create_entity(
         conn, owner_kind, owner_id,
-        entity_kind="shrine",
-        display_name="归明观",
-        summary="由事件投影沉淀的归明观经营/香火社会实体。",
+        entity_kind=ctx["venue_kind"],
+        display_name=ctx["venue_name"],
+        summary=ctx["venue_summary"],
         traits={"role": "shrine_or_venture"},
-        metadata=_entity_metadata(event, activity=activity, source=source),
+        metadata={**_entity_metadata(event, activity=activity, source=source), "name_source": ctx["venue_name_source"]},
         source=source,
     )
     visitors = _get_or_create_entity(
         conn, owner_kind, owner_id,
         entity_kind="visitor_group",
-        display_name="东市香客",
-        summary="由摆摊、经营和香客来访事件沉淀的本地访客群体；具体地图槽位待世界观定义。",
+        display_name=ctx["audience_name"],
+        summary=ctx["audience_summary"],
         traits={"group": "local_customers_and_visitors"},
-        metadata=_entity_metadata(event, activity=activity, source=source, group=True),
+        metadata={**_entity_metadata(event, activity=activity, source=source, group=True), "name_source": ctx["audience_name_source"]},
         source=source,
     )
 
@@ -190,7 +191,7 @@ def _project_stall(conn, owner_kind: str, owner_id: str, *, event: dict[str, Any
                 audience_entity_id=visitors["id"],
                 axis=axis,
                 delta=shrine_delta if subject["id"] == shrine["id"] and axis == "efficacious" else rep_delta,
-                reason=_reason(event, summary, default="归明观经营/摆摊事件完成"),
+                reason=_reason(event, summary, default=f"{ctx['venue_name']}经营/摆摊事件完成"),
                 evidence_kind=evidence.get("projection_kind"),
                 evidence_id=evidence.get("occurrence_id") or evidence.get("event_id"),
                 evidence=evidence,
@@ -225,6 +226,8 @@ def _project_stall(conn, owner_kind: str, owner_id: str, *, event: dict[str, Any
         "sold_quantity": _float((occurrence or {}).get("sold_quantity")),
         "income": _float((occurrence or {}).get("income")),
         "goods_name": sc.get("goods_name") or sc.get("goods_resource"),
+        "venue_name": ctx["venue_name"],
+        "audience_name": ctx["audience_name"],
     }
     topic = _request_topic(event, default="general_blessing")
     record_social_request(
@@ -247,9 +250,9 @@ def _project_stall(conn, owner_kind: str, owner_id: str, *, event: dict[str, Any
     counts["requests"] += 1
 
     rumor_content = (
-        "有香客低声说，归明观这回经营顺利，明灯待人也算温和。"
+        f"有来访者低声说，{ctx['venue_name']}这回经营顺利，{agent.get('display_name') or '当前主体'}待人也算温和。"
         if outcome == "positive"
-        else "有香客担心，归明观这回经营的效果还需要再看看。"
+        else f"有来访者担心，{ctx['venue_name']}这回经营的效果还需要再看看。"
     )
     record_rumor(
         conn, owner_kind, owner_id,
@@ -370,9 +373,9 @@ def _project_commission(conn, owner_kind: str, owner_id: str, *, event: dict[str
         target_kind="event",
         target_id=evidence.get("event_id"),
         content=(
-            "有委托人私下说，明灯这次外勤处理得稳妥。"
+            f"有委托人私下说，{agent.get('display_name') or '当前主体'}这次外勤处理得稳妥。"
             if outcome == "positive"
-            else "有人私下担心，明灯这次外勤没有完全解决问题。"
+            else f"有人私下担心，{agent.get('display_name') or '当前主体'}这次外勤没有完全解决问题。"
         ),
         channel="commission_backchannel",
         heat=0.22 if outcome == "positive" else 0.32,
@@ -512,7 +515,74 @@ def _agent_name(conn, owner_kind: str, owner_id: str) -> tuple[str, str]:
         name = (ident or {}).get("name") or (ident or {}).get("display_name")
         if name:
             return str(name), "canon_identity"
-    return "明灯", "default_pending_canon_identity"
+    return "当前主体", "default_pending_canon_identity"
+
+
+def _stall_context(event: dict[str, Any], activity: dict[str, Any] | None) -> dict[str, str]:
+    """Derive stall/venture social labels only from provided evidence.
+
+    Older projector code used Guimingguan-specific names as defaults. That made
+    review and social facts feel rich, but it also wrote fixed lore into worlds
+    that had not defined those slots. These labels now come from event/activity
+    attributes when available, otherwise they remain deliberately generic.
+    """
+    activity = activity or {}
+    attrs = event.get("attributes") if isinstance(event.get("attributes"), dict) else {}
+    loc = event.get("location") if isinstance(event.get("location"), dict) else {}
+    supply = activity.get("supply_chain") if isinstance(activity.get("supply_chain"), dict) else {}
+
+    venue_name = _first_text(
+        attrs.get("venue_name"),
+        attrs.get("shrine_name"),
+        attrs.get("shop_name"),
+        attrs.get("stall_name"),
+        attrs.get("place_name"),
+        loc.get("venue_name"),
+        loc.get("site_name"),
+        activity.get("venue_name"),
+        activity.get("shop_name"),
+        activity.get("title") if activity.get("title") else None,
+    )
+    venue_source = "event_or_activity"
+    if not venue_name:
+        goods_name = _first_text(attrs.get("goods_name"), supply.get("goods_name"), supply.get("goods_resource"))
+        venue_name = f"{goods_name}经营点" if goods_name else "未命名经营点"
+        venue_source = "generic_from_goods" if goods_name else "generic_unknown"
+
+    audience_name = _first_text(
+        attrs.get("visitor_group_name"),
+        attrs.get("customer_group_name"),
+        attrs.get("audience_name"),
+        attrs.get("requester_group"),
+        attrs.get("client_circle"),
+        attrs.get("circle"),
+        attrs.get("group"),
+    )
+    audience_source = "event_attributes"
+    if not audience_name:
+        loc_name = _first_text(loc.get("name"), loc.get("display_name"), loc.get("label"), activity.get("location"))
+        audience_name = f"{loc_name}来访者" if loc_name else "未具名来访者"
+        audience_source = "location_generic" if loc_name else "generic_unknown"
+
+    return {
+        "venue_kind": str(attrs.get("venue_kind") or "shrine"),
+        "venue_name": venue_name,
+        "venue_name_source": venue_source,
+        "venue_summary": "由经营/摆摊事件投影沉淀的场所实体；名称来自事件证据或保持未知占位。",
+        "audience_name": audience_name,
+        "audience_name_source": audience_source,
+        "audience_summary": "由摆摊、经营和来访事件沉淀的本地来访者群体；具体地图/势力槽位待世界观定义。",
+    }
+
+
+def _first_text(*values: Any) -> str | None:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
 
 
 def _client_entity(conn, owner_kind: str, owner_id: str, event: dict[str, Any],
