@@ -15,7 +15,7 @@ pytest.importorskip("sqlite_vec")
 from lifeengine.runtime import LifeEngineRuntime
 from lifeengine.constants import DEFAULT_AGENT_ID
 from lifeengine import proactive
-from lifeengine.proactive import create_proactive_intent, expire_intents, get_proactive_intent
+from lifeengine.proactive import create_proactive_intent, evaluate_proactive_intent, expire_intents, get_proactive_intent
 
 
 def fresh_home(tmp_path):
@@ -72,6 +72,54 @@ def test_by_age_backstop_retires_stale_legacy_intents(tmp_path):
         )
         out = expire_intents(rt.conn, DEFAULT_AGENT_ID)
         assert it["id"] in out["expired"]      # retired by age despite the future TTL
+    finally:
+        rt.close()
+
+
+def test_expiry_cleans_queued_outbox_and_pending_state(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        activate(rt)
+        aid = DEFAULT_AGENT_ID
+        intent = create_proactive_intent(
+            rt.conn,
+            aid,
+            target_type="user",
+            target_id="u1",
+            intent_type="dream_share",
+            summary="这条梦境分享后来过期了",
+            importance=95,
+            urgency=90,
+            novelty=90,
+            relationship_relevance=95,
+            privacy_level="safe_to_share",
+        )
+        queued = evaluate_proactive_intent(
+            rt.conn,
+            aid,
+            intent["id"],
+            control={"module_gates": {"proactive": "auto_send"}},
+            draft_text="这条过期后不应该再发。",
+        )["evaluated"][0]
+        assert queued["decision"] == "outbox_queued"
+        outbox_id = queued["outbox"]["id"]
+        state = rt.proactive("state", target_user_id="u1")["state"]
+        assert intent["id"] in state["pending_intent_ids"]
+
+        past_ts = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp())
+        rt.conn.execute("UPDATE proactive_intents SET expires_at_ts=? WHERE id=?", (past_ts, intent["id"]))
+        out = expire_intents(rt.conn, aid)
+
+        assert intent["id"] in out["expired"]
+        assert out["state_rows_changed"] == 1
+        assert get_proactive_intent(rt.conn, intent["id"])["status"] == "expired"
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        assert outbox[outbox_id]["status"] == "expired"
+        assert outbox[outbox_id]["suppression_reason"] == "intent expired"
+        state = rt.proactive("state", target_user_id="u1")["state"]
+        assert intent["id"] not in state["pending_intent_ids"]
+        assert state["state"] == "silent"
     finally:
         rt.close()
 

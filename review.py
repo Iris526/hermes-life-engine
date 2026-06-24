@@ -174,6 +174,47 @@ def _proactive(conn, owner_kind: str, owner_id: str, limit: int = 5) -> tuple[li
     return intents, outbox
 
 
+def _proactive_waiting_message(intent: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    decision = loads(intent.get("decision_json"), {}) if "decision_json" in intent else (intent.get("decision") or {})
+    reason = str((decision or {}).get("reason") or intent.get("suppression_reason") or "").strip()
+    summary = str(intent.get("summary") or intent.get("intent_type") or "proactive intent").strip()
+    decision_name = str((decision or {}).get("decision") or "").strip()
+    hint: dict[str, Any] = {"tool": "life_proactive", "action": "evaluate", "intent_id": intent.get("id")}
+    if decision_name == "quiet_hours":
+        policy = (decision or {}).get("policy") or {}
+        quiet = policy.get("quiet_hours") or {}
+        tz = policy.get("timezone") or quiet.get("timezone")
+        suffix = f"（{quiet.get('start')} - {quiet.get('end')} {tz}）" if quiet.get("start") and quiet.get("end") else ""
+        return "Agent 有想说的话，正在避开安静时段", f"{summary}。先不打扰，等安静时段结束后再评估{suffix}。", hint
+    if decision_name == "cooldown":
+        return "Agent 有想说的话，正在等冷却", f"{summary}。上一次主动消息后还在冷却，不急着连续打扰。", hint
+    if decision_name == "daily_limit":
+        return "Agent 有想说的话，今日主动额度已用完", f"{summary}。今天的主动消息预算已经用完，先留到之后再说。", hint
+    if decision_name == "manual_send_pending":
+        hint["action"] = "evaluate"
+        hint["manual"] = True
+        return "Agent 有想说的话，等待人工放行", f"{summary}。当前策略要求人工确认后再主动发送。", hint
+    if decision_name == "pending_only":
+        return "Agent 有想说的话，留到下次对话", f"{summary}。当前策略只记为待说，不主动推送。", hint
+    if reason:
+        return "Agent 有想说的话", f"{summary}。等待原因：{reason}。", hint
+    return "Agent 有想说的话", summary, hint
+
+
+def _proactive_outbox_message(outbox: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    draft = str(outbox.get("draft_text") or "").strip()
+    preview = draft[:220] if draft else "主动消息草稿为空，需要先检查。"
+    hint = {
+        "tool": "life_proactive",
+        "action": "send/suppress",
+        "outbox_id": outbox.get("id"),
+        "intent_id": outbox.get("intent_id"),
+    }
+    if outbox.get("send_after"):
+        return "主动消息已排队，等安静时段结束再送", f"{preview}（不早于 {outbox.get('send_after')}）", hint
+    return "主动消息在 outbox 等待处理", preview, hint
+
+
 def _doctor_summary(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
     from .doctor import run_doctor
 
@@ -267,9 +308,11 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
 
     proactive_intents, outbox = _proactive(conn, owner_kind, owner_id, limit)
     for p in proactive_intents:
-        items.append(_item("proactive_intent", "action" if p.get("target_type") != "self_journal" else "info", "Agent 有想说的话", p.get("summary") or p.get("intent_type") or "proactive intent", source_table="proactive_intents", source_id=p.get("id"), section="proactive", when=p.get("created_at"), action_hint={"tool": "life_proactive", "action": "evaluate", "intent_id": p.get("id")}))
+        title, message, hint = _proactive_waiting_message(p)
+        items.append(_item("proactive_intent", "action" if p.get("target_type") != "self_journal" else "info", title, message, source_table="proactive_intents", source_id=p.get("id"), section="proactive", when=p.get("created_at"), action_hint=hint))
     for o in outbox:
-        items.append(_item("proactive_outbox", "action", "主动消息在 outbox 等待处理", (o.get("draft_text") or "")[:220], source_table="proactive_outbox", source_id=o.get("id"), section="proactive", when=o.get("created_at"), action_hint={"tool": "life_proactive", "action": "send/suppress", "outbox_id": o.get("id")}))
+        title, message, hint = _proactive_outbox_message(o)
+        items.append(_item("proactive_outbox", "action", title, message, source_table="proactive_outbox", source_id=o.get("id"), section="proactive", when=o.get("created_at"), action_hint=hint))
 
     # Living-persona consolidation suggestions (v0.14.0): a trait that has
     # drifted far from its Canon baseline for long enough is surfaced as a

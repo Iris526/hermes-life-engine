@@ -1,4 +1,6 @@
 import tempfile
+import json
+from datetime import datetime, timezone, timedelta
 
 import pytest
 
@@ -50,6 +52,49 @@ def test_review_surfaces_policy_conflict(hermes_home):
         out = rt.review("summary")
         assert any(i["item_type"] == "policy_conflict" for i in out["items"])
         assert "策略" in out["rendered"]
+    finally:
+        rt.close()
+
+
+def test_review_explains_quiet_hours_proactive_wait(hermes_home):
+    rt = LifeEngineRuntime()
+    try:
+        rt.setup("测试 Agent，允许主动聊天。")
+        rt.commit_canon()
+        rt.control("resume")
+        rt.control("module", key="proactive", value="auto_send")
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(hours=1)).strftime("%H:%M")
+        end = (now + timedelta(hours=1)).strftime("%H:%M")
+        row = rt.conn.execute(
+            "SELECT id, data_json FROM canon_versions WHERE owner_kind='agent' AND owner_id='default-agent' AND status='active' ORDER BY version DESC LIMIT 1"
+        ).fetchone()
+        data = json.loads(row["data_json"])
+        data.setdefault("proactive", {})
+        data["proactive"].update({"timezone": "UTC", "quiet_hours": {"start": start, "end": end, "timezone": "UTC"}})
+        rt.conn.execute("UPDATE canon_versions SET data_json=? WHERE id=?", (json.dumps(data, ensure_ascii=False), row["id"]))
+        created = rt.proactive(
+            "create",
+            summary="我想告诉你刚才的小进展",
+            target_type="user",
+            target_id="u1",
+            intent_type="report_progress",
+            importance=95,
+            urgency=90,
+            novelty=90,
+            relationship_relevance=95,
+            privacy_level="safe_to_share",
+        )
+        intent_id = created["results"][0]["result"]["id"]
+        evaluated = rt.proactive("evaluate", intent_id=intent_id)
+        assert evaluated["results"][0]["result"]["evaluated"][0]["reason"] == "quiet hours active"
+
+        review = rt.review("summary")
+        item = next(i for i in review["items"] if i["item_type"] == "proactive_intent")
+        assert "安静时段" in item["title"]
+        assert "先不打扰" in item["message"]
+        assert item["action_hint"]["intent_id"] == intent_id
+        assert "正在避开安静时段" in review["rendered"]
     finally:
         rt.close()
 

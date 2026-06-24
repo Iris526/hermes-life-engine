@@ -193,6 +193,37 @@ def _update_state_pending(conn, agent_id: str, user_id: str, intent_id: str, sta
     return ensure_proactive_state(conn, agent_id, user_id)
 
 
+def _remove_pending_intents(conn, agent_id: str, intent_ids: list[str] | set[str]) -> int:
+    """Remove retired intent ids from all per-user proactive state rows.
+
+    Expiry/suppression can happen outside the original target user's state row,
+    especially for legacy data. This keeps status/review surfaces from showing a
+    stale "has something to share" state after the underlying intent is terminal.
+    """
+    retired = {str(i) for i in intent_ids if i}
+    if not retired:
+        return 0
+    changed = 0
+    rows = conn.execute(
+        "SELECT agent_id, user_id, pending_intent_ids_json FROM agent_user_proactive_state WHERE agent_id=?",
+        (agent_id,),
+    ).fetchall()
+    for row in rows:
+        pending = loads(row["pending_intent_ids_json"], []) or []
+        kept = [pid for pid in pending if str(pid) not in retired]
+        if kept == pending:
+            continue
+        next_state = "silent" if not kept else "has_something_to_share"
+        conn.execute(
+            """UPDATE agent_user_proactive_state
+                  SET state=?, pending_intent_ids_json=?, updated_at=datetime('now')
+                WHERE agent_id=? AND user_id=?""",
+            (next_state, dumps(kept), row["agent_id"], row["user_id"]),
+        )
+        changed += 1
+    return changed
+
+
 def get_proactive_intent(conn, intent_id: str) -> dict[str, Any]:
     row = conn.execute("SELECT * FROM proactive_intents WHERE id=?", (intent_id,)).fetchone()
     if not row:
@@ -665,5 +696,14 @@ def expire_intents(conn, agent_id: str) -> dict[str, Any]:
         conn.execute("UPDATE proactive_intents SET status='expired', expired_at=datetime('now'), updated_at=datetime('now') WHERE id=?", (r["id"],))
         expired.append(r["id"])
     if expired:
+        conn.executemany(
+            """UPDATE proactive_outbox
+                  SET status='expired', suppression_reason='intent expired', error=NULL
+                WHERE intent_id=? AND status IN ('drafted','queued')""",
+            [(intent_id,) for intent_id in expired],
+        )
+        state_rows_changed = _remove_pending_intents(conn, agent_id, expired)
         append_journal(conn, "agent", agent_id, "proactive_intents_expired", {"intent_ids": expired}, "proactive")
-    return {"expired": expired, "count": len(expired)}
+    else:
+        state_rows_changed = 0
+    return {"expired": expired, "count": len(expired), "state_rows_changed": state_rows_changed}
