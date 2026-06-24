@@ -851,6 +851,12 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                         "stale_state_user_ids": [
                             str(s.get("user_id")) for s in stale_states if s.get("user_id")
                         ],
+                        "stale_state_intent_ids": [
+                            str(intent_id)
+                            for s in stale_states
+                            for intent_id in (s.get("stale_intent_ids") or [])
+                            if intent_id
+                        ][:20],
                         "stale_delivery_attempt_ids": [
                             str(a.get("id")) for a in stale_delivery_attempts if a.get("id")
                         ],
@@ -1067,6 +1073,7 @@ _ACTION_HINT_LIST_KEYS = (
     "expired_active_intent_ids",
     "stale_outbox_ids",
     "stale_state_user_ids",
+    "stale_state_intent_ids",
     "stale_delivery_attempt_ids",
     "elapsed_cooldown_user_ids",
 )

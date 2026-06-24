@@ -182,6 +182,53 @@ def test_review_plan_for_suppressed_proactive_is_manual_review(hermes_home):
         rt.close()
 
 
+def test_review_lifecycle_cleanup_names_stale_pending_intent_ids(hermes_home):
+    rt = LifeEngineRuntime()
+    try:
+        rt.setup("测试 Agent，主动状态需要可解释。")
+        rt.commit_canon()
+        rt.control("resume")
+        rt.control("module", key="proactive", value="pending_only")
+        created = rt.proactive(
+            "create",
+            summary="这条先留在待说箱，稍后会被人工压下。",
+            target_type="user",
+            target_id="u1",
+            intent_type="idle_share",
+            importance=75,
+            urgency=55,
+            novelty=70,
+            relationship_relevance=90,
+            privacy_level="safe_to_share",
+        )
+        intent_id = created["results"][0]["result"]["id"]
+        rt.proactive("evaluate", intent_id=intent_id)
+        # Simulate live-plugin divergence: the intent became terminal, but the
+        # per-user pending state still points at it.
+        rt.conn.execute(
+            """UPDATE proactive_intents
+                  SET status='suppressed', suppressed_at=datetime('now'),
+                      suppression_reason='manual divergence fixture',
+                      updated_at=datetime('now')
+                WHERE id=?""",
+            (intent_id,),
+        )
+
+        review = rt.review("summary")
+        item = next(i for i in review["items"] if i["item_type"] == "proactive_lifecycle_cleanup")
+
+        assert item["severity"] == "warning"
+        assert item["action_hint"]["tool"] == "life_proactive"
+        assert item["action_hint"]["action"] == "cleanup"
+        assert item["action_hint"]["stale_state_count"] == 1
+        assert item["action_hint"]["stale_state_user_ids"] == ["u1"]
+        assert item["action_hint"]["stale_state_intent_ids"] == [intent_id]
+        assert "陈旧待说状态 1 条" in review["rendered"]
+        assert f"stale_state_intent_ids={intent_id}" in review["rendered"]
+    finally:
+        rt.close()
+
+
 def test_review_dismiss_item(hermes_home):
     rt = LifeEngineRuntime()
     try:
