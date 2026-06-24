@@ -375,24 +375,61 @@ def test_human_review_surfaces_world_model_hooks_without_auto_resolving(tmp_path
             stance="contested",
             summary="巡城司开始加强第七城巡查。",
         ))
+        req = _result(rt.social(
+            "record_request",
+            requester_entity_id=seeded["faction"]["id"],
+            target_entity_id=None,
+            request_type="commission",
+            topic="route_safety",
+            summary="巡城司希望归明观确认封锁线附近的异常。",
+            status="open",
+            idempotency_key="test:review:route_safety",
+        ))
+        rt.conn.execute(
+            "UPDATE world_conditions SET updated_at=datetime('now','-3 days'), ends_at=datetime('now','-1 day') WHERE id=?",
+            (condition["id"],),
+        )
+        rt.conn.execute(
+            "UPDATE world_routes SET updated_at=datetime('now','-2 days') WHERE id=?",
+            (blocked_route["id"],),
+        )
+        rt.conn.execute(
+            "UPDATE world_faction_presence SET updated_at=datetime('now','-4 days') WHERE id=?",
+            (presence["id"],),
+        )
+        rt.conn.execute(
+            "UPDATE social_requests SET created_at=datetime('now','-2 days'), updated_at=datetime('now','-2 days') WHERE id=?",
+            (req["id"],),
+        )
+        rt.conn.commit()
 
         review = rt.review("summary")
         items = {i["item_type"]: i for i in review["items"] if i["item_type"].startswith("world_")}
+        social_item = next(i for i in review["items"] if i["item_type"] == "social_request")
 
         assert review["summary"]["world_review"] == {"conditions": 1, "routes": 1, "faction_presence": 1}
+        assert review["summary"]["social_requests"]["active"] == 1
         assert "世界模型：待整理 状态=1，路线=1，势力=1" in review["rendered"]
+        assert "社会请求：活跃 1 条" in review["rendered"]
         assert f"condition_id={condition['id']}" in review["rendered"]
         assert f"route_id={blocked_route['id']}" in review["rendered"]
         assert f"presence_id={presence['id']}" in review["rendered"]
+        assert f"request_id={req['id']}" in review["rendered"]
+        assert "已超过时间窗" in review["rendered"]
+        assert "建议优先看一眼" in review["rendered"]
         assert "可选：convert_event/resolve/expire/keep_active" in review["rendered"]
         assert "可选：reroute/reopen/archive/keep_blocked" in review["rendered"]
         assert items["world_condition"]["source_id"] == condition["id"]
         assert items["world_condition"]["action_hint"]["tool"] == "life_world"
         assert items["world_condition"]["action_hint"]["condition_id"] == condition["id"]
+        assert items["world_condition"]["action_hint"]["stale"] is True
+        assert items["world_condition"]["action_hint"]["due_state"] == "overdue"
         assert items["world_route"]["source_id"] == blocked_route["id"]
         assert items["world_route"]["action_hint"]["route_id"] == blocked_route["id"]
         assert items["world_faction_presence"]["source_id"] == presence["id"]
         assert items["world_faction_presence"]["action_hint"]["presence_id"] == presence["id"]
+        assert social_item["action_hint"]["tool"] == "life_social"
+        assert social_item["action_hint"]["stale"] is True
 
         plan = rt.review("preview_action", item_id=items["world_condition"]["id"])
         assert plan["plan"]["application_type"] == "manual_review"

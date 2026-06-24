@@ -213,6 +213,63 @@ def _outbox_send_after_is_future(outbox: dict[str, Any]) -> bool:
         return False
 
 
+def _hours_since(value: str | None) -> int | None:
+    """Return whole hours since a stored timestamp, tolerating legacy formats."""
+    if not value:
+        return None
+    try:
+        ts = to_epoch(str(value), default_tz="UTC")
+        now_ts = to_epoch(now_iso(), default_tz="UTC")
+    except Exception:
+        return None
+    if ts is None or now_ts is None:
+        return None
+    return max(0, int((now_ts - ts) // 3600))
+
+
+def _duration_label(hours: int | None) -> str | None:
+    if hours is None:
+        return None
+    if hours <= 0:
+        return "不到 1 小时"
+    if hours < 24:
+        return f"{hours} 小时"
+    days = hours // 24
+    remain = hours % 24
+    if remain >= 12:
+        days += 1
+    return f"{max(1, days)} 天"
+
+
+def _age_hint(value: str | None, *, stale_after_hours: int) -> dict[str, Any]:
+    hours = _hours_since(value)
+    label = _duration_label(hours)
+    if hours is None or label is None:
+        return {}
+    return {
+        "age_hours": hours,
+        "age_label": label,
+        "stale": hours >= int(stale_after_hours),
+    }
+
+
+def _due_hint(ends_at: str | None) -> dict[str, Any]:
+    if not ends_at:
+        return {}
+    try:
+        end_ts = to_epoch(str(ends_at), default_tz="UTC")
+        now_ts = to_epoch(now_iso(), default_tz="UTC")
+    except Exception:
+        return {}
+    if end_ts is None or now_ts is None:
+        return {}
+    delta_hours = int(abs(now_ts - end_ts) // 3600)
+    label = _duration_label(delta_hours)
+    if now_ts > end_ts:
+        return {"due_state": "overdue", "due_label": f"已超过时间窗 {label or '不到 1 小时'}", "ends_at": ends_at}
+    return {"due_state": "upcoming", "due_label": f"时间窗还剩 {label or '不到 1 小时'}", "ends_at": ends_at}
+
+
 def _proactive_outbox_message(outbox: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     draft = str(outbox.get("draft_text") or "").strip()
     preview = draft[:220] if draft else "主动消息草稿为空，需要先检查。"
@@ -396,12 +453,17 @@ def _social_request_message(req: dict[str, Any]) -> tuple[str, str, dict[str, An
         tail = "已经推进中，需要完成、取消，或补充关联进展。"
     if linked:
         tail = f"{tail} 已关联：{linked}。"
+    age = _age_hint(req.get("created_at"), stale_after_hours=24 if status == "open" else 48)
+    if age.get("age_label"):
+        stale_note = "，已经偏久" if age.get("stale") else ""
+        tail = f"{tail} 已等待 {age.get('age_label')}{stale_note}。"
     hint = {
         "tool": "life_social",
         "action": "request_transition",
         "request_id": req.get("id"),
         "status": status,
         "suggested_actions": action.split("/"),
+        **age,
     }
     return title, f"{base}（{status}）。{tail}", hint
 
@@ -452,13 +514,23 @@ def _world_condition_message(condition: dict[str, Any]) -> tuple[str, str, dict[
     severity = int(float(condition.get("severity") or 0))
     intensity = int(float(condition.get("intensity") or 0))
     summary = str(condition.get("summary") or condition.get("content") or "").strip()
-    message = f"{_scope_label(condition)} 有 {ctype} 状态：{summary or title}（severity={severity}, intensity={intensity}）。需要人工决定是转成事件、继续观察，还是标记 resolved/expired。"
+    age = _age_hint(condition.get("updated_at") or condition.get("created_at"), stale_after_hours=48)
+    due = _due_hint(condition.get("ends_at"))
+    timing = []
+    if age.get("age_label"):
+        timing.append(f"已挂起 {age.get('age_label')}")
+    if due.get("due_label"):
+        timing.append(str(due.get("due_label")))
+    timing_text = f"{'；'.join(timing)}。" if timing else ""
+    message = f"{_scope_label(condition)} 有 {ctype} 状态：{summary or title}（severity={severity}, intensity={intensity}）。{timing_text}需要人工决定是转成事件、继续观察，还是标记 resolved/expired。"
     hint = {
         "tool": "life_world",
         "action": "condition_review",
         "condition_id": condition.get("id"),
         "key": condition.get("key"),
         "suggested_actions": ["convert_event", "resolve", "expire", "keep_active"],
+        **age,
+        **due,
     }
     return "世界状态需要处理", message, hint
 
@@ -467,13 +539,16 @@ def _world_route_message(route: dict[str, Any]) -> tuple[str, str, dict[str, Any
     name = str(route.get("name") or route.get("key") or "世界路线").strip()
     status = str(route.get("status") or "blocked").strip()
     risk = int(float(route.get("risk_level") or 0))
-    message = f"{name} 当前为 {status}，风险 {risk}。需要人工确认是否改道、关闭关联行程，或恢复路线状态。"
+    age = _age_hint(route.get("updated_at") or route.get("created_at"), stale_after_hours=48)
+    age_text = f"已保持 {age.get('age_label')}。" if age.get("age_label") else ""
+    message = f"{name} 当前为 {status}，风险 {risk}。{age_text}需要人工确认是否改道、关闭关联行程，或恢复路线状态。"
     hint = {
         "tool": "life_world",
         "action": "route_review",
         "route_id": route.get("id"),
         "key": route.get("key"),
         "suggested_actions": ["reroute", "reopen", "archive", "keep_blocked"],
+        **age,
     }
     return "世界路线受阻", message, hint
 
@@ -483,13 +558,16 @@ def _world_faction_presence_message(presence: dict[str, Any]) -> tuple[str, str,
     influence = int(float(presence.get("influence") or 0))
     stance = str(presence.get("stance") or "unknown").strip()
     summary = str(presence.get("summary") or presence.get("content") or "").strip()
-    message = f"{faction} 在 {_scope_label(presence)} 的影响为 {influence}，立场 {stance}。{summary or '需要确认是否影响事件、请求或地图风险。'}"
+    age = _age_hint(presence.get("updated_at") or presence.get("created_at"), stale_after_hours=72)
+    age_text = f"该影响已持续 {age.get('age_label')}。" if age.get("age_label") else ""
+    message = f"{faction} 在 {_scope_label(presence)} 的影响为 {influence}，立场 {stance}。{age_text}{summary or '需要确认是否影响事件、请求或地图风险。'}"
     hint = {
         "tool": "life_world",
         "action": "faction_presence_review",
         "presence_id": presence.get("id"),
         "faction_entity_id": presence.get("faction_entity_id"),
         "suggested_actions": ["create_event", "update_stance", "archive", "keep_active"],
+        **age,
     }
     return "势力影响需要关注", message, hint
 
@@ -860,6 +938,15 @@ def _render_action_hint(hint: dict[str, Any]) -> str | None:
     suggested = hint.get("suggested_actions") or []
     if isinstance(suggested, list) and suggested:
         parts.append("可选：" + "/".join(str(a) for a in suggested if a))
+    timing = []
+    if hint.get("age_label"):
+        timing.append(f"已等待/持续 {hint.get('age_label')}")
+    if hint.get("due_label"):
+        timing.append(str(hint.get("due_label")))
+    if hint.get("stale"):
+        timing.append("建议优先看一眼")
+    if timing:
+        parts.append("节奏：" + "，".join(timing))
     if hint.get("send_after"):
         parts.append(f"等待到：{hint.get('send_after')}")
     if hint.get("manual"):
