@@ -92,9 +92,11 @@ def test_review_explains_quiet_hours_proactive_wait(hermes_home):
         review = rt.review("summary")
         item = next(i for i in review["items"] if i["item_type"] == "proactive_intent")
         assert "安静时段" in item["title"]
-        assert "先不打扰" in item["message"]
+        assert item["title"].startswith("我有想说的话")
+        assert "我先不打扰" in item["message"]
         assert item["action_hint"]["intent_id"] == intent_id
         assert "正在避开安静时段" in review["rendered"]
+        assert "Agent 有想说的话" not in review["rendered"]
     finally:
         rt.close()
 

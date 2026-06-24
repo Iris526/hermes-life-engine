@@ -433,7 +433,15 @@ def test_human_review_surfaces_and_applies_proactive_lifecycle_cleanup(tmp_path,
         items = [i for i in review["items"] if i["item_type"] == "proactive_lifecycle_cleanup"]
         assert items
         assert review["summary"]["proactive_lifecycle"]["stale_outbox_count"] == 1
+        assert review["summary"]["proactive_lifecycle"]["stale_state_count"] == 1
+        assert "陈旧 outbox 1 条" in review["summary"]["proactive_lifecycle"]["render_bits"]
+        assert "陈旧待说状态 1 条" in review["summary"]["proactive_lifecycle"]["render_bits"]
+        assert items[0]["action_hint"]["stale_outbox_count"] == 1
+        assert items[0]["action_hint"]["stale_state_count"] == 1
         assert "主动消息队列需要整理" in review["rendered"]
+        assert "主动消息：需要整理" in review["rendered"]
+        assert "陈旧 outbox 1 条" in review["rendered"]
+        assert "陈旧待说状态 1 条" in review["rendered"]
 
         applied = rt.review("apply", item_id=items[0]["id"])
 

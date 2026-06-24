@@ -185,20 +185,20 @@ def _proactive_waiting_message(intent: dict[str, Any]) -> tuple[str, str, dict[s
         quiet = policy.get("quiet_hours") or {}
         tz = policy.get("timezone") or quiet.get("timezone")
         suffix = f"（{quiet.get('start')} - {quiet.get('end')} {tz}）" if quiet.get("start") and quiet.get("end") else ""
-        return "Agent 有想说的话，正在避开安静时段", f"{summary}。先不打扰，等安静时段结束后再评估{suffix}。", hint
+        return "我有想说的话，正在避开安静时段", f"{summary}。我先不打扰，等安静时段结束后再评估{suffix}。", hint
     if decision_name == "cooldown":
-        return "Agent 有想说的话，正在等冷却", f"{summary}。上一次主动消息后还在冷却，不急着连续打扰。", hint
+        return "我有想说的话，正在等冷却", f"{summary}。上一次主动消息后还在冷却，我不急着连续打扰。", hint
     if decision_name == "daily_limit":
-        return "Agent 有想说的话，今日主动额度已用完", f"{summary}。今天的主动消息预算已经用完，先留到之后再说。", hint
+        return "我有想说的话，今日主动额度已用完", f"{summary}。今天的主动消息预算已经用完，我先留到之后再说。", hint
     if decision_name == "manual_send_pending":
         hint["action"] = "evaluate"
         hint["manual"] = True
-        return "Agent 有想说的话，等待人工放行", f"{summary}。当前策略要求人工确认后再主动发送。", hint
+        return "我有想说的话，等待人工放行", f"{summary}。当前策略要求人工确认后再主动发送。", hint
     if decision_name == "pending_only":
-        return "Agent 有想说的话，留到下次对话", f"{summary}。当前策略只记为待说，不主动推送。", hint
+        return "我有想说的话，留到下次对话", f"{summary}。当前策略只记为待说，不主动推送。", hint
     if reason:
-        return "Agent 有想说的话", f"{summary}。等待原因：{reason}。", hint
-    return "Agent 有想说的话", summary, hint
+        return "我有想说的话", f"{summary}。等待原因：{reason}。", hint
+    return "我有想说的话", summary, hint
 
 
 def _proactive_outbox_message(outbox: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
@@ -212,7 +212,32 @@ def _proactive_outbox_message(outbox: dict[str, Any]) -> tuple[str, str, dict[st
     }
     if outbox.get("send_after"):
         return "主动消息已排队，等安静时段结束再送", f"{preview}（不早于 {outbox.get('send_after')}）", hint
-    return "主动消息在 outbox 等待处理", preview, hint
+    return "我写好的主动消息在等待处理", preview, hint
+
+
+def _proactive_lifecycle_render_bits(lifecycle: dict[str, Any]) -> list[str]:
+    counts = lifecycle.get("counts") or {}
+    bits: list[str] = []
+    queued_outbox = int(counts.get("queued_outbox") or 0)
+    delivering_outbox = int(counts.get("delivering_outbox") or 0)
+    generated = int(counts.get("generated_intents") or 0)
+    queued_intents = int(counts.get("queued_intents") or 0)
+    if queued_outbox:
+        bits.append(f"待送 outbox {queued_outbox} 条")
+    if delivering_outbox:
+        bits.append(f"投递中 outbox {delivering_outbox} 条")
+    if generated or queued_intents:
+        bits.append(f"待评估/待说 intent {generated + queued_intents} 条")
+    stale_outbox = int(lifecycle.get("stale_outbox_count") or 0)
+    stale_states = int(lifecycle.get("stale_state_count") or 0)
+    stale_attempts = int(lifecycle.get("stale_delivery_attempt_count") or 0)
+    if stale_outbox:
+        bits.append(f"陈旧 outbox {stale_outbox} 条")
+    if stale_states:
+        bits.append(f"陈旧待说状态 {stale_states} 条")
+    if stale_attempts:
+        bits.append(f"卡住投递 {stale_attempts} 个")
+    return bits
 
 
 def _open_social_projection_failures(conn, owner_kind: str, owner_id: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -392,6 +417,7 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                 "stale_outbox_count": lifecycle.get("stale_outbox_count", 0),
                 "stale_state_count": lifecycle.get("stale_state_count", 0),
                 "stale_delivery_attempt_count": lifecycle.get("stale_delivery_attempt_count", 0),
+                "render_bits": _proactive_lifecycle_render_bits(lifecycle),
             }
             stale_outbox = lifecycle.get("stale_outbox") or []
             stale_states = lifecycle.get("stale_states") or []
@@ -410,7 +436,13 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                     "，".join(bits) + "。建议先清理，再继续投递。",
                     section="proactive", source_table="proactive_outbox",
                     source_id=(stale_outbox[0].get("id") if stale_outbox else stale_states[0].get("user_id")),
-                    action_hint={"tool": "life_proactive", "action": "cleanup"},
+                    action_hint={
+                        "tool": "life_proactive",
+                        "action": "cleanup",
+                        "stale_outbox_count": len(stale_outbox),
+                        "stale_state_count": len(stale_states),
+                        "stale_delivery_attempt_count": stale_delivery_attempts,
+                    },
                 ))
         except Exception:
             pass
@@ -575,6 +607,11 @@ def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) ->
         lines.append(f"最近延迟回复摘要：{summary.get('recent_reply_digest')[:180]}")
     if summary.get("doctor"):
         lines.append(f"Doctor：{'ok' if summary['doctor'].get('ok') else '有提醒'}，issues={summary['doctor'].get('issue_count')}")
+    proactive_lifecycle = summary.get("proactive_lifecycle") or {}
+    proactive_bits = proactive_lifecycle.get("render_bits") or []
+    if proactive_bits:
+        state = "正常" if proactive_lifecycle.get("ok") else "需要整理"
+        lines.append(f"主动消息：{state}；" + "，".join(proactive_bits))
     social_projection = summary.get("social_projection") or {}
     if social_projection:
         lines.append(f"社会投影：待补投影 {social_projection.get('open_failures', 0)} 条")
