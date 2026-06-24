@@ -294,22 +294,70 @@ def _within_cooldown(state: dict[str, Any] | None) -> bool:
 
 
 def _quiet_hours_active(policy: dict[str, Any]) -> bool:
+    return bool(quiet_hours_status(policy).get("active"))
+
+
+def _parse_hhmm(value: Any) -> tuple[int, int] | None:
+    try:
+        hh, mm = str(value).split(":", 1)
+        h = int(hh)
+        m = int(mm)
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h, m
+    except Exception:
+        return None
+    return None
+
+
+def _sqlite_utc_datetime(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def quiet_hours_status(policy: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    """Return quiet-hours state and the next safe delivery time.
+
+    ``send_after`` is compared against SQLite ``datetime('now')`` elsewhere, so
+    ``next_allowed_at`` deliberately uses SQLite's UTC text format rather than
+    ISO strings with offsets.
+    """
     qh = policy.get("quiet_hours") or {}
     if not isinstance(qh, dict) or not qh.get("start") or not qh.get("end"):
-        return False
+        return {"active": False, "timezone": str(policy.get("timezone") or "Asia/Shanghai"), "next_allowed_at": None}
     # Use the user's/agent's local clock for quiet hours. Earlier versions used
     # UTC here, so QQ bedtime (e.g. 02:46 Asia/Shanghai) could be misread as
     # daytime and an idle push would slip through right after “晚安”.
     tz_name = str(policy.get("timezone") or qh.get("timezone") or "Asia/Shanghai")
     try:
-        now_hm = _now().astimezone(ZoneInfo(tz_name)).strftime("%H:%M")
+        tz = ZoneInfo(tz_name)
     except Exception:
-        now_hm = _now().strftime("%H:%M")
-    start = str(qh.get("start"))
-    end = str(qh.get("end"))
-    if start <= end:
-        return start <= now_hm < end
-    return now_hm >= start or now_hm < end
+        tz = timezone.utc
+        tz_name = "UTC"
+    start = _parse_hhmm(qh.get("start"))
+    end = _parse_hhmm(qh.get("end"))
+    if not start or not end or start == end:
+        return {"active": False, "timezone": tz_name, "next_allowed_at": None}
+    local_now = (now or _now()).astimezone(tz)
+    start_dt = local_now.replace(hour=start[0], minute=start[1], second=0, microsecond=0)
+    end_dt = local_now.replace(hour=end[0], minute=end[1], second=0, microsecond=0)
+    if start < end:
+        active = start_dt <= local_now < end_dt
+        next_allowed = end_dt if active else None
+    elif local_now >= start_dt:
+        active = True
+        next_allowed = end_dt + timedelta(days=1)
+    elif local_now < end_dt:
+        active = True
+        next_allowed = end_dt
+    else:
+        active = False
+        next_allowed = None
+    return {
+        "active": active,
+        "timezone": tz_name,
+        "start": qh.get("start"),
+        "end": qh.get("end"),
+        "next_allowed_at": _sqlite_utc_datetime(next_allowed) if next_allowed else None,
+    }
 
 
 def list_outbox(conn, agent_id: str, status: str | None = None, limit: int = 20) -> list[dict[str, Any]]:

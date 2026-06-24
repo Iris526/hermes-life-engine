@@ -5,6 +5,7 @@ import shlex
 import sys
 import threading
 import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from lifeengine.heartbeat import run_tick_script_once
@@ -51,6 +52,23 @@ def _queue_outbox(rt: LifeEngineRuntime, *, draft_text: str = "我想主动告�
     item = evaluated["results"][0]["result"]["evaluated"][0]
     assert item["decision"] == "outbox_queued"
     return item["outbox"]["id"]
+
+
+def _set_quiet_hours_covering_now(rt: LifeEngineRuntime) -> dict[str, str]:
+    now = datetime.now(timezone.utc)
+    start = (now - timedelta(hours=1)).strftime("%H:%M")
+    end = (now + timedelta(hours=1)).strftime("%H:%M")
+    row = rt.conn.execute(
+        "SELECT id, data_json FROM canon_versions WHERE owner_kind='agent' AND owner_id='default-agent' AND status='active' ORDER BY version DESC LIMIT 1"
+    ).fetchone()
+    data = json.loads(row["data_json"])
+    data.setdefault("proactive", {})
+    data["proactive"].update({
+        "timezone": "UTC",
+        "quiet_hours": {"start": start, "end": end, "timezone": "UTC"},
+    })
+    rt.conn.execute("UPDATE canon_versions SET data_json=? WHERE id=?", (json.dumps(data, ensure_ascii=False), row["id"]))
+    return {"start": start, "end": end}
 
 
 def _success_command(tmp_path: Path, sink: Path) -> str:
@@ -141,6 +159,37 @@ def test_proactive_deliver_failure_keeps_outbox_queued(tmp_path, monkeypatch):
         assert "adapter down" in (outbox[outbox_id]["error"] or "")
         attempt = rt.conn.execute("SELECT * FROM proactive_deliveries WHERE outbox_id=?", (outbox_id,)).fetchone()
         assert attempt["status"] == "failed"
+    finally:
+        rt.close()
+
+
+def test_proactive_deliver_defers_queued_outbox_during_quiet_hours(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    sink = tmp_path / "quiet_payload.json"
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="这条要等天亮再说。")
+        _set_quiet_hours_covering_now(rt)
+
+        result = rt.proactive(
+            "deliver",
+            delivery_mode="command",
+            delivery_command=_success_command(tmp_path, sink),
+            delivery_channel="qq",
+        )
+
+        assert result["ok"] is True
+        assert result["status"] == "deferred_quiet_hours"
+        assert result["quiet_hours"]["active"] is True
+        assert result["quiet_hours"]["deferred_count"] == 1
+        assert result["delivered"] == []
+        assert result["candidate_count"] == 0
+        assert not sink.exists()
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        assert outbox[outbox_id]["status"] == "queued"
+        assert outbox[outbox_id]["send_after"] == result["quiet_hours"]["next_allowed_at"]
+        assert rt.conn.execute("SELECT COUNT(*) FROM proactive_deliveries WHERE outbox_id=?", (outbox_id,)).fetchone()[0] == 0
     finally:
         rt.close()
 

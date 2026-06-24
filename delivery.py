@@ -18,7 +18,7 @@ from typing import Any
 
 from .db import transaction
 from .jsonutil import dumps
-from .proactive import mark_outbox_sent
+from .proactive import _gate_policy, _get_canon_policy, mark_outbox_sent, quiet_hours_status
 from .trace import append_journal, new_id
 
 _DELIVERY_MODES = {"off", "command", "webhook", "stdout"}
@@ -101,6 +101,46 @@ def _due_outbox(conn, agent_id: str, limit: int) -> list[dict[str, Any]]:
         (agent_id, int(limit)),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _defer_due_outbox_for_quiet_hours(conn, agent_id: str, limit: int) -> dict[str, Any]:
+    """Push due queued outbox past the user's quiet-hours window.
+
+    This is a delivery-boundary guard: evaluation may have queued a message
+    before bedtime, but an external QQ/webhook worker can run later. If quiet
+    hours are currently active, due rows get ``send_after`` set to the window
+    end and no adapter is invoked.
+    """
+    policy = _gate_policy(None, _get_canon_policy(conn, agent_id))
+    quiet = quiet_hours_status(policy)
+    if not quiet.get("active") or not quiet.get("next_allowed_at"):
+        return {"active": False, "deferred_count": 0, "outbox_ids": [], "next_allowed_at": None, "timezone": quiet.get("timezone")}
+    rows = _due_outbox(conn, agent_id, max(1, int(limit)))
+    outbox_ids = [r["id"] for r in rows]
+    with transaction(conn):
+        for outbox_id in outbox_ids:
+            conn.execute(
+                """UPDATE proactive_outbox
+                      SET send_after=?, error=NULL
+                    WHERE id=? AND agent_id=? AND status='queued'""",
+                (quiet["next_allowed_at"], outbox_id, agent_id),
+            )
+    if outbox_ids:
+        append_journal(
+            conn,
+            "agent",
+            agent_id,
+            "proactive_outbox_deferred_for_quiet_hours",
+            {"outbox_ids": outbox_ids, "next_allowed_at": quiet.get("next_allowed_at"), "timezone": quiet.get("timezone")},
+            "proactive_delivery",
+        )
+    return {
+        "active": True,
+        "deferred_count": len(outbox_ids),
+        "outbox_ids": outbox_ids,
+        "next_allowed_at": quiet.get("next_allowed_at"),
+        "timezone": quiet.get("timezone"),
+    }
 
 
 def _reap_stale_delivery_claims(conn, agent_id: str, stale_minutes: float = 30.0) -> dict[str, Any]:
@@ -326,12 +366,15 @@ def deliver_queued_outbox(
     “外部已发但本地未标 sent”的极端场景。
     """
     cfg = delivery_config_status(payload)
+    quiet_policy = _gate_policy(None, _get_canon_policy(conn, agent_id))
+    quiet_preview = quiet_hours_status(quiet_policy)
     if dry_run or not cfg.get("enabled"):
         rows = _due_outbox(conn, agent_id, max(1, int(limit)))
         return {
             "ok": True,
             "status": "dry_run" if dry_run else "disabled",
             "config": cfg,
+            "quiet_hours": {"active": bool(quiet_preview.get("active")), "next_allowed_at": quiet_preview.get("next_allowed_at"), "timezone": quiet_preview.get("timezone"), "skipped": True},
             "stale_claims": {"requeued_count": 0, "outbox_ids": [], "attempt_ids": [], "skipped": True},
             "candidate_count": len(rows),
             "candidates": [
@@ -344,6 +387,18 @@ def deliver_queued_outbox(
 
     mode = cfg["mode"]
     stale = _reap_stale_delivery_claims(conn, agent_id, float(payload.get("claim_ttl_minutes") or 30))
+    quiet = _defer_due_outbox_for_quiet_hours(conn, agent_id, max(1, int(limit)))
+    if quiet.get("active"):
+        return {
+            "ok": True,
+            "status": "deferred_quiet_hours" if quiet.get("deferred_count") else "noop",
+            "config": cfg,
+            "quiet_hours": quiet,
+            "stale_claims": stale,
+            "candidate_count": 0,
+            "delivered": [],
+            "failed": [],
+        }
     command = str(payload.get("delivery_command") or os.getenv("LIFEENGINE_PROACTIVE_DELIVERY_COMMAND") or "").strip()
     webhook_url = str(payload.get("webhook_url") or os.getenv("LIFEENGINE_PROACTIVE_DELIVERY_WEBHOOK_URL") or "").strip()
     timeout = float(cfg["timeout_seconds"])
@@ -383,6 +438,7 @@ def deliver_queued_outbox(
         "ok": not failed,
         "status": "delivered" if delivered and not failed else ("partial" if delivered else ("failed" if failed else "noop")),
         "config": cfg,
+        "quiet_hours": quiet,
         "stale_claims": stale,
         "candidate_count": len(claimed),
         "delivered": delivered,
