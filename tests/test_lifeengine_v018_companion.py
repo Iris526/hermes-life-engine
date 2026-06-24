@@ -117,6 +117,37 @@ def test_companion_follows_up_on_user_life_when_due(tmp_path):
         rt.close()
 
 
+def test_companion_rejects_report_like_followup_and_keeps_note_due(tmp_path):
+    fresh_home(tmp_path)
+    fake = _FakeLlm({
+        "summary": "状态报告：\n1. 已检测到 Ringo 的面试事项。\n2. 建议发起回访。",
+        "emotional_tone": "formal",
+    })
+    life_author.set_test_llm(fake)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        rt.relationship("record", content="Ringo 周四有面试，挺紧张。", topic="工作/面试",
+                        salience=70, follow_up_after_hours=0)
+
+        out = rt.tick()
+
+        assert out["companion"]["generated"] is None
+        assert _intents_of_type(rt, "ask_about_user") == []
+        note = rt.conn.execute(
+            "SELECT followed_up_at FROM relationship_notes WHERE agent_id=?", (DEFAULT_AGENT_ID,)
+        ).fetchone()
+        assert note[0] is None
+        audit = rt.conn.execute(
+            "SELECT * FROM audit_log WHERE audit_type='companion_author_rejected' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert audit is not None
+        assert "multiline" in audit["payload_json"]
+    finally:
+        life_author.set_test_llm(None)
+        rt.close()
+
+
 def test_companion_idle_share_when_in_good_mood(tmp_path):
     fresh_home(tmp_path)
     fake = _FakeLlm({"summary": "刚泡了壶茶，忽然想起你，过得还好吗？", "emotional_tone": "warm"})
@@ -134,6 +165,27 @@ def test_companion_idle_share_when_in_good_mood(tmp_path):
         assert out["companion"]["intent_type"] == "idle_share"
         idle = _intents_of_type(rt, "idle_share")
         assert idle and idle[0][1]
+    finally:
+        life_author.set_test_llm(None)
+        rt.close()
+
+
+def test_companion_idle_share_is_trimmed_to_direct_qq_line(tmp_path):
+    fresh_home(tmp_path)
+    fake = _FakeLlm({"summary": "“我有件事想跟你说：刚泡了壶茶，忽然想起你。”", "emotional_tone": "warm"})
+    life_author.set_test_llm(fake)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        for reason in ("今天阳光很好", "收到一条暖心的消息", "顺手把活儿干完了", "傍晚的风很舒服"):
+            rt.mood("react", delta=20, reason=reason)
+
+        out = rt.tick()
+
+        assert out["companion"]["generated"]
+        idle = _intents_of_type(rt, "idle_share")
+        assert idle and idle[0][1] == "刚泡了壶茶，忽然想起你。"
+        assert "我有件事想跟你说" not in idle[0][1]
     finally:
         life_author.set_test_llm(None)
         rt.close()

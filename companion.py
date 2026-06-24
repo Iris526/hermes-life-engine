@@ -23,8 +23,28 @@ from . import relationship as rel
 from .emotion import current_mood, mood_band
 from .jsonutil import loads
 from .proactive import create_proactive_intent
+from .trace import append_audit
 
 _IDLE_TYPES = ("idle_share", "ask_about_user")
+_COMPANION_MAX_CHARS = 90
+_COMPANION_SYSTEM_PHRASES = (
+    "LifeEngine",
+    "outbox",
+    "调度",
+    "数据库",
+    "tick",
+    "心跳",
+    "trace",
+    "状态报告",
+    "系统",
+    "资源不足",
+    "重新规划",
+)
+_COMPANION_MECHANICAL_PREFIXES = (
+    "我有件事想跟你说",
+    "我有一件事想跟你说",
+    "有件事想跟你说",
+)
 
 _DEFAULT_POLICY: dict[str, Any] = {
     "enabled": True,
@@ -42,6 +62,63 @@ _LINE_SCHEMA: dict[str, Any] = {
     },
     "required": ["summary"],
 }
+
+
+def _trim_companion_line(text: str) -> str:
+    """Normalize one candidate QQ companion line without changing its meaning."""
+    msg = " ".join(str(text or "").strip().strip("\"'“”").split())
+    for prefix in _COMPANION_MECHANICAL_PREFIXES:
+        if msg.startswith(prefix):
+            msg = msg[len(prefix):].lstrip("：:，,。 ")
+            break
+    return msg.strip()
+
+
+def _companion_rejection_reason(text: str) -> str | None:
+    """Return why an authored companion line should not become an intent."""
+    raw = str(text or "")
+    msg = _trim_companion_line(raw)
+    if not msg:
+        return "empty"
+    if "\n" in raw or "\r" in raw:
+        return "multiline"
+    if len(msg) > _COMPANION_MAX_CHARS:
+        return "too_long"
+    for phrase in _COMPANION_SYSTEM_PHRASES:
+        if phrase in msg:
+            return f"system_phrase:{phrase}"
+    if any(marker in msg for marker in ("1.", "2.", "首先", "其次", "建议：", "总结：")):
+        return "report_like"
+    sentence_marks = sum(msg.count(ch) for ch in "。！？!?")
+    if sentence_marks > 2:
+        return "too_many_sentences"
+    return None
+
+
+def _sanitize_parsed_line(conn, agent_id: str, kind: str, parsed: dict[str, Any] | None, *,
+                          user_id: str | None = None, trace_id: str | None = None) -> dict[str, Any] | None:
+    """Validate and normalize LifeAuthor companion output before persistence."""
+    if not isinstance(parsed, dict):
+        return None
+    raw = str(parsed.get("summary") or "")
+    msg = _trim_companion_line(raw)
+    reason = _companion_rejection_reason(raw)
+    if reason:
+        append_audit(
+            conn, "agent", agent_id, "companion_author_rejected", "warning",
+            "LifeAuthor companion line rejected",
+            {
+                "kind": kind,
+                "target_user_id": user_id,
+                "reason": reason,
+                "draft_preview": msg[:160],
+            },
+            trace_id=trace_id,
+        )
+        return None
+    out = dict(parsed)
+    out["summary"] = msg
+    return out
 
 
 def _gate(control: dict[str, Any] | None) -> tuple[str, str]:
@@ -221,6 +298,7 @@ def author_companion_for_tick(conn, agent_id: str, *, control: dict[str, Any] | 
         else:
             parsed = _author_idle_line(conn, agent_id, cand["user_id"], trace_id=trace_id)
             note_id = None
+        parsed = _sanitize_parsed_line(conn, agent_id, cand["kind"], parsed, user_id=cand["user_id"], trace_id=trace_id)
         if not parsed or not str(parsed.get("summary") or "").strip():
             return None
         return {"kind": cand["kind"], "user_id": cand["user_id"], "note_id": note_id, "parsed": parsed}
@@ -255,6 +333,10 @@ def maybe_generate_companion_intent(conn, agent_id: str, *, control: dict[str, A
             package = author_companion_for_tick(conn, agent_id, control=control, user_id=cand.get("user_id"), now=now, trace_id=trace_id)
         if not package or not isinstance(package.get("parsed"), dict):
             return None
+        parsed = _sanitize_parsed_line(conn, agent_id, cand["kind"], package.get("parsed"), user_id=cand["user_id"], trace_id=trace_id)
+        if not parsed:
+            return None
+        package = {**package, "parsed": parsed}
         if cand["kind"] == "ask_about_user":
             return _create_followup_intent(conn, agent_id, cand["user_id"], cand["note"], package["parsed"], now=now, trace_id=trace_id)
         return _create_idle_intent(conn, agent_id, cand["user_id"], package["parsed"], trace_id=trace_id)
@@ -278,6 +360,7 @@ def _author_followup_line(conn, agent_id: str, user_id: str, note: dict[str, Any
     instructions = (
         "对方上次跟你说过上面这件他生活里的事，你一直惦记着。"
         "现在想自然地问一句后续——关心，但别啰嗦、别像查岗。"
+        "这是 QQ 私聊，只写一行第一人称聊天句；不要写报告、列表或系统解释。"
         "输出 summary=你想问的那一句话；emotional_tone=语气。"
     )
     parsed = life_author.author(conn, "agent", agent_id, kind="ask_about_user",
