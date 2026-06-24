@@ -223,6 +223,55 @@ def test_event_completion_survives_social_projection_failure_and_can_retry(tmp_p
         rt.close()
 
 
+def test_world_review_batch_safely_retries_social_projection_failure(tmp_path):
+    """World-section review batch should repair idempotent social projection failures."""
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        policy = rt.review("policy")["review_action_policy"]["policy"]
+        assert "social_projection_failed" in policy["safe_item_types"]
+        assert "world" in policy["safe_sections"]
+        assert "world" in policy["agent_managed_sections"]
+
+        ev = _result(rt.event_tool(
+            "create",
+            title="归明观午后摆摊卖净符",
+            event_type="work",
+            activity_domain="venture",
+            tags=["摆摊", "归明观", "净符"],
+            resource_costs={},
+        ))
+
+        old_record_rumor = social_projector.record_rumor
+        social_projector.record_rumor = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("forced-rumor-boom"))
+        try:
+            rt.event_tool("complete", event_id=ev["id"], summary="卖符顺利，香客愿意再来。")
+        finally:
+            social_projector.record_rumor = old_record_rumor
+
+        review = rt.review("summary")
+        items = [i for i in review["items"] if i["item_type"] == "social_projection_failed"]
+        assert len(items) == 1
+
+        preview = rt.review("apply_all", review_run_id=review["review_run_id"], section="world", dry_run=True)
+        assert preview["plan"]["selected_count"] == 1
+        assert preview["plan"]["items"][0]["item_type"] == "social_projection_failed"
+
+        applied = rt.review("apply_all", review_run_id=review["review_run_id"], section="world")
+        assert applied["ok"] is True
+        assert applied["applied"] is True
+        assert applied["status"] == "applied"
+        assert applied["results"][0]["output"]["projected"] is True
+        assert _count(rt, "social_projection_runs") == 1
+        assert rt.social("requests", request_type="wish")["requests"]
+
+        repaired_review = rt.review("summary")
+        assert not [i for i in repaired_review["items"] if i["item_type"] == "social_projection_failed"]
+    finally:
+        rt.close()
+
+
 def test_venture_projection_failure_rolls_back_and_heartbeat_retries(tmp_path):
     """经营结算投影失败不应半写社会事实；已结算 occurrence 下次 heartbeat 可补投影。"""
     fresh_home(tmp_path)

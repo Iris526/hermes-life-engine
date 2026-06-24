@@ -805,6 +805,7 @@ DEFAULT_REVIEW_ACTION_POLICY: dict[str, Any] = {
         "delayed_reply",
         "dream_audit_finding",
         "proactive_intent",
+        "social_projection_failed",
         "policy_warning",
     ],
     "manual_choice_item_types": [
@@ -817,13 +818,13 @@ DEFAULT_REVIEW_ACTION_POLICY: dict[str, Any] = {
         "final_gate_feedback",
         "final_gate_report",
     ],
-    "safe_sections": ["sleep", "reply", "dream", "proactive", "policy"],
+    "safe_sections": ["sleep", "reply", "dream", "proactive", "world", "policy"],
     "require_dry_run_first": False,
     "allow_policy_patch": False,
     "allow_safe_undo": True,
     "max_undo_items": 10,
     "allow_agent_managed_loop": True,
-    "agent_managed_sections": ["sleep", "reply", "dream", "proactive", "policy"],
+    "agent_managed_sections": ["sleep", "reply", "dream", "proactive", "world", "policy"],
     "agent_managed_daily_action_limit": 8,
     "agent_managed_failure_budget": 2,
     "agent_managed_min_minutes_between_runs": 20,
@@ -959,6 +960,8 @@ def _item_is_batch_safe(item: dict[str, Any], plan: dict[str, Any], policy: dict
         if item_type in {"policy_conflict", "policy_warning"} and section != "policy":
             return False, "section_mismatch"
         if item_type in {"proactive_intent", "proactive_outbox"} and section != "proactive":
+            return False, "section_mismatch"
+        if item_type == "social_projection_failed" and section != "world":
             return False, "section_mismatch"
         if item_type == "user_confirmation" and section != "confirmations":
             return False, "section_mismatch"
