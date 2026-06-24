@@ -812,8 +812,9 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                 }
             for req_item in social_requests:
                 title, message, hint = _social_request_message(req_item)
+                severity = "warning" if hint.get("stale") else "action"
                 items.append(_item(
-                    "social_request", "action", title, message,
+                    "social_request", severity, title, message,
                     source_table="social_requests", source_id=req_item.get("id"), section="social_world",
                     when=req_item.get("updated_at") or req_item.get("created_at"), action_hint=hint,
                 ))

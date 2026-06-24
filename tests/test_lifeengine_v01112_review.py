@@ -17,6 +17,10 @@ def hermes_home(monkeypatch):
     return d
 
 
+def _result(commit: dict, index: int = 0) -> dict:
+    return ((commit.get("results") or [])[index].get("result") or {})
+
+
 def test_schema_v32_and_review_tables(hermes_home):
     conn = connect()
     try:
@@ -124,3 +128,86 @@ def test_life_review_tool_and_slash_surface(hermes_home):
     slash = slash_life("review")
     assert "LifeEngine Review" in slash
     assert "/life review" in slash_life("help")
+
+
+def test_review_surfaces_stale_social_request_with_action_hint(hermes_home):
+    rt = LifeEngineRuntime()
+    try:
+        requester = _result(rt.social("create_entity", entity_kind="client", display_name="陈掌柜"))
+        target = _result(rt.social("create_entity", entity_kind="place", display_name="归明观"))
+        request = _result(rt.social(
+            "record_request",
+            requester_entity_id=requester["id"],
+            target_entity_id=target["id"],
+            request_type="fieldwork_request",
+            topic="night_noise",
+            summary="陈掌柜请明灯看一眼夜里反复响动的铺面。",
+        ))
+        old_ts = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
+        rt.conn.execute(
+            "UPDATE social_requests SET created_at=?, updated_at=? WHERE id=?",
+            (old_ts, old_ts, request["id"]),
+        )
+
+        review = rt.review("summary")
+        item = next(i for i in review["items"] if i["item_type"] == "social_request")
+        assert item["severity"] == "warning"
+        assert item["source_id"] == request["id"]
+        assert item["action_hint"]["tool"] == "life_social"
+        assert item["action_hint"]["action"] == "request_transition"
+        assert item["action_hint"]["request_id"] == request["id"]
+        assert item["action_hint"]["stale"] is True
+        assert "陈掌柜请明灯看一眼" in item["message"]
+        assert "社会请求：活跃 1 条" in review["rendered"]
+        assert f"request_id={request['id']}" in review["rendered"]
+        assert "建议优先看一眼" in review["rendered"]
+    finally:
+        rt.close()
+
+
+def test_review_surfaces_world_model_action_hints(hermes_home):
+    rt = LifeEngineRuntime()
+    try:
+        condition = _result(rt.world(
+            "condition",
+            key="hazard.rain_shelter",
+            title="雨棚巷灵压偏高",
+            condition_type="hazard",
+            severity=78,
+            intensity=64,
+            summary="雨棚巷一带灵压升高，外勤需要绕开或先确认。",
+        ))
+        route = _result(rt.world(
+            "route",
+            key="route.old_bridge",
+            name="旧桥小路",
+            route_type="path",
+            risk_level=82,
+            status="blocked",
+            points=[{"x": 12, "y": 20}, {"x": 68, "y": 44}],
+        ))
+        faction = _result(rt.social("create_entity", entity_kind="faction", display_name="巡城司"))
+        presence = _result(rt.world(
+            "upsert_faction_presence",
+            faction_entity_id=faction["id"],
+            scope_kind="world",
+            influence=76,
+            stance="contested",
+            summary="巡城司对外围通行口径变得强硬。",
+        ))
+
+        review = rt.review("summary")
+        by_type = {i["item_type"]: i for i in review["items"]}
+        assert by_type["world_condition"]["source_id"] == condition["id"]
+        assert by_type["world_condition"]["action_hint"]["condition_id"] == condition["id"]
+        assert by_type["world_condition"]["action_hint"]["tool"] == "life_world"
+        assert by_type["world_route"]["source_id"] == route["id"]
+        assert by_type["world_route"]["action_hint"]["route_id"] == route["id"]
+        assert by_type["world_faction_presence"]["source_id"] == presence["id"]
+        assert by_type["world_faction_presence"]["action_hint"]["presence_id"] == presence["id"]
+        assert "世界模型：待整理 状态=1，路线=1，势力=1" in review["rendered"]
+        assert f"condition_id={condition['id']}" in review["rendered"]
+        assert f"route_id={route['id']}" in review["rendered"]
+        assert f"presence_id={presence['id']}" in review["rendered"]
+    finally:
+        rt.close()
