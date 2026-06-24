@@ -178,9 +178,10 @@ def _target_user(intent: dict[str, Any], policy: dict[str, Any] | None = None) -
 def _update_state_pending(conn, agent_id: str, user_id: str, intent_id: str, state: str) -> dict[str, Any]:
     current = ensure_proactive_state(conn, agent_id, user_id)
     pending = list(current.get("pending_intent_ids") or [])
-    if intent_id not in pending and state in {"has_something_to_share", "wants_help", "waiting_for_user_reply"}:
+    active_states = {"has_something_to_share", "wants_help", "waiting_for_user_reply", "cooldown"}
+    if intent_id not in pending and state in active_states:
         pending.append(intent_id)
-    if state == "silent":
+    if state not in active_states:
         pending = [pid for pid in pending if pid != intent_id]
     conn.execute(
         """UPDATE agent_user_proactive_state SET state=?, pending_intent_ids_json=?, updated_at=datetime('now')

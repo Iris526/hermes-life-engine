@@ -57,10 +57,27 @@ def _policy(conn, agent_id: str) -> dict[str, Any]:
         (agent_id,),
     ).fetchone()
     data = loads(row["data_json"], {}) if row else {}
-    return {**_DEFAULT_POLICY, **((data.get("companion") or {}) if isinstance(data, dict) else {})}
+    companion_policy = (data.get("companion") or {}) if isinstance(data, dict) else {}
+    merged = {**_DEFAULT_POLICY, **companion_policy}
+    # If the companion layer does not name its own target user, inherit the
+    # proactive delivery target. Otherwise idle messages can be authored for
+    # anonymous-user, missing real relationship follow-ups and creating a
+    # separate cooldown/pending queue from the actual QQ recipient.
+    if not companion_policy.get("default_user_id") and isinstance(data, dict):
+        proactive_target = (data.get("proactive") or {}).get("default_target_user_id")
+        if proactive_target:
+            merged["default_user_id"] = proactive_target
+    return merged
 
 
-def _has_pending_idle(conn, agent_id: str) -> bool:
+def _has_pending_idle(conn, agent_id: str, user_id: str | None = None) -> bool:
+    if user_id:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM proactive_intents WHERE agent_id=? AND target_type='user' AND target_id=? "
+            "AND intent_type IN ('idle_share','ask_about_user') AND status IN ('generated','queued')",
+            (agent_id, user_id),
+        ).fetchone()[0]
+        return int(n or 0) > 0
     n = conn.execute(
         "SELECT COUNT(*) FROM proactive_intents WHERE agent_id=? AND intent_type IN ('idle_share','ask_about_user') "
         "AND status IN ('generated','queued')",
@@ -69,7 +86,14 @@ def _has_pending_idle(conn, agent_id: str) -> bool:
     return int(n or 0) > 0
 
 
-def _today_idle_count(conn, agent_id: str) -> int:
+def _today_idle_count(conn, agent_id: str, user_id: str | None = None) -> int:
+    if user_id:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM proactive_intents WHERE agent_id=? AND target_type='user' AND target_id=? "
+            "AND intent_type IN ('idle_share','ask_about_user') AND created_at >= datetime('now','start of day')",
+            (agent_id, user_id),
+        ).fetchone()[0]
+        return int(n or 0)
     n = conn.execute(
         "SELECT COUNT(*) FROM proactive_intents WHERE agent_id=? AND intent_type IN ('idle_share','ask_about_user') "
         "AND created_at >= datetime('now','start of day')",
@@ -78,7 +102,15 @@ def _today_idle_count(conn, agent_id: str) -> int:
     return int(n or 0)
 
 
-def _minutes_since_last_idle(conn, agent_id: str) -> float | None:
+def _minutes_since_last_idle(conn, agent_id: str, user_id: str | None = None) -> float | None:
+    if user_id:
+        row = conn.execute(
+            "SELECT (julianday('now') - julianday(created_at)) * 1440.0 AS mins FROM proactive_intents "
+            "WHERE agent_id=? AND target_type='user' AND target_id=? AND intent_type IN ('idle_share','ask_about_user') "
+            "ORDER BY created_at DESC LIMIT 1",
+            (agent_id, user_id),
+        ).fetchone()
+        return float(row["mins"]) if row and row["mins"] is not None else None
     row = conn.execute(
         "SELECT (julianday('now') - julianday(created_at)) * 1440.0 AS mins FROM proactive_intents "
         "WHERE agent_id=? AND intent_type IN ('idle_share','ask_about_user') ORDER BY created_at DESC LIMIT 1",
@@ -123,11 +155,11 @@ def _candidate(conn, agent_id: str, *, control: dict[str, Any] | None = None,
     if not pol.get("enabled", True):
         return None
     user_id = user_id or str(pol.get("default_user_id") or "anonymous-user")
-    if _has_pending_idle(conn, agent_id):
+    if _has_pending_idle(conn, agent_id, user_id):
         return None
-    if _today_idle_count(conn, agent_id) >= int(pol.get("idle_max_per_day") or 3):
+    if _today_idle_count(conn, agent_id, user_id) >= int(pol.get("idle_max_per_day") or 3):
         return None
-    gap = _minutes_since_last_idle(conn, agent_id)
+    gap = _minutes_since_last_idle(conn, agent_id, user_id)
     if gap is not None and gap < float(pol.get("min_minutes_between") or 180):
         return None
     due = rel.notes_due_for_followup(conn, agent_id, user_id, now=now, limit=1)
@@ -240,10 +272,10 @@ def _create_followup_intent(conn, agent_id: str, user_id: str, note: dict[str, A
         target_type="user", target_id=user_id,
         intent_type="ask_about_user", summary=str(parsed["summary"]).strip(),
         emotional_tone=str(parsed.get("emotional_tone") or "caring"),
-        importance=60, urgency=35, novelty=60, relationship_relevance=72,
+        importance=75, urgency=45, novelty=70, relationship_relevance=80,
         privacy_level="safe_to_share", status="generated",
         generated_by="companion", source="companion",
-        delivery_policy={"canPush": False, "canMentionNextTurn": True, "quietHoursRespect": True},
+        delivery_policy={"canPush": True, "canMentionNextTurn": True, "quietHoursRespect": True},
         trace_id=trace_id,
     )
     rel.mark_followed_up(conn, note["id"], now=now)
@@ -264,9 +296,18 @@ def _author_idle_line(conn, agent_id: str, user_id: str, *, trace_id: str | None
         stances = _op.opinion_phrases(conn, agent_id, limit=3)
     except Exception:
         stances = []
+    def _usable(xs: list[str]) -> list[str]:
+        out: list[str] = []
+        for x in xs:
+            s = str(x or "").strip()
+            if not s or s.startswith("完成了『") or "LifeEngine" in s:
+                continue
+            out.append(s)
+        return out
+
     context = {
-        "你最近的生活片段": life.get("memories"),
-        "你近来做的事": life.get("events"),
+        "你最近的生活片段": _usable(life.get("memories") or []),
+        "你近来做的事": _usable(life.get("events") or []),
         "你记得的对方的生活": notes,
         "你最近的一些看法/在意的": stances,
         "此刻心情": "不错",
@@ -274,6 +315,8 @@ def _author_idle_line(conn, agent_id: str, user_id: str, *, trace_id: str | None
     instructions = (
         "你现在心情不错，也没什么大事，就是想跟对方说句话——可以是你今天的一件小事、"
         "一个忽然冒出来的念头，或是想起了对方。一句话，自然、轻，像随手发的消息。"
+        "这是 QQ 私聊；用第一人称，可以自然叫他“师兄”。不要像汇报，不要解释系统，"
+        "不要总写添灯油/火苗/常明净愿灯；如果素材重复，就换成更贴近日常的小动作或一句惦记。"
         "输出 summary=你想说的那句话；emotional_tone=语气。"
     )
     parsed = life_author.author(conn, "agent", agent_id, kind="idle_share",
@@ -297,9 +340,9 @@ def _create_idle_intent(conn, agent_id: str, user_id: str, parsed: dict[str, Any
         target_type="user", target_id=user_id,
         intent_type="idle_share", summary=str(parsed["summary"]).strip(),
         emotional_tone=str(parsed.get("emotional_tone") or "warm"),
-        importance=55, urgency=35, novelty=65, relationship_relevance=60,
+        importance=75, urgency=40, novelty=75, relationship_relevance=80,
         privacy_level="safe_to_share", status="generated",
         generated_by="companion", source="companion",
-        delivery_policy={"canPush": False, "canMentionNextTurn": True, "quietHoursRespect": True},
+        delivery_policy={"canPush": True, "canMentionNextTurn": True, "quietHoursRespect": True},
         trace_id=trace_id,
     )
