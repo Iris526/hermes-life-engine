@@ -351,3 +351,60 @@ def test_delivery_skips_queued_outbox_when_intent_is_suppressed(tmp_path, monkey
         assert not sink.exists()
     finally:
         rt.close()
+
+
+def test_proactive_lifecycle_cleanup_retires_stale_outbox_and_state(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="旧 outbox 不应该继续等投递。")
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        intent_id = outbox[outbox_id]["intent_id"]
+        rt.conn.execute("UPDATE proactive_intents SET status='suppressed', suppression_reason='legacy direct edit' WHERE id=?", (intent_id,))
+
+        status = rt.proactive("status")
+        assert status["proactive"]["ok"] is False
+        assert status["proactive"]["stale_outbox_count"] == 1
+        assert status["proactive"]["stale_state_count"] == 1
+
+        cleaned = rt.proactive("cleanup")
+
+        assert cleaned["retired_outbox_count"] == 1
+        assert cleaned["state_rows_changed"] == 1
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        assert outbox[outbox_id]["status"] == "suppressed"
+        assert outbox[outbox_id]["suppression_reason"] == "intent is suppressed"
+        state = rt.proactive("state", user_id="u1")["state"]
+        assert state["state"] == "silent"
+        assert state["pending_intent_ids"] == []
+        assert rt.proactive("status")["proactive"]["ok"] is True
+    finally:
+        rt.close()
+
+
+def test_human_review_surfaces_and_applies_proactive_lifecycle_cleanup(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="这条孤儿消息需要被整理掉。")
+        intent_id = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}[outbox_id]["intent_id"]
+        rt.conn.execute("DELETE FROM proactive_intents WHERE id=?", (intent_id,))
+
+        review = rt.review("summary")
+        items = [i for i in review["items"] if i["item_type"] == "proactive_lifecycle_cleanup"]
+        assert items
+        assert review["summary"]["proactive_lifecycle"]["stale_outbox_count"] == 1
+        assert "主动消息队列需要整理" in review["rendered"]
+
+        applied = rt.review("apply", item_id=items[0]["id"])
+
+        assert applied["ok"] is True
+        assert applied["applied"] is True
+        assert applied["output"]["retired_outbox_count"] == 1
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        assert outbox[outbox_id]["status"] == "suppressed"
+        assert outbox[outbox_id]["suppression_reason"] == "intent missing"
+    finally:
+        rt.close()

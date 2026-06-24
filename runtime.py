@@ -210,6 +210,7 @@ from .owner_scope import OwnerScope, resolve_owner_scope
 from .proactive import (
     author_outbox_text,
     create_proactive_intent,
+    cleanup_proactive_lifecycle,
     evaluate_proactive_intent,
     expire_intents,
     get_proactive_intent,
@@ -217,6 +218,7 @@ from .proactive import (
     list_proactive_intents,
     list_proactive_states,
     mark_outbox_sent,
+    proactive_lifecycle_status,
     suppress_intent,
     ensure_proactive_state,
 )
@@ -3284,6 +3286,12 @@ class LifeEngineRuntime:
             return self.commit_ops([{ "type": "SUPPRESS_PROACTIVE_INTENT", "payload": payload }], owner_kind, owner_id, "life_proactive_tool", session_id, turn_id)
         if action in {"expire", "expire_due"}:
             return self.commit_ops([{ "type": "EXPIRE_PROACTIVE_INTENTS", "payload": payload }], owner_kind, owner_id, "life_proactive_tool", session_id, turn_id)
+        if action in {"status", "summary", "lifecycle"}:
+            with transaction(self.conn):
+                return {"ok": True, "proactive": proactive_lifecycle_status(self.conn, owner_id, limit=int(payload.get("limit", 20)))}
+        if action in {"cleanup", "cleanup_lifecycle"}:
+            with transaction(self.conn):
+                return cleanup_proactive_lifecycle(self.conn, owner_id, limit=int(payload.get("limit", 100)))
         if action == "outbox":
             with transaction(self.conn):
                 return {"ok": True, "outbox": list_outbox(self.conn, owner_id, status=payload.get("status"), limit=int(payload.get("limit", 20)))}
@@ -3490,6 +3498,8 @@ class LifeEngineRuntime:
                 receipt_id = (commit.get("receipt") or {}).get("receipt_id")
             elif app_type == "direct" and plan.get("tool") == "life_sleep":
                 output = plan_recovery_sleep_if_needed(self.conn, owner_kind, owner_id, threshold=int(payload.get("threshold", 60)), duration_minutes=int(payload.get("duration_minutes", 30)), source="life_review_action")
+            elif app_type == "direct" and plan.get("tool") == "life_proactive":
+                output = cleanup_proactive_lifecycle(self.conn, owner_id, limit=int(payload.get("limit", 100)))
             elif app_type == "dream_repair":
                 repair_plan = collect_open_dream_repair_ops(self.conn, owner_kind, owner_id, dream_run_id=plan.get("dream_run_id"), finding_ids=[plan.get("finding_id")] if plan.get("finding_id") else None, limit=50)
                 ops = repair_plan.get("ops") or []

@@ -679,6 +679,142 @@ def suppress_intent(conn, agent_id: str, intent_id: str, reason: str = "manual s
     return get_proactive_intent(conn, intent_id)
 
 
+def _stale_outbox_rows(conn, agent_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    """Return active outbox rows whose intent is already terminal or missing."""
+    rows = conn.execute(
+        f"""SELECT o.id, o.intent_id, o.status, o.target_user_id, o.created_at,
+                  i.status AS intent_status
+             FROM proactive_outbox o
+             LEFT JOIN proactive_intents i ON i.id=o.intent_id
+            WHERE o.agent_id=? AND o.status IN ('drafted','queued','delivering')
+              AND o.intent_id IS NOT NULL
+              AND (i.id IS NULL OR i.status IN ({",".join("?" for _ in TERMINAL_INTENT_STATUSES)}))
+            ORDER BY o.created_at ASC
+            LIMIT ?""",
+        (agent_id, *sorted(TERMINAL_INTENT_STATUSES), int(limit)),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _stale_pending_state_rows(conn, agent_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    """Return proactive state rows that still point at retired or missing intents."""
+    rows = conn.execute(
+        "SELECT user_id, state, pending_intent_ids_json, updated_at FROM agent_user_proactive_state WHERE agent_id=? ORDER BY updated_at DESC",
+        (agent_id,),
+    ).fetchall()
+    stale: list[dict[str, Any]] = []
+    for row in rows:
+        pending = [str(pid) for pid in (loads(row["pending_intent_ids_json"], []) or []) if pid]
+        if not pending:
+            continue
+        placeholders = ",".join("?" for _ in pending)
+        found = conn.execute(
+            f"SELECT id, status FROM proactive_intents WHERE agent_id=? AND id IN ({placeholders})",
+            (agent_id, *pending),
+        ).fetchall()
+        statuses = {str(r["id"]): str(r["status"]) for r in found}
+        bad = [pid for pid in pending if statuses.get(pid) is None or statuses.get(pid) in TERMINAL_INTENT_STATUSES]
+        if bad:
+            stale.append({
+                "user_id": row["user_id"],
+                "state": row["state"],
+                "stale_intent_ids": bad,
+                "pending_intent_ids": pending,
+                "updated_at": row["updated_at"],
+            })
+        if len(stale) >= int(limit):
+            break
+    return stale
+
+
+def proactive_lifecycle_status(conn, agent_id: str, *, limit: int = 20) -> dict[str, Any]:
+    """Summarize proactive queues and stale lifecycle rows for review/doctor UX."""
+    counts = {
+        "generated_intents": _count_status(conn, "proactive_intents", agent_id, "generated"),
+        "queued_intents": _count_status(conn, "proactive_intents", agent_id, "queued"),
+        "queued_outbox": _count_status(conn, "proactive_outbox", agent_id, "queued"),
+        "delivering_outbox": _count_status(conn, "proactive_outbox", agent_id, "delivering"),
+    }
+    stale_outbox = _stale_outbox_rows(conn, agent_id, limit=limit)
+    stale_states = _stale_pending_state_rows(conn, agent_id, limit=limit)
+    return {
+        "ok": not stale_outbox and not stale_states,
+        "counts": counts,
+        "stale_outbox_count": len(stale_outbox),
+        "stale_state_count": len(stale_states),
+        "stale_outbox": stale_outbox,
+        "stale_states": stale_states,
+    }
+
+
+def _count_status(conn, table: str, agent_id: str, status: str) -> int:
+    row = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE agent_id=? AND status=?", (agent_id, status)).fetchone()
+    return int(row[0] if row else 0)
+
+
+def cleanup_proactive_lifecycle(conn, agent_id: str, *, limit: int = 100) -> dict[str, Any]:
+    """Retire stale active outbox rows and remove terminal/missing ids from state.
+
+    This is an explicit maintenance action, not part of review reads. It handles
+    old live-plugin divergence where an intent was suppressed/expired manually
+    but a queued outbox or pending state entry was left behind.
+    """
+    stale_outbox = _stale_outbox_rows(conn, agent_id, limit=limit)
+    retired_outbox: list[dict[str, Any]] = []
+    for row in stale_outbox:
+        intent_status = str(row.get("intent_status") or "")
+        if intent_status == "expired":
+            next_status = "expired"
+            reason = "intent expired"
+        elif intent_status == "sent":
+            next_status = "suppressed"
+            reason = "intent already sent"
+        elif intent_status:
+            next_status = "suppressed"
+            reason = f"intent is {intent_status}"
+        else:
+            next_status = "suppressed"
+            reason = "intent missing"
+        conn.execute(
+            """UPDATE proactive_outbox
+                  SET status=?, suppression_reason=?, error=NULL
+                WHERE id=? AND agent_id=? AND status IN ('drafted','queued','delivering')""",
+            (next_status, reason, row["id"], agent_id),
+        )
+        retired_outbox.append({**row, "next_status": next_status, "reason": reason})
+
+    stale_states = _stale_pending_state_rows(conn, agent_id, limit=limit)
+    changed_states: list[dict[str, Any]] = []
+    for row in stale_states:
+        stale_ids = set(row.get("stale_intent_ids") or [])
+        kept = [pid for pid in (row.get("pending_intent_ids") or []) if pid not in stale_ids]
+        next_state = "silent" if not kept else "has_something_to_share"
+        conn.execute(
+            """UPDATE agent_user_proactive_state
+                  SET state=?, pending_intent_ids_json=?, updated_at=datetime('now')
+                WHERE agent_id=? AND user_id=?""",
+            (next_state, dumps(kept), agent_id, row["user_id"]),
+        )
+        changed_states.append({**row, "next_state": next_state, "kept_intent_ids": kept})
+
+    if retired_outbox or changed_states:
+        append_journal(
+            conn,
+            "agent",
+            agent_id,
+            "proactive_lifecycle_cleaned",
+            {"retired_outbox": retired_outbox, "changed_states": changed_states},
+            "proactive",
+        )
+    return {
+        "ok": True,
+        "retired_outbox_count": len(retired_outbox),
+        "state_rows_changed": len(changed_states),
+        "retired_outbox": retired_outbox,
+        "changed_states": changed_states,
+    }
+
+
 def expire_intents(conn, agent_id: str) -> dict[str, Any]:
     # Expire anything past its TTL, plus a by-age backstop: any undelivered
     # intent older than _STALE_MAX_HOURS is retired even if it never got a TTL

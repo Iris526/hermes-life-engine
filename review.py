@@ -313,6 +313,34 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
     for o in outbox:
         title, message, hint = _proactive_outbox_message(o)
         items.append(_item("proactive_outbox", "action", title, message, source_table="proactive_outbox", source_id=o.get("id"), section="proactive", when=o.get("created_at"), action_hint=hint))
+    if owner_kind == "agent":
+        try:
+            from .proactive import proactive_lifecycle_status
+            lifecycle = proactive_lifecycle_status(conn, owner_id, limit=limit)
+            summary["proactive_lifecycle"] = {
+                "ok": lifecycle.get("ok"),
+                "counts": lifecycle.get("counts") or {},
+                "stale_outbox_count": lifecycle.get("stale_outbox_count", 0),
+                "stale_state_count": lifecycle.get("stale_state_count", 0),
+            }
+            stale_outbox = lifecycle.get("stale_outbox") or []
+            stale_states = lifecycle.get("stale_states") or []
+            if stale_outbox or stale_states:
+                bits = []
+                if stale_outbox:
+                    bits.append(f"{len(stale_outbox)} 条 outbox 已不该再发送")
+                if stale_states:
+                    bits.append(f"{len(stale_states)} 条用户主动状态还挂着旧意图")
+                items.append(_item(
+                    "proactive_lifecycle_cleanup", "warning",
+                    "主动消息队列需要整理",
+                    "，".join(bits) + "。建议先清理，再继续投递。",
+                    section="proactive", source_table="proactive_outbox",
+                    source_id=(stale_outbox[0].get("id") if stale_outbox else stale_states[0].get("user_id")),
+                    action_hint={"tool": "life_proactive", "action": "cleanup"},
+                ))
+        except Exception:
+            pass
 
     # Living-persona consolidation suggestions (v0.14.0): a trait that has
     # drifted far from its Canon baseline for long enough is surfaced as a
@@ -624,6 +652,8 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
             plan.update({"application_type": "lifeops", "tool": "life_proactive", "action": "send", "safe_auto": False, "ops": [{"type": "MARK_PROACTIVE_SENT", "payload": {"outbox_id": hint.get("outbox_id") or item.get("source_id"), "manual": True, "source": "life_review_action"}}], "message": "Mark this outbox message as sent."})
         else:
             plan.update({"application_type": "lifeops", "tool": "life_proactive", "action": "suppress", "safe_auto": False, "ops": [{"type": "SUPPRESS_PROACTIVE_INTENT", "payload": {"intent_id": hint.get("intent_id") or item.get("source_id"), "reason": "suppressed from /life review", "source": "life_review_action"}}], "message": "Suppress the related proactive intent."})
+    elif item_type == "proactive_lifecycle_cleanup":
+        plan.update({"application_type": "direct", "tool": "life_proactive", "action": "cleanup", "safe_auto": True, "message": "Clean stale proactive outbox/state rows that point at terminal or missing intents."})
     elif item_type == "user_confirmation":
         if choice not in {"confirm", "reject"}:
             plan.update({"application_type": "manual_choice", "requires_choice": True, "choices": ["confirm", "reject"], "safe_auto": False, "message": "Choose confirm or reject for user-life confirmation items."})
