@@ -796,6 +796,69 @@ def _running_delivery_attempt_count(conn, agent_id: str, outbox_ids: list[str] |
     return int(row[0] if row else 0)
 
 
+def _active_state_rows(conn, agent_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    """Return compact per-user proactive state rows for status/review surfaces.
+
+    This is deliberately read-only. It explains why a user-visible proactive
+    queue is waiting without creating another action item or changing delivery
+    policy.
+    """
+    rows = conn.execute(
+        """SELECT * FROM agent_user_proactive_state
+             WHERE agent_id=?
+               AND (state!='silent' OR pending_intent_ids_json!='[]' OR next_allowed_proactive_at IS NOT NULL)
+             ORDER BY updated_at DESC
+             LIMIT ?""",
+        (agent_id, int(limit)),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        d = _as_dict(row) or {}
+        pending = [str(pid) for pid in (d.get("pending_intent_ids") or []) if pid]
+        pending_intent = None
+        if pending:
+            placeholders = ",".join("?" for _ in pending)
+            found = conn.execute(
+                f"""SELECT id, intent_type, summary, status, decision_json, updated_at
+                      FROM proactive_intents
+                     WHERE agent_id=? AND id IN ({placeholders})
+                     ORDER BY updated_at DESC LIMIT 1""",
+                (agent_id, *pending),
+            ).fetchone()
+            if found:
+                pending_intent = dict(found)
+                pending_intent["decision"] = loads(pending_intent.pop("decision_json"), {})
+        wait_reason = str(d.get("state") or "silent")
+        next_allowed = d.get("next_allowed_proactive_at")
+        try:
+            if next_allowed and to_epoch(next_allowed) > int(_now().timestamp()):
+                wait_reason = "cooldown"
+        except Exception:
+            pass
+        decision = (pending_intent or {}).get("decision") or {}
+        if decision.get("decision") in {"quiet_hours", "daily_limit", "pending_only", "manual_send_pending", "score_below_auto_send"}:
+            wait_reason = str(decision.get("decision"))
+        out.append({
+            "user_id": d.get("user_id"),
+            "state": d.get("state"),
+            "pending_count": len(pending),
+            "pending_intent_ids": pending[:5],
+            "next_pending_intent": {
+                "id": pending_intent.get("id"),
+                "intent_type": pending_intent.get("intent_type"),
+                "summary": pending_intent.get("summary"),
+                "status": pending_intent.get("status"),
+                "decision": decision.get("decision"),
+            } if pending_intent else None,
+            "wait_reason": wait_reason,
+            "daily_sent_count": int(d.get("daily_sent_count") or 0),
+            "last_proactive_sent_at": d.get("last_proactive_sent_at"),
+            "next_allowed_proactive_at": next_allowed,
+            "updated_at": d.get("updated_at"),
+        })
+    return out
+
+
 def proactive_lifecycle_status(conn, agent_id: str, *, limit: int = 20) -> dict[str, Any]:
     """Summarize proactive queues and stale lifecycle rows for review/doctor UX."""
     counts = {
@@ -806,9 +869,11 @@ def proactive_lifecycle_status(conn, agent_id: str, *, limit: int = 20) -> dict[
     }
     stale_outbox = _stale_outbox_rows(conn, agent_id, limit=limit)
     stale_states = _stale_pending_state_rows(conn, agent_id, limit=limit)
+    active_states = _active_state_rows(conn, agent_id, limit=limit)
     stale_delivery_attempt_count = _running_delivery_attempt_count(
         conn, agent_id, {r["id"] for r in stale_outbox}
     )
+    counts["active_state_rows"] = len(active_states)
     return {
         "ok": not stale_outbox and not stale_states,
         "counts": counts,
@@ -817,6 +882,7 @@ def proactive_lifecycle_status(conn, agent_id: str, *, limit: int = 20) -> dict[
         "stale_delivery_attempt_count": stale_delivery_attempt_count,
         "stale_outbox": stale_outbox,
         "stale_states": stale_states,
+        "active_states": active_states,
     }
 
 

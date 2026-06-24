@@ -237,6 +237,29 @@ def _proactive_lifecycle_render_bits(lifecycle: dict[str, Any]) -> list[str]:
         bits.append(f"陈旧待说状态 {stale_states} 条")
     if stale_attempts:
         bits.append(f"卡住投递 {stale_attempts} 个")
+    active_states = lifecycle.get("active_states") or []
+    if active_states:
+        reason_labels = {
+            "cooldown": "冷却",
+            "quiet_hours": "安静时段",
+            "daily_limit": "今日额度",
+            "pending_only": "只记录待说",
+            "manual_send_pending": "等待人工放行",
+            "score_below_auto_send": "分数未到自动发送",
+            "has_something_to_share": "有待说",
+            "waiting_for_user_reply": "等用户回应",
+        }
+        short: list[str] = []
+        for state in active_states[:3]:
+            reason = reason_labels.get(str(state.get("wait_reason") or ""), str(state.get("wait_reason") or state.get("state") or "等待"))
+            pending = int(state.get("pending_count") or 0)
+            suffix = f"/{pending} 条" if pending else ""
+            next_allowed = state.get("next_allowed_proactive_at")
+            if next_allowed and str(state.get("wait_reason")) == "cooldown":
+                short.append(f"{state.get('user_id')}={reason}{suffix} 到 {next_allowed}")
+            else:
+                short.append(f"{state.get('user_id')}={reason}{suffix}")
+        bits.append("用户节奏 " + "；".join(short))
     return bits
 
 
@@ -475,6 +498,7 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
                 "stale_outbox_count": lifecycle.get("stale_outbox_count", 0),
                 "stale_state_count": lifecycle.get("stale_state_count", 0),
                 "stale_delivery_attempt_count": lifecycle.get("stale_delivery_attempt_count", 0),
+                "active_states": lifecycle.get("active_states") or [],
                 "render_bits": _proactive_lifecycle_render_bits(lifecycle),
             }
             stale_outbox = lifecycle.get("stale_outbox") or []

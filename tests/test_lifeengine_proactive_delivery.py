@@ -311,6 +311,58 @@ def test_doctor_errors_when_queued_outbox_has_no_delivery_adapter(tmp_path, monk
         rt.close()
 
 
+def test_proactive_status_and_review_explain_cooldown_state(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        row = rt.conn.execute(
+            "SELECT id, data_json FROM canon_versions WHERE owner_kind='agent' AND owner_id='default-agent' AND status='active' ORDER BY version DESC LIMIT 1"
+        ).fetchone()
+        data = json.loads(row["data_json"])
+        data.setdefault("proactive", {})
+        data["proactive"].update({"max_per_day": 5, "cooldown_minutes": 180})
+        rt.conn.execute("UPDATE canon_versions SET data_json=? WHERE id=?", (json.dumps(data, ensure_ascii=False), row["id"]))
+
+        first_outbox_id = _queue_outbox(rt, draft_text="第一条已经发过了。")
+        rt.proactive("send", outbox_id=first_outbox_id)
+        second = rt.proactive(
+            "create",
+            summary="我又想告诉你一个小进展，但需要等冷却。",
+            target_type="user",
+            target_id="u1",
+            intent_type="report_progress",
+            importance=95,
+            urgency=90,
+            novelty=80,
+            relationship_relevance=90,
+            privacy_level="safe_to_share",
+        )
+        second_intent_id = second["results"][0]["result"]["id"]
+
+        evaluated = rt.proactive("evaluate", intent_id=second_intent_id, draft_text="第二条应该先等一等。")
+
+        assert evaluated["results"][0]["result"]["evaluated"][0]["decision"] == "queue_pending"
+        assert evaluated["results"][0]["result"]["evaluated"][0]["reason"] == "within proactive cooldown window"
+        status = rt.proactive("status")
+        state = status["proactive"]["active_states"][0]
+        assert state["user_id"] == "u1"
+        assert state["wait_reason"] == "cooldown"
+        assert state["pending_count"] == 1
+        assert state["next_pending_intent"]["id"] == second_intent_id
+        assert state["next_allowed_proactive_at"]
+        assert status["proactive"]["counts"]["active_state_rows"] == 1
+
+        review = rt.review("summary")
+
+        assert review["summary"]["proactive_lifecycle"]["active_states"][0]["wait_reason"] == "cooldown"
+        assert any("用户节奏 u1=冷却/1 条" in bit for bit in review["summary"]["proactive_lifecycle"]["render_bits"])
+        assert "用户节奏 u1=冷却/1 条" in review["rendered"]
+        assert "主动消息：正常" in review["rendered"]
+    finally:
+        rt.close()
+
+
 def test_suppress_intent_suppresses_existing_queued_outbox(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     rt = LifeEngineRuntime()
