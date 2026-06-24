@@ -174,6 +174,33 @@ def _proactive(conn, owner_kind: str, owner_id: str, limit: int = 5) -> tuple[li
     return intents, outbox
 
 
+def _recent_suppressed_proactive_intents(conn, owner_kind: str, owner_id: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Return recent proactive suppressions so silence remains explainable.
+
+    Suppressed intents are terminal and should not stay in the active queue, but
+    review still needs a short audit window for "why didn't she say this?".
+    """
+    if owner_kind != "agent":
+        return []
+    rows = conn.execute(
+        """SELECT id, target_type, target_id, intent_type, summary, suppression_reason,
+                  suppressed_at, created_at, updated_at, score_json, decision_json
+             FROM proactive_intents
+            WHERE agent_id=? AND status='suppressed'
+              AND COALESCE(suppressed_at, updated_at, created_at) >= datetime('now','-48 hours')
+            ORDER BY COALESCE(suppressed_at, updated_at, created_at) DESC
+            LIMIT ?""",
+        (owner_id, int(limit)),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        d = dict(row)
+        d["score"] = loads(d.pop("score_json"), {})
+        d["decision"] = loads(d.pop("decision_json"), {})
+        out.append(d)
+    return out
+
+
 def _proactive_waiting_message(intent: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     decision = loads(intent.get("decision_json"), {}) if "decision_json" in intent else (intent.get("decision") or {})
     reason = str((decision or {}).get("reason") or intent.get("suppression_reason") or "").strip()
@@ -199,6 +226,33 @@ def _proactive_waiting_message(intent: dict[str, Any]) -> tuple[str, str, dict[s
     if reason:
         return "我有想说的话", f"{summary}。等待原因：{reason}。", hint
     return "我有想说的话", summary, hint
+
+
+def _proactive_suppressed_message(intent: dict[str, Any]) -> tuple[str, str, dict[str, Any], str]:
+    decision = intent.get("decision") or {}
+    score = intent.get("score") or {}
+    reason = str(intent.get("suppression_reason") or decision.get("reason") or "未说明原因").strip()
+    summary = str(intent.get("summary") or intent.get("intent_type") or "主动意图").strip()
+    when = intent.get("suppressed_at") or intent.get("updated_at") or intent.get("created_at")
+    age = _age_hint(when, stale_after_hours=24)
+    score_value = score.get("score")
+    score_text = f"，评分 {score_value}" if score_value is not None else ""
+    title = "有一条主动消息被压下，没有打扰你"
+    message = f"{summary}。原因：{reason}{score_text}。"
+    if age.get("age_label"):
+        message = f"{message} 这是 {age.get('age_label')}内的记录。"
+    severity = "warning" if reason in {"score below queue threshold", "agent_private cannot target user"} else "info"
+    hint = {
+        "tool": "life_proactive",
+        "action": "inspect_suppressed",
+        "intent_id": intent.get("id"),
+        "reason": reason,
+        "decision": decision.get("decision"),
+        "score": score_value,
+        "suggested_actions": ["leave_suppressed", "adjust_policy", "create_new_intent"],
+        **age,
+    }
+    return title, message, hint, severity
 
 
 def _outbox_send_after_is_future(outbox: dict[str, Any]) -> bool:
@@ -674,6 +728,17 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
         title, message, hint = _proactive_outbox_message(o)
         severity = "info" if _outbox_send_after_is_future(o) else "action"
         items.append(_item("proactive_outbox", severity, title, message, source_table="proactive_outbox", source_id=o.get("id"), section="proactive", when=o.get("created_at"), action_hint=hint))
+    suppressed_intents = _recent_suppressed_proactive_intents(conn, owner_kind, owner_id, limit=limit)
+    if suppressed_intents:
+        summary["recent_proactive_suppressions"] = len(suppressed_intents)
+    for p in suppressed_intents:
+        title, message, hint, severity = _proactive_suppressed_message(p)
+        items.append(_item(
+            "proactive_suppressed", severity, title, message,
+            source_table="proactive_intents", source_id=p.get("id"), section="proactive",
+            when=p.get("suppressed_at") or p.get("updated_at") or p.get("created_at"),
+            action_hint=hint,
+        ))
     if owner_kind == "agent":
         try:
             from .proactive import proactive_lifecycle_status
@@ -1033,6 +1098,8 @@ def render_human_review(summary: dict[str, Any], items: list[dict[str, Any]]) ->
     if proactive_bits:
         state = "正常" if proactive_lifecycle.get("ok") else "需要整理"
         lines.append(f"主动消息：{state}；" + "，".join(proactive_bits))
+    if summary.get("recent_proactive_suppressions"):
+        lines.append(f"主动消息：近 48 小时压下 {summary.get('recent_proactive_suppressions')} 条，可在下方查看原因。")
     social_projection = summary.get("social_projection") or {}
     if social_projection:
         lines.append(f"社会投影：待补投影 {social_projection.get('open_failures', 0)} 条")
@@ -1208,6 +1275,17 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
             plan.update({"application_type": "lifeops", "tool": "life_proactive", "action": "suppress", "safe_auto": False, "ops": [{"type": "SUPPRESS_PROACTIVE_INTENT", "payload": {"intent_id": hint.get("intent_id") or item.get("source_id"), "reason": "suppressed from /life review", "source": "life_review_action"}}], "message": "Suppress the related proactive intent."})
     elif item_type == "proactive_lifecycle_cleanup":
         plan.update({"application_type": "direct", "tool": "life_proactive", "action": "cleanup", "safe_auto": True, "message": "Expire due proactive intents and clean stale outbox/state rows."})
+    elif item_type == "proactive_suppressed":
+        plan.update({
+            "application_type": "manual_review",
+            "tool": "life_proactive",
+            "action": "inspect_suppressed",
+            "intent_id": hint.get("intent_id") or item.get("source_id"),
+            "safe_auto": False,
+            "requires_choice": True,
+            "choices": hint.get("suggested_actions") or ["leave_suppressed", "adjust_policy", "create_new_intent"],
+            "message": "Inspect why this proactive thought was suppressed; LifeEngine will not resurrect it automatically.",
+        })
     elif item_type == "social_projection_failed":
         plan.update({
             "application_type": "direct",

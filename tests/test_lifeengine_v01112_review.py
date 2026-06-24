@@ -105,6 +105,83 @@ def test_review_explains_quiet_hours_proactive_wait(hermes_home):
         rt.close()
 
 
+def test_review_surfaces_recent_suppressed_proactive_intent(hermes_home):
+    rt = LifeEngineRuntime()
+    try:
+        rt.setup("测试 Agent，主动消息需要可解释。")
+        rt.commit_canon()
+        rt.control("resume")
+        rt.control("module", key="proactive", value="off")
+        created = rt.proactive(
+            "create",
+            summary="我想问问你睡前是不是还在忙",
+            target_type="user",
+            target_id="u1",
+            intent_type="ask_about_user",
+            importance=80,
+            urgency=70,
+            novelty=70,
+            relationship_relevance=95,
+            privacy_level="safe_to_share",
+        )
+        intent_id = created["results"][0]["result"]["id"]
+        evaluated = rt.proactive("evaluate", intent_id=intent_id)
+        assert evaluated["results"][0]["result"]["evaluated"][0]["decision"] == "suppress"
+
+        review = rt.review("summary")
+
+        item = next(i for i in review["items"] if i["item_type"] == "proactive_suppressed")
+        assert item["severity"] == "info"
+        assert item["source_id"] == intent_id
+        assert "没有打扰你" in item["title"]
+        assert "proactive module off" in item["message"]
+        assert item["action_hint"]["tool"] == "life_proactive"
+        assert item["action_hint"]["action"] == "inspect_suppressed"
+        assert item["action_hint"]["intent_id"] == intent_id
+        assert "主动消息：近 48 小时压下 1 条" in review["rendered"]
+        assert f"intent_id={intent_id}" in review["rendered"]
+        assert "可选：leave_suppressed/adjust_policy/create_new_intent" in review["rendered"]
+    finally:
+        rt.close()
+
+
+def test_review_plan_for_suppressed_proactive_is_manual_review(hermes_home):
+    rt = LifeEngineRuntime()
+    try:
+        rt.setup("测试 Agent，主动消息需要可解释。")
+        rt.commit_canon()
+        rt.control("resume")
+        rt.control("module", key="proactive", value="auto_send")
+        created = rt.proactive(
+            "create",
+            summary="这条重要度太低，不该主动打扰。",
+            target_type="user",
+            target_id="u1",
+            intent_type="idle_share",
+            importance=5,
+            urgency=5,
+            novelty=5,
+            relationship_relevance=5,
+            privacy_level="safe_to_share",
+        )
+        intent_id = created["results"][0]["result"]["id"]
+        rt.proactive("evaluate", intent_id=intent_id)
+        review = rt.review("summary")
+        item = next(i for i in review["items"] if i["item_type"] == "proactive_suppressed")
+
+        preview = rt.review("preview_action", item_id=item["id"])
+
+        assert preview["ok"] is True
+        assert preview["plan"]["application_type"] == "manual_review"
+        assert preview["plan"]["tool"] == "life_proactive"
+        assert preview["plan"]["action"] == "inspect_suppressed"
+        assert preview["plan"]["intent_id"] == intent_id
+        assert preview["plan"]["safe_auto"] is False
+        assert preview["plan"]["requires_choice"] is True
+    finally:
+        rt.close()
+
+
 def test_review_dismiss_item(hermes_home):
     rt = LifeEngineRuntime()
     try:
