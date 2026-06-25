@@ -101,8 +101,22 @@ def _now_iso() -> str:
     return _now().isoformat()
 
 
-def _date_key() -> str:
-    return _now().date().isoformat()
+def _zoneinfo(timezone_name: str | None = None) -> ZoneInfo:
+    try:
+        return ZoneInfo(str(timezone_name or "Asia/Shanghai"))
+    except Exception:
+        return ZoneInfo("Asia/Shanghai")
+
+
+def _date_key(timezone_name: str | None = None, now: datetime | None = None) -> str:
+    return (now or _now()).astimezone(_zoneinfo(timezone_name)).date().isoformat()
+
+
+def _policy_timezone(conn, agent_id: str) -> str:
+    try:
+        return str(_gate_policy(None, _get_canon_policy(conn, agent_id)).get("timezone") or "Asia/Shanghai")
+    except Exception:
+        return "Asia/Shanghai"
 
 
 def _as_dict(row) -> dict[str, Any] | None:
@@ -155,13 +169,14 @@ def _gate_policy(control: dict[str, Any] | None, canon_policy: dict[str, Any] | 
     }
 
 
-def ensure_proactive_state(conn, agent_id: str, user_id: str | None = None) -> dict[str, Any]:
+def ensure_proactive_state(conn, agent_id: str, user_id: str | None = None,
+                           timezone_name: str | None = None) -> dict[str, Any]:
     user_id = user_id or "anonymous-user"
     row = conn.execute(
         "SELECT * FROM agent_user_proactive_state WHERE agent_id=? AND user_id=?",
         (agent_id, user_id),
     ).fetchone()
-    today = _date_key()
+    today = _date_key(timezone_name or _policy_timezone(conn, agent_id))
     if row:
         d = _as_dict(row) or {}
         if d.get("last_daily_reset_date") != today:
@@ -650,7 +665,7 @@ def evaluate_proactive_intent(
     evaluated: list[dict[str, Any]] = []
     for intent in intents:
         user_id = target_user_id or _target_user(intent, policy)
-        state = ensure_proactive_state(conn, agent_id, user_id)
+        state = ensure_proactive_state(conn, agent_id, user_id, timezone_name=policy.get("timezone"))
         score = _score_intent(intent, state)
         decision = "none"
         reason = ""
@@ -702,12 +717,24 @@ def evaluate_proactive_intent(
                 msg = (
                     _usable_outbox_text(conn, agent_id, user_id, intent, draft_text, source="provided_draft", trace_id=trace_id)
                     or (_author_outbox_text(conn, agent_id, user_id, intent, trace_id=trace_id) if allow_authoring else None)
-                    or _fallback_outbox_text(intent)
                 )
-                outbox = _create_outbox(conn, agent_id, user_id, intent, msg, status="queued", delivery_channel="hermes")
-                conn.execute("UPDATE proactive_intents SET status='queued', queued_at=COALESCE(queued_at, datetime('now')), result_outbox_id=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?", (outbox.get("id"), dumps(score), dumps({"decision": "outbox_queued", "reason": "delivery allowed", "policy": policy}), intent["id"]))
-                _update_state_pending(conn, agent_id, user_id, intent["id"], "waiting_for_user_reply")
-                decision, reason = "outbox_queued", "delivery allowed"
+                if not msg:
+                    fallback = _fallback_outbox_text(intent)
+                    msg = _usable_outbox_text(conn, agent_id, user_id, intent, fallback, source="fallback", trace_id=trace_id)
+                if not msg:
+                    fallback_reason = _outbox_rejection_reason(_fallback_outbox_text(intent)) or "unusable"
+                    reason = f"fallback outbox text rejected: {fallback_reason}"
+                    conn.execute(
+                        "UPDATE proactive_intents SET status='suppressed', suppressed_at=datetime('now'), suppression_reason=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?",
+                        (reason, dumps(score), dumps({"decision": "suppress", "reason": reason, "policy": policy}), intent["id"]),
+                    )
+                    _update_state_pending(conn, agent_id, user_id, intent["id"], "suppressed_by_policy")
+                    decision = "suppress"
+                else:
+                    outbox = _create_outbox(conn, agent_id, user_id, intent, msg, status="queued", delivery_channel="hermes")
+                    conn.execute("UPDATE proactive_intents SET status='queued', queued_at=COALESCE(queued_at, datetime('now')), result_outbox_id=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?", (outbox.get("id"), dumps(score), dumps({"decision": "outbox_queued", "reason": "delivery allowed", "policy": policy}), intent["id"]))
+                    _update_state_pending(conn, agent_id, user_id, intent["id"], "waiting_for_user_reply")
+                    decision, reason = "outbox_queued", "delivery allowed"
         eval_id = new_id("proeval")
         conn.execute(
             """INSERT INTO proactive_evaluations(id, agent_id, target_user_id, intent_id, mode, score,
@@ -715,7 +742,7 @@ def evaluate_proactive_intent(
             (eval_id, agent_id, user_id, intent["id"], mode, float(score["score"]), decision, reason, dumps(policy), trace_id),
         )
         append_journal(conn, "agent", agent_id, "proactive_intent_evaluated", {"intent_id": intent["id"], "decision": decision, "reason": reason, "score": score, "outbox_id": outbox.get("id") if outbox else None}, "proactive")
-        evaluated.append({"evaluation_id": eval_id, "intent_id": intent["id"], "decision": decision, "reason": reason, "score": score, "outbox": outbox, "state": ensure_proactive_state(conn, agent_id, user_id)})
+        evaluated.append({"evaluation_id": eval_id, "intent_id": intent["id"], "decision": decision, "reason": reason, "score": score, "outbox": outbox, "state": ensure_proactive_state(conn, agent_id, user_id, timezone_name=policy.get("timezone"))})
     return {"evaluated": evaluated, "policy": policy}
 
 
@@ -734,7 +761,7 @@ def _temporary_wait_has_cleared(conn, agent_id: str, intent: dict[str, Any], pol
     if wait not in TEMPORARY_WAIT_DECISIONS:
         return False
     user_id = _target_user(intent, policy)
-    state = ensure_proactive_state(conn, agent_id, user_id)
+    state = ensure_proactive_state(conn, agent_id, user_id, timezone_name=policy.get("timezone"))
     if wait == "quiet_hours":
         return not _quiet_hours_active(policy)
     if wait == "cooldown":
@@ -818,15 +845,17 @@ def mark_outbox_sent(conn, agent_id: str, outbox_id: str, *, result: dict[str, A
         raise ValueError("outbox owner mismatch")
     user_id = msg.get("target_user_id") or "anonymous-user"
     intent_id = msg.get("intent_id")
+    canon_policy = _get_canon_policy(conn, agent_id)
+    policy = _gate_policy(None, canon_policy)
     conn.execute(
         "UPDATE proactive_outbox SET status='sent', sent_at=datetime('now'), delivery_result_json=? WHERE id=?",
         (dumps(result or {"manual": manual}), outbox_id),
     )
     if intent_id:
         conn.execute("UPDATE proactive_intents SET status='sent', sent_at=datetime('now'), updated_at=datetime('now') WHERE id=?", (intent_id,))
-    state = ensure_proactive_state(conn, agent_id, user_id)
+    state = ensure_proactive_state(conn, agent_id, user_id, timezone_name=policy.get("timezone"))
     pending = [pid for pid in (state.get("pending_intent_ids") or []) if pid != intent_id]
-    cooldown_minutes = int(_get_canon_policy(conn, agent_id).get("cooldown_minutes", 180))
+    cooldown_minutes = int(canon_policy.get("cooldown_minutes", 180))
     cooldown = (_now() + timedelta(minutes=cooldown_minutes)).isoformat()
     conn.execute(
         """UPDATE agent_user_proactive_state SET state='cooldown', pending_intent_ids_json=?, last_proactive_sent_at=datetime('now'),
@@ -835,7 +864,7 @@ def mark_outbox_sent(conn, agent_id: str, outbox_id: str, *, result: dict[str, A
         (dumps(pending), cooldown, agent_id, user_id),
     )
     append_journal(conn, "agent", agent_id, "proactive_outbox_sent", {"outbox_id": outbox_id, "intent_id": intent_id}, "proactive")
-    return {"outbox": get_outbox_message(conn, outbox_id), "state": ensure_proactive_state(conn, agent_id, user_id)}
+    return {"outbox": get_outbox_message(conn, outbox_id), "state": ensure_proactive_state(conn, agent_id, user_id, timezone_name=policy.get("timezone"))}
 
 
 def suppress_intent(conn, agent_id: str, intent_id: str, reason: str = "manual suppress") -> dict[str, Any]:

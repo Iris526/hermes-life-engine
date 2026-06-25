@@ -257,10 +257,13 @@ def test_event_completion_survives_social_projection_failure_and_can_retry(tmp_p
         assert f"audit_id={items[0]['source_id']}" in review["rendered"]
         assert items[0]["action_hint"]["action"] == "retry_projection"
         assert items[0]["action_hint"]["event_id"] == ev["id"]
+        assert items[0]["action_hint"]["summary"] == "卖符顺利，香客愿意再来。"
 
         plan = rt.review("preview_action", item_id=items[0]["id"])
         assert plan["plan"]["tool"] == "life_social"
         assert plan["plan"]["action"] == "retry_projection"
+        assert plan["plan"]["safe_auto"] is False
+        assert plan["plan"]["summary"] == "卖符顺利，香客愿意再来。"
 
         retry = rt.review("apply", item_id=items[0]["id"])
         assert retry["ok"] is True
@@ -275,14 +278,14 @@ def test_event_completion_survives_social_projection_failure_and_can_retry(tmp_p
         rt.close()
 
 
-def test_world_review_batch_safely_retries_social_projection_failure(tmp_path):
-    """World-section review batch should repair idempotent social projection failures."""
+def test_world_review_batch_does_not_safe_auto_retry_social_projection_failure(tmp_path):
+    """World-section safe batch must not auto-retry social projection failures."""
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
         setup_agent(rt)
         policy = rt.review("policy")["review_action_policy"]["policy"]
-        assert "social_projection_failed" in policy["safe_item_types"]
+        assert "social_projection_failed" not in policy["safe_item_types"]
         assert "world" in policy["safe_sections"]
         assert "world" in policy["agent_managed_sections"]
 
@@ -307,19 +310,66 @@ def test_world_review_batch_safely_retries_social_projection_failure(tmp_path):
         assert len(items) == 1
 
         preview = rt.review("apply_all", review_run_id=review["review_run_id"], section="world", dry_run=True)
-        assert preview["plan"]["selected_count"] == 1
-        assert preview["plan"]["items"][0]["item_type"] == "social_projection_failed"
+        assert preview["plan"]["selected_count"] == 0
+        assert preview["plan"]["items"] == []
 
         applied = rt.review("apply_all", review_run_id=review["review_run_id"], section="world")
         assert applied["ok"] is True
-        assert applied["applied"] is True
-        assert applied["status"] == "applied"
-        assert applied["results"][0]["output"]["projected"] is True
-        assert _count(rt, "social_projection_runs") == 1
-        assert rt.social("requests", request_type="wish")["requests"]
+        assert applied["applied"] is False
+        assert applied["status"] == "skipped"
+        assert applied["results"] == []
+        assert _count(rt, "social_projection_runs") == 0
 
-        repaired_review = rt.review("summary")
-        assert not [i for i in repaired_review["items"] if i["item_type"] == "social_projection_failed"]
+        still_open = rt.review("summary")
+        assert [i for i in still_open["items"] if i["item_type"] == "social_projection_failed"]
+    finally:
+        rt.close()
+
+
+def test_event_completion_projection_retry_preserves_negative_summary(tmp_path):
+    """Retry must reuse the failed completion summary so concern stays concern."""
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        ev = _result(rt.event_tool(
+            "create",
+            title="归明观午后摆摊卖净符",
+            event_type="work",
+            activity_domain="venture",
+            tags=["摆摊", "归明观", "净符"],
+            resource_costs={},
+        ))
+        negative_summary = "卖符不顺利，香客担心效果。"
+
+        old_record_rumor = social_projector.record_rumor
+        social_projector.record_rumor = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("forced-rumor-boom"))
+        try:
+            rt.event_tool("complete", event_id=ev["id"], summary=negative_summary)
+        finally:
+            social_projector.record_rumor = old_record_rumor
+
+        audit = rt.conn.execute(
+            "SELECT payload_json FROM audit_log WHERE audit_type='social_projection_failed' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert negative_summary in audit["payload_json"]
+
+        review = rt.review("summary")
+        item = next(i for i in review["items"] if i["item_type"] == "social_projection_failed")
+        assert item["action_hint"]["summary"] == negative_summary
+        preview = rt.review("preview_action", item_id=item["id"])
+        assert preview["plan"]["summary"] == negative_summary
+        assert preview["plan"]["safe_auto"] is False
+
+        retry = rt.review("apply", item_id=item["id"])
+
+        assert retry["ok"] is True
+        assert retry["applied"] is True
+        rumor = rt.conn.execute("SELECT content, sentiment FROM rumors ORDER BY created_at DESC LIMIT 1").fetchone()
+        assert rumor is not None
+        assert rumor["sentiment"] == "concern"
+        assert "担心" in rumor["content"]
+        assert "经营顺利" not in rumor["content"]
     finally:
         rt.close()
 

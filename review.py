@@ -453,12 +453,13 @@ def _social_projection_failure_message(audit: dict[str, Any]) -> tuple[str, str,
     kind = str(payload.get("projection_kind") or "")
     event_id = payload.get("event_id")
     occurrence_id = payload.get("occurrence_id")
+    summary = payload.get("summary")
     if kind == "venture_sale_settled":
         target_label = f"occurrence {occurrence_id}"
         retry_payload = {"projection_kind": kind, "occurrence_id": occurrence_id}
     else:
         target_label = f"event {event_id}"
-        retry_payload = {"projection_kind": "event_completed", "event_id": event_id}
+        retry_payload = {"projection_kind": "event_completed", "event_id": event_id, "summary": summary}
     message = str(audit.get("message") or "社会投影失败").strip()
     hint = {
         "tool": "life_social",
@@ -1364,10 +1365,11 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
             "application_type": "direct",
             "tool": "life_social",
             "action": "retry_projection",
-            "safe_auto": True,
+            "safe_auto": False,
             "projection_kind": hint.get("projection_kind"),
             "event_id": hint.get("event_id"),
             "occurrence_id": hint.get("occurrence_id"),
+            "summary": hint.get("summary"),
             "message": "Retry the idempotent social/world projection for the failed event or occurrence.",
         })
     elif item_type == "social_request":
@@ -1453,7 +1455,6 @@ DEFAULT_REVIEW_ACTION_POLICY: dict[str, Any] = {
         "dream_audit_finding",
         "proactive_intent",
         "proactive_lifecycle_cleanup",
-        "social_projection_failed",
         "policy_warning",
     ],
     "manual_choice_item_types": [
@@ -1611,7 +1612,7 @@ def _item_is_batch_safe(item: dict[str, Any], plan: dict[str, Any], policy: dict
             return False, "section_mismatch"
         if item_type in {"policy_conflict", "policy_warning"} and section != "policy":
             return False, "section_mismatch"
-        if item_type in {"proactive_intent", "proactive_outbox"} and section != "proactive":
+        if item_type in {"proactive_intent", "proactive_outbox", "proactive_lifecycle_cleanup", "proactive_suppressed"} and section != "proactive":
             return False, "section_mismatch"
         if item_type in {"social_projection_failed", "world_condition", "world_route", "world_faction_presence"} and section != "world":
             return False, "section_mismatch"

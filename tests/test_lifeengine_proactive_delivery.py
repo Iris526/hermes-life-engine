@@ -8,6 +8,9 @@ import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+import pytest
+
+from lifeengine import proactive as proactive_module
 from lifeengine.heartbeat import run_tick_script_once
 from lifeengine.runtime import LifeEngineRuntime
 
@@ -22,9 +25,16 @@ def _fresh_home(tmp_path: Path, monkeypatch) -> Path:
         "LIFEENGINE_PROACTIVE_DELIVERY_WEBHOOK_URL",
         "LIFEENGINE_PROACTIVE_DELIVERY_TIMEOUT",
         "LIFEENGINE_PROACTIVE_DELIVERY_LIMIT",
+        "LIFEENGINE_PROACTIVE_DELIVERY_ALLOW_PAYLOAD_OVERRIDES",
+        "LIFEENGINE_PROACTIVE_DELIVERY_ALLOW_PRIVATE_WEBHOOKS",
     ):
         monkeypatch.delenv(key, raising=False)
     return home
+
+
+def _configure_command(monkeypatch, command: str) -> None:
+    monkeypatch.setenv("LIFEENGINE_PROACTIVE_DELIVERY_MODE", "command")
+    monkeypatch.setenv("LIFEENGINE_PROACTIVE_DELIVERY_COMMAND", command)
 
 
 def _setup_agent(rt: LifeEngineRuntime) -> None:
@@ -125,14 +135,13 @@ def _slow_success_command(tmp_path: Path, sink: Path, delay: float = 0.8) -> str
 def test_proactive_deliver_command_marks_outbox_sent(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     sink = tmp_path / "payload.json"
+    _configure_command(monkeypatch, _success_command(tmp_path, sink))
     rt = LifeEngineRuntime()
     try:
         _setup_agent(rt)
         outbox_id = _queue_outbox(rt, draft_text="我把这件事推进完了，想告诉你。")
         result = rt.proactive(
             "deliver",
-            delivery_mode="command",
-            delivery_command=_success_command(tmp_path, sink),
             delivery_channel="qq",
         )
 
@@ -150,17 +159,64 @@ def test_proactive_deliver_command_marks_outbox_sent(tmp_path, monkeypatch):
         rt.close()
 
 
+def test_proactive_deliver_ignores_payload_adapter_override(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    env_sink = tmp_path / "env_payload.json"
+    payload_dir = tmp_path / "payload_override"
+    payload_dir.mkdir()
+    payload_sink = payload_dir / "payload_payload.json"
+    _configure_command(monkeypatch, _success_command(tmp_path, env_sink))
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="这条只能走服务器配置的投递器。")
+
+        result = rt.proactive(
+            "deliver",
+            delivery_mode="off",
+            delivery_command=_success_command(payload_dir, payload_sink),
+        )
+
+        assert result["ok"] is True
+        assert result["config"]["mode"] == "command"
+        assert result["config"]["payload_overrides_allowed"] is False
+        assert result["delivered"][0]["outbox_id"] == outbox_id
+        assert env_sink.exists()
+        assert not payload_sink.exists()
+    finally:
+        rt.close()
+
+
+def test_proactive_deliver_rejects_localhost_webhook_config(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    monkeypatch.setenv("LIFEENGINE_PROACTIVE_DELIVERY_MODE", "webhook")
+    monkeypatch.setenv("LIFEENGINE_PROACTIVE_DELIVERY_WEBHOOK_URL", "http://127.0.0.1:9/hook")
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        outbox_id = _queue_outbox(rt, draft_text="这条不能投到本机 webhook。")
+
+        result = rt.proactive("deliver")
+
+        assert result["status"] == "disabled"
+        assert result["config"]["enabled"] is False
+        assert result["config"]["webhook_url_error"] == "private_target"
+        assert result["candidate_count"] == 1
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        assert outbox[outbox_id]["status"] == "queued"
+        assert rt.conn.execute("SELECT COUNT(*) FROM proactive_deliveries WHERE outbox_id=?", (outbox_id,)).fetchone()[0] == 0
+    finally:
+        rt.close()
+
+
 def test_proactive_deliver_failure_keeps_outbox_queued(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
+    _configure_command(monkeypatch, _failure_command(tmp_path))
     rt = LifeEngineRuntime()
     try:
         _setup_agent(rt)
         outbox_id = _queue_outbox(rt)
-        result = rt.proactive(
-            "deliver",
-            delivery_mode="command",
-            delivery_command=_failure_command(tmp_path),
-        )
+        result = rt.proactive("deliver")
 
         assert result["ok"] is False
         assert result["failed"][0]["outbox_id"] == outbox_id
@@ -175,6 +231,7 @@ def test_proactive_deliver_failure_keeps_outbox_queued(tmp_path, monkeypatch):
 
 def test_review_surfaces_failed_proactive_delivery_as_adapter_attention(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
+    _configure_command(monkeypatch, _failure_command(tmp_path))
     rt = LifeEngineRuntime()
     try:
         _setup_agent(rt)
@@ -182,8 +239,6 @@ def test_review_surfaces_failed_proactive_delivery_as_adapter_attention(tmp_path
 
         result = rt.proactive(
             "deliver",
-            delivery_mode="command",
-            delivery_command=_failure_command(tmp_path),
             delivery_channel="qq",
         )
 
@@ -212,6 +267,7 @@ def test_review_surfaces_failed_proactive_delivery_as_adapter_attention(tmp_path
 def test_proactive_deliver_defers_queued_outbox_during_quiet_hours(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     sink = tmp_path / "quiet_payload.json"
+    _configure_command(monkeypatch, _success_command(tmp_path, sink))
     rt = LifeEngineRuntime()
     try:
         _setup_agent(rt)
@@ -220,8 +276,6 @@ def test_proactive_deliver_defers_queued_outbox_during_quiet_hours(tmp_path, mon
 
         result = rt.proactive(
             "deliver",
-            delivery_mode="command",
-            delivery_command=_success_command(tmp_path, sink),
             delivery_channel="qq",
         )
 
@@ -243,6 +297,7 @@ def test_proactive_deliver_defers_queued_outbox_during_quiet_hours(tmp_path, mon
 def test_review_treats_future_send_after_outbox_as_waiting_not_manual_action(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     sink = tmp_path / "quiet_review_payload.json"
+    _configure_command(monkeypatch, _success_command(tmp_path, sink))
     rt = LifeEngineRuntime()
     try:
         _setup_agent(rt)
@@ -251,8 +306,6 @@ def test_review_treats_future_send_after_outbox_as_waiting_not_manual_action(tmp
 
         delivered = rt.proactive(
             "deliver",
-            delivery_mode="command",
-            delivery_command=_success_command(tmp_path, sink),
             delivery_channel="qq",
         )
 
@@ -274,6 +327,7 @@ def test_review_treats_future_send_after_outbox_as_waiting_not_manual_action(tmp
 
 def test_proactive_deliver_dry_run_does_not_reap_stale_claim(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
+    _configure_command(monkeypatch, _failure_command(tmp_path))
     rt = LifeEngineRuntime()
     try:
         _setup_agent(rt)
@@ -287,7 +341,7 @@ def test_proactive_deliver_dry_run_does_not_reap_stale_claim(tmp_path, monkeypat
             ("prodel_stale_dryrun", outbox_id, "intent_dryrun", "default-agent", "u1", "running", "qq", "{}"),
         )
 
-        result = rt.proactive("deliver", dry_run=True, delivery_mode="command", delivery_command=_failure_command(tmp_path))
+        result = rt.proactive("deliver", dry_run=True)
 
         assert result["status"] == "dry_run"
         assert result["stale_claims"]["skipped"] is True
@@ -303,6 +357,7 @@ def test_concurrent_delivery_worker_does_not_double_send_same_outbox(tmp_path, m
     _fresh_home(tmp_path, monkeypatch)
     sink = tmp_path / "slow_payload.json"
     command = _slow_success_command(tmp_path, sink)
+    _configure_command(monkeypatch, command)
     rt = LifeEngineRuntime()
     try:
         _setup_agent(rt)
@@ -315,7 +370,7 @@ def test_concurrent_delivery_worker_does_not_double_send_same_outbox(tmp_path, m
     def run_first_worker() -> None:
         worker = LifeEngineRuntime()
         try:
-            results["first"] = worker.proactive("deliver", delivery_mode="command", delivery_command=command)
+            results["first"] = worker.proactive("deliver")
         finally:
             worker.close()
 
@@ -328,7 +383,7 @@ def test_concurrent_delivery_worker_does_not_double_send_same_outbox(tmp_path, m
 
     rt2 = LifeEngineRuntime()
     try:
-        second = rt2.proactive("deliver", delivery_mode="command", delivery_command=command)
+        second = rt2.proactive("deliver")
     finally:
         rt2.close()
     thread.join(timeout=5)
@@ -446,6 +501,39 @@ def test_proactive_status_and_review_explain_cooldown_state(tmp_path, monkeypatc
         rt.close()
 
 
+def test_proactive_daily_counter_resets_on_asia_shanghai_day(tmp_path, monkeypatch):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        fixed_now = datetime(2026, 6, 24, 16, 30, tzinfo=timezone.utc)  # 2026-06-25 00:30 Asia/Shanghai
+        monkeypatch.setattr(proactive_module, "_now", lambda: fixed_now)
+        proactive_module.ensure_proactive_state(rt.conn, "default-agent", "u1", timezone_name="Asia/Shanghai")
+        rt.conn.execute(
+            """UPDATE agent_user_proactive_state
+                  SET daily_sent_count=2, last_daily_reset_date='2026-06-25'
+                WHERE agent_id='default-agent' AND user_id='u1'"""
+        )
+
+        same_local_day = rt.proactive("state", user_id="u1")["state"]
+
+        assert same_local_day["daily_sent_count"] == 2
+        assert same_local_day["last_daily_reset_date"] == "2026-06-25"
+
+        rt.conn.execute(
+            """UPDATE agent_user_proactive_state
+                  SET daily_sent_count=2, last_daily_reset_date='2026-06-24'
+                WHERE agent_id='default-agent' AND user_id='u1'"""
+        )
+
+        next_local_day = rt.proactive("state", user_id="u1")["state"]
+
+        assert next_local_day["daily_sent_count"] == 0
+        assert next_local_day["last_daily_reset_date"] == "2026-06-25"
+    finally:
+        rt.close()
+
+
 def test_proactive_lifecycle_cleanup_clears_elapsed_cooldown_only_state(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     rt = LifeEngineRuntime()
@@ -513,6 +601,7 @@ def test_suppress_intent_suppresses_existing_queued_outbox(tmp_path, monkeypatch
 def test_delivery_skips_queued_outbox_when_intent_is_suppressed(tmp_path, monkeypatch):
     _fresh_home(tmp_path, monkeypatch)
     sink = tmp_path / "should_not_exist.json"
+    _configure_command(monkeypatch, _success_command(tmp_path, sink))
     rt = LifeEngineRuntime()
     try:
         _setup_agent(rt)
@@ -521,11 +610,7 @@ def test_delivery_skips_queued_outbox_when_intent_is_suppressed(tmp_path, monkey
         intent_id = outbox[outbox_id]["intent_id"]
         rt.conn.execute("UPDATE proactive_intents SET status='suppressed' WHERE id=?", (intent_id,))
 
-        result = rt.proactive(
-            "deliver",
-            delivery_mode="command",
-            delivery_command=_success_command(tmp_path, sink),
-        )
+        result = rt.proactive("deliver")
 
         assert result["status"] == "noop"
         assert result["candidate_count"] == 0
@@ -858,6 +943,23 @@ def test_review_batch_safely_applies_proactive_lifecycle_cleanup(tmp_path, monke
         outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
         assert outbox[outbox_id]["status"] == "suppressed"
         assert outbox[outbox_id]["suppression_reason"] == "intent missing"
+    finally:
+        rt.close()
+
+
+@pytest.mark.parametrize("bad_limit", [0, -1, 101, "abc", True, 1.5])
+def test_reconsider_waiting_proactive_intents_rejects_invalid_limit(tmp_path, monkeypatch, bad_limit):
+    _fresh_home(tmp_path, monkeypatch)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        with pytest.raises(ValueError, match="reconsider proactive limit"):
+            rt.commit_ops(
+                [{"type": "RECONSIDER_WAITING_PROACTIVE_INTENTS", "payload": {"limit": bad_limit}}],
+                "agent",
+                "default-agent",
+                "test",
+            )
     finally:
         rt.close()
 

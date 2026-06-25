@@ -13,6 +13,8 @@ import os
 import shlex
 import subprocess
 import sys
+import ipaddress
+from urllib.parse import urlparse
 import urllib.request
 from typing import Any
 
@@ -22,6 +24,8 @@ from .proactive import _gate_policy, _get_canon_policy, mark_outbox_sent, quiet_
 from .trace import append_journal, new_id
 
 _DELIVERY_MODES = {"off", "command", "webhook", "stdout"}
+_TRUTHY = {"1", "true", "yes", "on"}
+_LOCAL_HOSTNAMES = {"localhost", "ip6-localhost", "ip6-loopback", "broadcasthost"}
 
 
 def _json_dict(value: str | None) -> dict[str, Any]:
@@ -37,13 +41,77 @@ def _json_dict(value: str | None) -> dict[str, Any]:
         return {}
 
 
+def _webhook_url_error(url: str) -> str | None:
+    """Return a hardening error for a configured webhook URL, or None."""
+    text = str(url or "").strip()
+    if not text:
+        return "empty"
+    try:
+        parsed = urlparse(text)
+    except Exception:
+        return "invalid"
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return "unsupported_scheme"
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return "missing_host"
+    if not _private_webhooks_allowed():
+        if host in _LOCAL_HOSTNAMES or host.endswith(".localhost"):
+            return "private_target"
+        try:
+            ip = ipaddress.ip_address(host.strip("[]"))
+        except ValueError:
+            ip = None
+        if ip is not None and (
+            ip.is_loopback
+            or ip.is_link_local
+            or ip.is_private
+            or ip.is_unspecified
+            or ip.is_multicast
+            or ip.is_reserved
+        ):
+            return "private_target"
+    return None
+
+
+def _test_context_active() -> bool:
+    return bool(os.getenv("PYTEST_CURRENT_TEST") or os.getenv("LIFEENGINE_TEST_CONTEXT") in _TRUTHY)
+
+
+def _payload_overrides_allowed() -> bool:
+    """Return whether test-only payload delivery config overrides are enabled."""
+    return bool(
+        os.getenv("LIFEENGINE_PROACTIVE_DELIVERY_ALLOW_PAYLOAD_OVERRIDES", "").strip().lower() in _TRUTHY
+        and _test_context_active()
+    )
+
+
+def _private_webhooks_allowed() -> bool:
+    """Return whether test-only private webhook targets are allowed."""
+    return bool(
+        os.getenv("LIFEENGINE_PROACTIVE_DELIVERY_ALLOW_PRIVATE_WEBHOOKS", "").strip().lower() in _TRUTHY
+        and _test_context_active()
+    )
+
+
+def _config_value(payload: dict[str, Any] | None, payload_key: str, env_key: str) -> str:
+    """Read adapter config from env, with pytest-gated payload override only."""
+    if _payload_overrides_allowed() and payload and payload.get(payload_key) is not None:
+        return str(payload.get(payload_key) or "").strip()
+    return str(os.getenv(env_key) or "").strip()
+
+
 def _mode_from(payload: dict[str, Any] | None = None) -> str:
     """解析投递模式并收敛到受支持枚举。
 
-    输入优先级为调用参数高于环境变量；输出只允许 off、command、webhook、
-    stdout。未知值降级为 off，避免服务器误配置时意外外推。
+    默认只读取服务器环境变量；pytest 可通过显式 env 开启 payload 覆盖。
+    输出只允许 off、command、webhook、stdout。未知值降级为 off，避免
+    服务器误配置时意外外推。
     """
-    mode = str((payload or {}).get("delivery_mode") or os.getenv("LIFEENGINE_PROACTIVE_DELIVERY_MODE") or "off").strip().lower()
+    mode = (
+        _config_value(payload, "delivery_mode", "LIFEENGINE_PROACTIVE_DELIVERY_MODE")
+        or "off"
+    ).strip().lower()
     return mode if mode in _DELIVERY_MODES else "off"
 
 
@@ -63,23 +131,27 @@ def _timeout_from(payload: dict[str, Any] | None = None) -> float:
 def delivery_config_status(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     """返回主动消息投递配置的可审计摘要。
 
-    输入来自 ``life_proactive(action="deliver")`` 的显式参数和服务器环境变量；
+    输入来自 ``life_proactive(action="deliver")`` 的非敏感运行参数和服务器环境变量；
     输出只暴露模式、是否可用、是否配置了 command/webhook 等非敏感摘要，供
     doctor、CLI 和运维面板展示。不会读取数据库、不会发网络请求，也不会泄漏
     webhook 完整 URL。默认 ``off`` 表示核心仍只排队，不对外推送。
     """
     payload = payload or {}
     mode = _mode_from(payload)
-    command = str(payload.get("delivery_command") or os.getenv("LIFEENGINE_PROACTIVE_DELIVERY_COMMAND") or "").strip()
-    webhook = str(payload.get("webhook_url") or os.getenv("LIFEENGINE_PROACTIVE_DELIVERY_WEBHOOK_URL") or "").strip()
+    command = _config_value(payload, "delivery_command", "LIFEENGINE_PROACTIVE_DELIVERY_COMMAND")
+    webhook = _config_value(payload, "webhook_url", "LIFEENGINE_PROACTIVE_DELIVERY_WEBHOOK_URL")
+    webhook_error = _webhook_url_error(webhook) if webhook else None
     enabled = mode in {"command", "webhook", "stdout"}
-    ready = (mode == "stdout") or (mode == "command" and bool(command)) or (mode == "webhook" and bool(webhook))
+    ready = (mode == "stdout") or (mode == "command" and bool(command)) or (mode == "webhook" and bool(webhook) and not webhook_error)
     return {
         "mode": mode,
         "enabled": enabled and ready,
         "command_configured": bool(command),
         "webhook_configured": bool(webhook),
+        "webhook_url_valid": not bool(webhook_error) if webhook else False,
+        "webhook_url_error": webhook_error,
         "timeout_seconds": _timeout_from(payload),
+        "payload_overrides_allowed": _payload_overrides_allowed(),
     }
 
 
@@ -320,6 +392,9 @@ def _dispatch_webhook(payload: dict[str, Any], url: str, timeout: float) -> dict
     """
     if not url:
         raise RuntimeError("delivery webhook url is not configured")
+    error = _webhook_url_error(url)
+    if error:
+        raise RuntimeError(f"delivery webhook url rejected: {error}")
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -356,9 +431,9 @@ def deliver_queued_outbox(
 ) -> dict[str, Any]:
     """投递 Agent 已排队的主动消息。
 
-    输入为 Agent id、批量上限、dry-run 标志，以及可选的
-    ``delivery_mode`` / ``delivery_command`` / ``webhook_url`` 覆盖；默认读取
-    服务器环境变量。函数由 heartbeat 脚本、CLI、tool handler 或测试调用。
+    输入为 Agent id、批量上限、dry-run 标志，以及非敏感投递运行参数；默认
+    只读取服务器环境变量里的 mode/command/webhook URL。pytest 可通过显式
+    env 开启 payload 覆盖。函数由 heartbeat 脚本、CLI、tool handler 或测试调用。
     输出包含候选数、成功/失败 attempt 和配置摘要。副作用是：非 dry-run 时
     先把 outbox 原子 claim 为 delivering，再调用外部 command/webhook/stdout；
     成功后在数据库中 mark sent，失败时写 delivery attempt 并把 outbox 放回
@@ -399,8 +474,8 @@ def deliver_queued_outbox(
             "delivered": [],
             "failed": [],
         }
-    command = str(payload.get("delivery_command") or os.getenv("LIFEENGINE_PROACTIVE_DELIVERY_COMMAND") or "").strip()
-    webhook_url = str(payload.get("webhook_url") or os.getenv("LIFEENGINE_PROACTIVE_DELIVERY_WEBHOOK_URL") or "").strip()
+    command = _config_value(payload, "delivery_command", "LIFEENGINE_PROACTIVE_DELIVERY_COMMAND")
+    webhook_url = _config_value(payload, "webhook_url", "LIFEENGINE_PROACTIVE_DELIVERY_WEBHOOK_URL")
     timeout = float(cfg["timeout_seconds"])
     delivered: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []

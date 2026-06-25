@@ -80,7 +80,7 @@ def test_locate_phase_is_a_pure_function():
 
 def test_campaign_materializes_phase_by_phase_and_resolves(tmp_path):
     fresh_home(tmp_path)
-    life_author.set_test_llm(None)
+    life_author.disable_test_llm()
     rt = LifeEngineRuntime()
     try:
         setup_agent(rt)
@@ -113,12 +113,13 @@ def test_campaign_materializes_phase_by_phase_and_resolves(tmp_path):
         assert _campaign_status(rt, camp_id)[0] == "resolved"
         assert _count_event(rt, "决战") == 1
     finally:
+        life_author.set_test_llm(None)
         rt.close()
 
 
 def test_cancelled_campaign_stops_materializing(tmp_path):
     fresh_home(tmp_path)
-    life_author.set_test_llm(None)
+    life_author.disable_test_llm()
     rt = LifeEngineRuntime()
     try:
         setup_agent(rt)
@@ -128,12 +129,13 @@ def test_cancelled_campaign_stops_materializing(tmp_path):
         assert _count_event(rt, "发现奇怪的征兆") == 0
         assert _campaign_status(rt, camp_id)[0] == "cancelled"
     finally:
+        life_author.set_test_llm(None)
         rt.close()
 
 
 def test_no_campaigns_is_a_clean_noop(tmp_path):
     fresh_home(tmp_path)
-    life_author.set_test_llm(None)
+    life_author.disable_test_llm()
     rt = LifeEngineRuntime()
     try:
         setup_agent(rt)
@@ -141,6 +143,7 @@ def test_no_campaigns_is_a_clean_noop(tmp_path):
         assert out["campaigns"]["status"] == "ok"
         assert out["campaigns"]["campaigns"] == []
     finally:
+        life_author.set_test_llm(None)
         rt.close()
 
 
@@ -189,7 +192,7 @@ def test_agent_can_seed_its_own_arc_from_a_brief(tmp_path):
 
 def test_seed_degrades_without_host_model(tmp_path):
     fresh_home(tmp_path)
-    life_author.set_test_llm(None)
+    life_author.disable_test_llm()
     rt = LifeEngineRuntime()
     try:
         setup_agent(rt)
@@ -197,4 +200,5 @@ def test_seed_degrades_without_host_model(tmp_path):
         assert out["ok"] is False and out["seeded"] is False
         assert rt.campaign("list")["campaigns"] == []
     finally:
+        life_author.set_test_llm(None)
         rt.close()

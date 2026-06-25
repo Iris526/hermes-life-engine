@@ -299,6 +299,47 @@ def test_proactive_outbox_rejects_progress_update_draft_before_queue(tmp_path):
         rt.close()
 
 
+def test_proactive_outbox_rejects_report_like_fallback_without_outbox(tmp_path):
+    """如果兜底摘要本身像系统报告，也不能绕过自然度护栏进入 auto-send outbox。"""
+    _fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        _setup_agent(rt)
+        rt.control("module", key="life_author", value="off")
+        created = rt.proactive(
+            "create",
+            summary="状态报告：LifeEngine outbox 1. 已处理调度。",
+            target_type="user",
+            target_id="u1",
+            intent_type="report_progress",
+            importance=95,
+            urgency=90,
+            novelty=80,
+            relationship_relevance=90,
+            privacy_level="safe_to_share",
+        )
+        intent_id = created["results"][0]["result"]["id"]
+
+        evaluated = rt.proactive("evaluate", intent_id=intent_id)
+
+        item = evaluated["results"][0]["result"]["evaluated"][0]
+        assert item["decision"] == "suppress"
+        assert item["outbox"] is None
+        assert "fallback outbox text rejected" in item["reason"]
+        assert rt.proactive("outbox")["outbox"] == []
+        intent = rt.proactive("get", intent_id=intent_id)["intent"]
+        assert intent["status"] == "suppressed"
+        assert "fallback outbox text rejected" in intent["suppression_reason"]
+        audit = rt.conn.execute(
+            "SELECT * FROM audit_log WHERE audit_type='proactive_outbox_author_rejected' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert audit is not None
+        assert '"source":"fallback"' in audit["payload_json"]
+        assert "LifeEngine" in audit["payload_json"]
+    finally:
+        rt.close()
+
+
 def test_proactive_outbox_fallback_inserts_first_person_for_bare_summary(tmp_path):
     """兜底文案不应把无主语摘要原样推给 QQ，对外要像本人一句话。"""
     _fresh_home(tmp_path)

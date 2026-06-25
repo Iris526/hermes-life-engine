@@ -96,7 +96,7 @@ def test_schema_and_life_author_table(tmp_path):
 
 def test_dream_degrades_to_clean_template_without_host(tmp_path):
     fresh_home(tmp_path)
-    life_author.set_test_llm(None)  # no host model available
+    life_author.disable_test_llm()  # no host model available
     rt = LifeEngineRuntime()
     try:
         setup_agent(rt)
@@ -120,6 +120,7 @@ def test_dream_degrades_to_clean_template_without_host(tmp_path):
         ).fetchone()[0]
         assert n == 0
     finally:
+        life_author.set_test_llm(None)
         rt.close()
 
 
@@ -220,7 +221,7 @@ def test_life_author_does_not_call_host_inside_sqlite_transaction(tmp_path):
 
 def test_recent_context_excludes_system_domain_rows(tmp_path):
     fresh_home(tmp_path)
-    life_author.set_test_llm(None)
+    life_author.disable_test_llm()
     rt = LifeEngineRuntime()
     try:
         setup_agent(rt)
@@ -233,4 +234,5 @@ def test_recent_context_excludes_system_domain_rows(tmp_path):
         assert "晒了被子" in contents
         assert "SYSTEM_DEBUG_ROW_should_not_dream" not in contents
     finally:
+        life_author.set_test_llm(None)
         rt.close()

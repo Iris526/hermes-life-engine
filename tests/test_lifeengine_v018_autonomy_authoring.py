@@ -73,7 +73,7 @@ def test_autonomy_goal_step_is_authored_with_texture(tmp_path):
 
 def test_autonomy_goal_step_falls_back_to_template_without_host(tmp_path):
     fresh_home(tmp_path)
-    life_author.set_test_llm(None)
+    life_author.disable_test_llm()
     rt = LifeEngineRuntime()
     try:
         setup_agent(rt)
@@ -82,4 +82,5 @@ def test_autonomy_goal_step_falls_back_to_template_without_host(tmp_path):
         # no host → the deterministic template title is used, exactly like before
         assert _count(rt, "title LIKE ?", "推进目标%") >= 1
     finally:
+        life_author.set_test_llm(None)
         rt.close()

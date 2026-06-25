@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from lifeengine import companion as companion_module
 from lifeengine import life_author
 from lifeengine.constants import DEFAULT_AGENT_ID
 from lifeengine.runtime import LifeEngineRuntime
@@ -193,7 +194,7 @@ def test_companion_idle_share_is_trimmed_to_direct_qq_line(tmp_path):
 
 def test_companion_silent_without_host_model(tmp_path):
     fresh_home(tmp_path)
-    life_author.set_test_llm(None)  # no host model → no canned idle line, just silence
+    life_author.disable_test_llm()  # no host model -> no canned idle line, just silence
     rt = LifeEngineRuntime()
     try:
         setup_agent(rt)
@@ -202,6 +203,51 @@ def test_companion_silent_without_host_model(tmp_path):
         assert out["companion"]["generated"] is None
         assert _intents_of_type(rt, "ask_about_user") == []
         assert _intents_of_type(rt, "idle_share") == []
+    finally:
+        life_author.set_test_llm(None)
+        rt.close()
+
+
+def test_companion_idle_daily_count_uses_asia_shanghai_boundary(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        created = rt.proactive(
+            "create",
+            summary="半夜刚过的上海本地日问候。",
+            target_type="user",
+            target_id="anonymous-user",
+            intent_type="idle_share",
+            importance=60,
+            urgency=40,
+            novelty=60,
+            relationship_relevance=70,
+            privacy_level="safe_to_share",
+        )
+        intent_id = created["results"][0]["result"]["id"]
+        rt.conn.execute(
+            "UPDATE proactive_intents SET created_at='2026-06-24 16:30:00' WHERE id=?",
+            (intent_id,),
+        )
+
+        shanghai_count = companion_module._today_idle_count(
+            rt.conn,
+            DEFAULT_AGENT_ID,
+            "anonymous-user",
+            timezone_name="Asia/Shanghai",
+            now="2026-06-25T15:00:00+08:00",
+        )
+        utc_count = companion_module._today_idle_count(
+            rt.conn,
+            DEFAULT_AGENT_ID,
+            "anonymous-user",
+            timezone_name="UTC",
+            now="2026-06-25T07:00:00+00:00",
+        )
+
+        assert shanghai_count == 1
+        assert utc_count == 0
     finally:
         rt.close()
 

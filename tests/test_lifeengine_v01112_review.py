@@ -229,6 +229,45 @@ def test_review_lifecycle_cleanup_names_stale_pending_intent_ids(hermes_home):
         rt.close()
 
 
+def test_review_batch_proactive_cleanup_respects_section_scope(hermes_home):
+    rt = LifeEngineRuntime()
+    try:
+        rt.setup("测试 Agent，主动消息清理只能属于 proactive 分区。")
+        rt.commit_canon()
+        rt.control("resume")
+        rt.control("module", key="proactive", value="auto_send")
+        created = rt.proactive(
+            "create",
+            summary="这条会制造一个孤儿 outbox。",
+            target_type="user",
+            target_id="u1",
+            intent_type="report_progress",
+            importance=95,
+            urgency=90,
+            novelty=80,
+            relationship_relevance=90,
+            privacy_level="safe_to_share",
+        )
+        intent_id = created["results"][0]["result"]["id"]
+        evaluated = rt.proactive("evaluate", intent_id=intent_id, draft_text="这条孤儿消息应该只在主动分区清理。")
+        outbox_id = evaluated["results"][0]["result"]["evaluated"][0]["outbox"]["id"]
+        rt.conn.execute("DELETE FROM proactive_intents WHERE id=?", (intent_id,))
+
+        review = rt.review("summary")
+        assert any(i["item_type"] == "proactive_lifecycle_cleanup" for i in review["items"])
+
+        world_preview = rt.review("batch_preview", review_run_id=review["review_run_id"], section="world")
+        proactive_preview = rt.review("batch_preview", review_run_id=review["review_run_id"], section="proactive")
+
+        assert world_preview["plan"]["selected_count"] == 0
+        assert proactive_preview["plan"]["selected_count"] == 1
+        assert proactive_preview["plan"]["items"][0]["item_type"] == "proactive_lifecycle_cleanup"
+        outbox = {o["id"]: o for o in rt.proactive("outbox")["outbox"]}
+        assert outbox[outbox_id]["status"] == "queued"
+    finally:
+        rt.close()
+
+
 def test_review_dismiss_item(hermes_home):
     rt = LifeEngineRuntime()
     try:

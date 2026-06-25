@@ -39,6 +39,7 @@ hardcoded here.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from .jsonutil import loads
@@ -59,12 +60,24 @@ _DEFAULT_POLICY: dict[str, Any] = {
 # author() end-to-end without a host or network.  ``None`` means "use the real
 # host facade if importable, else degrade".
 _TEST_LLM: Any = None
+_DISABLED_TEST_LLM = object()
+_TRUTHY = {"1", "true", "yes", "on"}
 
 
 def set_test_llm(llm: Any) -> None:
     """Inject a fake PluginLlm-shaped object for offline tests (or ``None`` to clear)."""
     global _TEST_LLM
     _TEST_LLM = llm
+
+
+def disable_test_llm() -> None:
+    """Force LifeAuthor to behave as if no host model exists until cleared."""
+    global _TEST_LLM
+    _TEST_LLM = _DISABLED_TEST_LLM
+
+
+def _host_llm_disabled_by_env() -> bool:
+    return os.getenv("LIFEENGINE_DISABLE_HOST_LLM", "").strip().lower() in _TRUTHY
 
 
 def _host_llm() -> Any:
@@ -76,8 +89,12 @@ def _host_llm() -> Any:
     (``hermes_cli/plugins.py``) and works in the no-agent heartbeat, which has no
     ``ctx``.
     """
+    if _TEST_LLM is _DISABLED_TEST_LLM:
+        return None
     if _TEST_LLM is not None:
         return _TEST_LLM
+    if _host_llm_disabled_by_env():
+        return None
     try:
         from agent.plugin_llm import PluginLlm  # type: ignore
     except Exception:

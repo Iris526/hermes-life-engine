@@ -600,7 +600,7 @@ class LifeEngineRuntime:
             append_audit(
                 self.conn, owner_kind, owner_id,
                 "social_projection_failed", "warning", error,
-                {"projection_kind": "event_completed", "event_id": event_id, "source": source},
+                {"projection_kind": "event_completed", "event_id": event_id, "summary": summary, "source": source},
                 trace_id,
             )
             return {"projected": False, "reason": "projection_failed", "event_id": event_id, "error": error}
@@ -3522,6 +3522,7 @@ class LifeEngineRuntime:
                     from .social_projector import project_completed_event
                     output = project_completed_event(
                         self.conn, owner_kind, owner_id, str(plan.get("event_id") or ""),
+                        summary=plan.get("summary"),
                         source="life_review_action",
                     )
             elif app_type == "dream_repair":
@@ -3616,7 +3617,7 @@ class LifeEngineRuntime:
             result["item_id"] = item_id
             result["status"] = "applied" if result.get("applied") else ("skipped" if result.get("needs_choice") else "failed" if not result.get("ok") else "planned")
             results.append(result)
-        status = "applied" if all(r.get("applied") for r in results) else ("skipped" if not results else "partial")
+        status = "skipped" if not results else ("applied" if all(r.get("applied") for r in results) else "partial")
         run = record_review_batch_run(self.conn, owner_kind, owner_id, review_run_id=review_run_id, mode="apply", section=section, safe_only=safe_only, selected_item_ids=item_ids_selected, plan=plan, results=results, status=status)
         return {"ok": True, "applied": bool(results), "status": status, "plan": plan, "results": results, "batch_run": run}
 

@@ -16,13 +16,16 @@ silence, so idle outreach is the one place we deliberately don't fall back.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import life_author
 from . import relationship as rel
 from .emotion import current_mood, mood_band
 from .jsonutil import loads
 from .proactive import create_proactive_intent
+from .time_utils import parse_datetime
 from .trace import append_audit
 
 _IDLE_TYPES = ("idle_share", "ask_about_user")
@@ -51,6 +54,7 @@ _DEFAULT_POLICY: dict[str, Any] = {
     "idle_max_per_day": 3,
     "min_minutes_between": 180,
     "default_user_id": "anonymous-user",
+    "timezone": "Asia/Shanghai",
 }
 
 _LINE_SCHEMA: dict[str, Any] = {
@@ -144,7 +148,34 @@ def _policy(conn, agent_id: str) -> dict[str, Any]:
         proactive_target = (data.get("proactive") or {}).get("default_target_user_id")
         if proactive_target:
             merged["default_user_id"] = proactive_target
+    if not companion_policy.get("timezone") and isinstance(data, dict):
+        proactive_policy = data.get("proactive") or {}
+        quiet = proactive_policy.get("quiet_hours") or {}
+        merged["timezone"] = proactive_policy.get("timezone") or quiet.get("timezone") or merged.get("timezone") or "Asia/Shanghai"
     return merged
+
+
+def _zoneinfo(timezone_name: str | None) -> ZoneInfo:
+    try:
+        return ZoneInfo(str(timezone_name or "Asia/Shanghai"))
+    except Exception:
+        return ZoneInfo("Asia/Shanghai")
+
+
+def _local_day_utc_bounds(timezone_name: str | None, now: str | None = None) -> tuple[str, str]:
+    tz = _zoneinfo(timezone_name)
+    try:
+        ref = parse_datetime(now, default_tz="UTC") if now else datetime.now(timezone.utc)
+    except Exception:
+        ref = datetime.now(timezone.utc)
+    assert ref is not None
+    local = ref.astimezone(tz)
+    start_local = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_local = start_local + timedelta(days=1)
+    return (
+        start_local.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        end_local.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+    )
 
 
 def _has_pending_idle(conn, agent_id: str, user_id: str | None = None) -> bool:
@@ -163,18 +194,20 @@ def _has_pending_idle(conn, agent_id: str, user_id: str | None = None) -> bool:
     return int(n or 0) > 0
 
 
-def _today_idle_count(conn, agent_id: str, user_id: str | None = None) -> int:
+def _today_idle_count(conn, agent_id: str, user_id: str | None = None,
+                      *, timezone_name: str | None = None, now: str | None = None) -> int:
+    start_utc, end_utc = _local_day_utc_bounds(timezone_name, now)
     if user_id:
         n = conn.execute(
             "SELECT COUNT(*) FROM proactive_intents WHERE agent_id=? AND target_type='user' AND target_id=? "
-            "AND intent_type IN ('idle_share','ask_about_user') AND created_at >= datetime('now','start of day')",
-            (agent_id, user_id),
+            "AND intent_type IN ('idle_share','ask_about_user') AND created_at >= ? AND created_at < ?",
+            (agent_id, user_id, start_utc, end_utc),
         ).fetchone()[0]
         return int(n or 0)
     n = conn.execute(
         "SELECT COUNT(*) FROM proactive_intents WHERE agent_id=? AND intent_type IN ('idle_share','ask_about_user') "
-        "AND created_at >= datetime('now','start of day')",
-        (agent_id,),
+        "AND created_at >= ? AND created_at < ?",
+        (agent_id, start_utc, end_utc),
     ).fetchone()[0]
     return int(n or 0)
 
@@ -264,7 +297,7 @@ def _candidate(conn, agent_id: str, *, control: dict[str, Any] | None = None,
         return None
     if _has_pending_idle(conn, agent_id, user_id):
         return None
-    if _today_idle_count(conn, agent_id, user_id) >= int(pol.get("idle_max_per_day") or 3):
+    if _today_idle_count(conn, agent_id, user_id, timezone_name=pol.get("timezone"), now=now) >= int(pol.get("idle_max_per_day") or 3):
         return None
     gap = _minutes_since_last_idle(conn, agent_id, user_id)
     if gap is not None and gap < float(pol.get("min_minutes_between") or 180):

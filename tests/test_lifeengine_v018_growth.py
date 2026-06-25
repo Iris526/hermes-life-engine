@@ -144,7 +144,7 @@ def test_heartbeat_partial_reasons_include_v018_sections(tmp_path):
 
 def test_reflection_is_a_noop_without_host_model(tmp_path):
     fresh_home(tmp_path)
-    life_author.set_test_llm(None)
+    life_author.disable_test_llm()
     rt = LifeEngineRuntime()
     try:
         setup_agent(rt)
@@ -152,6 +152,7 @@ def test_reflection_is_a_noop_without_host_model(tmp_path):
         assert out.get("degraded") is True
         assert rt.opinion("list")["opinions"] == []
     finally:
+        life_author.set_test_llm(None)
         rt.close()
 
 

@@ -231,6 +231,20 @@ def _validate_0_100(name: str, value: Any) -> None:
         raise ValidationError(f"{name} must be 0..100")
 
 
+def _validate_int_range(name: str, value: Any, *, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool):
+        raise ValidationError(f"{name} must be an integer")
+    if isinstance(value, int):
+        v = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        v = int(value.strip())
+    else:
+        raise ValidationError(f"{name} must be an integer")
+    if v < minimum or v > maximum:
+        raise ValidationError(f"{name} must be {minimum}..{maximum}")
+    return v
+
+
 def validate_owner_policy(owner_kind: str, op_type: str, payload: dict[str, Any], source: str) -> None:
     """Prevent Agent narrative rules from leaking into User Life."""
     payload_source = str(payload.get("source") or source or "")
@@ -428,7 +442,10 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         # intent_id is optional: absent means evaluate due generated intents.
         pass
     elif op_type == "RECONSIDER_WAITING_PROACTIVE_INTENTS":
-        pass
+        if payload.get("limit") is None:
+            payload["limit"] = 10
+        else:
+            payload["limit"] = _validate_int_range("reconsider proactive limit", payload.get("limit"), minimum=1, maximum=100)
     elif op_type == "MARK_PROACTIVE_SENT":
         _require(payload, "outbox_id")
     elif op_type == "SUPPRESS_PROACTIVE_INTENT":

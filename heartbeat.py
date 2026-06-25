@@ -85,6 +85,7 @@ def _subprocess_env() -> dict[str, str]:
     for key in list(env):
         if key.startswith("PYTEST_"):
             env.pop(key, None)
+    env.setdefault("LIFEENGINE_DISABLE_HOST_LLM", "1")
     return env
 
 def run_tick_script_once(timeout: int = 30) -> dict[str, Any]:
