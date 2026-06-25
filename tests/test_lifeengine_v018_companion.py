@@ -269,6 +269,51 @@ def test_companion_paces_itself_one_pending_at_a_time(tmp_path):
         rt.close()
 
 
+def test_companion_rejects_recently_rephrased_idle_prop(tmp_path):
+    fresh_home(tmp_path)
+    fake = _FakeLlm({
+        "summary": "师兄，我刚把制符纸摞整齐，发现最上面那张边角翘起来像小猫耳朵，忽然就想给你发一句嘿嘿。",
+        "emotional_tone": "cute",
+    })
+    life_author.set_test_llm(fake)
+    rt = LifeEngineRuntime()
+    try:
+        setup_agent(rt)
+        created = rt.proactive(
+            "create",
+            summary="师兄，我刚把摊上的符纸重新压平，发现有一张边角翘起来像小猫耳朵，莫名就想拍给你看。",
+            target_type="user",
+            target_id="anonymous-user",
+            intent_type="idle_share",
+            importance=60,
+            urgency=40,
+            novelty=60,
+            relationship_relevance=70,
+            privacy_level="safe_to_share",
+        )
+        old_intent_id = created["results"][0]["result"]["id"]
+        rt.conn.execute(
+            "UPDATE proactive_intents SET status='suppressed', created_at='2026-06-24 00:00:00' WHERE id=?",
+            (old_intent_id,),
+        )
+        for reason in ("今天阳光很好", "收到一条暖心的消息", "顺手把活儿干完了", "傍晚的风很舒服"):
+            rt.mood("react", delta=20, reason=reason)
+
+        out = rt.tick()
+
+        assert out["companion"]["generated"] is None
+        idle = _intents_of_type(rt, "idle_share")
+        assert len(idle) == 1
+        audit = rt.conn.execute(
+            "SELECT payload_json FROM audit_log WHERE audit_type='companion_author_rejected' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert audit is not None
+        assert "recent_repeat" in audit["payload_json"]
+    finally:
+        life_author.set_test_llm(None)
+        rt.close()
+
+
 # ---------------------------------------------------------------------------
 # owner-life flows into dreams (P2 → P1 hook)
 # ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ silence, so idle outreach is the one place we deliberately don't fall back.
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
+import re
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -48,6 +49,8 @@ _COMPANION_MECHANICAL_PREFIXES = (
     "我有一件事想跟你说",
     "有件事想跟你说",
 )
+_RECENT_IDLE_REPEAT_WINDOW_DAYS = 7
+_RECENT_IDLE_REPEAT_JACCARD = 0.32
 
 _DEFAULT_POLICY: dict[str, Any] = {
     "enabled": True,
@@ -99,6 +102,48 @@ def _companion_rejection_reason(text: str) -> str | None:
     return None
 
 
+def _line_bigrams(text: str) -> set[str]:
+    """Return lightweight content bigrams for repeated companion-line checks."""
+    s = _trim_companion_line(text)
+    s = re.sub(r"[\s\W_]+", "", s, flags=re.UNICODE)
+    # Remove common QQ filler so repeated props/actions carry the score, not
+    # every line beginning with 师兄/我刚/忽然想.
+    for filler in ("师兄", "Ringo", "我刚", "刚刚", "忽然", "莫名", "想跟你", "想给你", "一句", "嘿嘿"):
+        s = s.replace(filler, "")
+    return {s[i:i + 2] for i in range(max(0, len(s) - 1)) if s[i:i + 2].strip()}
+
+
+def _looks_like_recent_idle_repeat(conn, agent_id: str, user_id: str | None, text: str) -> bool:
+    """Return True when a draft is too similar to recent companion prose."""
+    mine = _line_bigrams(text)
+    if len(mine) < 6:
+        return False
+    params: list[Any] = [agent_id]
+    target_sql = ""
+    if user_id:
+        target_sql = " AND target_type='user' AND target_id=?"
+        params.append(user_id)
+    rows = conn.execute(
+        "SELECT summary FROM proactive_intents WHERE agent_id=? "
+        "AND intent_type IN ('idle_share','ask_about_user')"
+        f"{target_sql} "
+        "AND created_at >= datetime('now', ?) "
+        "ORDER BY created_at DESC LIMIT 20",
+        (*params, f"-{_RECENT_IDLE_REPEAT_WINDOW_DAYS} days"),
+    ).fetchall()
+    for row in rows:
+        other = _line_bigrams(str(row["summary"] or ""))
+        if len(other) < 6:
+            continue
+        overlap = len(mine & other)
+        union = len(mine | other) or 1
+        if overlap / union >= _RECENT_IDLE_REPEAT_JACCARD:
+            return True
+        if overlap >= 8 and overlap / max(1, min(len(mine), len(other))) >= 0.50:
+            return True
+    return False
+
+
 def _sanitize_parsed_line(conn, agent_id: str, kind: str, parsed: dict[str, Any] | None, *,
                           user_id: str | None = None, trace_id: str | None = None) -> dict[str, Any] | None:
     """Validate and normalize LifeAuthor companion output before persistence."""
@@ -107,6 +152,8 @@ def _sanitize_parsed_line(conn, agent_id: str, kind: str, parsed: dict[str, Any]
     raw = str(parsed.get("summary") or "")
     msg = _trim_companion_line(raw)
     reason = _companion_rejection_reason(raw)
+    if not reason and _looks_like_recent_idle_repeat(conn, agent_id, user_id, msg):
+        reason = "recent_repeat"
     if reason:
         append_audit(
             conn, "agent", agent_id, "companion_author_rejected", "warning",
