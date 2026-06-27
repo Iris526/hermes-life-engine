@@ -13,6 +13,7 @@ from typing import Any
 
 from .events import get_event, create_event
 from .jsonutil import dumps, loads
+from .lifecycle import event_transition_allowed
 from .time_utils import normalized_iso, parse_datetime
 from .trace import append_journal, new_id
 
@@ -21,6 +22,7 @@ OUTDOOR_EVENT_TYPES = {"purchase", "travel", "social", "health", "fitness", "wal
 BAD_WEATHER_WORDS = {"rain", "light_rain", "heavy_rain", "storm", "snow", "typhoon", "thunder", "windy"}
 SLEEP_SENSITIVE_TYPES = {"work", "study", "creative", "fitness", "health", "purchase", "travel", "social", "maintenance", "fieldwork", "repair_task"}
 SLEEP_EXEMPT_TYPES = {"sleep", "core_sleep", "nap", "recovery_sleep", "dream", "meal", "reflection", "serendipity", "rest"}
+BODY_RESOURCE_CLASSES = {"vital", "capacity"}
 
 
 def _row_dict(row) -> dict[str, Any] | None:
@@ -516,7 +518,13 @@ def simulate_schedule_block_execution(
     now: str | None = None,
     manual: bool = False,
 ) -> dict[str, Any]:
-    """Record and return a deterministic narrative execution decision."""
+    """记录一次到点日程块的确定性执行决策。
+
+    输入来自 heartbeat 找到的到期 schedule_block、当前控制状态和逻辑时间；
+    输出是一条 execution_decision 以及待提交 LifeOps。本函数只写执行审计，
+    不直接改变事件/日程/资源，调用方必须继续走 LifeOps 校验和事务提交。
+    失败时由 heartbeat 标记 wake job 或 fallback sweep 异常，避免状态机半写。
+    """
     event_id = block.get("event_id")
     if not event_id:
         ops = [{"type": "UPDATE_SCHEDULE_BLOCK_STATUS", "payload": {"schedule_block_id": block["id"], "status": "completed", "reason": "scheduled block without event elapsed"}}]
@@ -539,10 +547,18 @@ def simulate_schedule_block_execution(
 
     def postpone_ops(reason: str, days: int = 1, proactive: bool = False) -> list[dict[str, Any]]:
         new_start, new_end = _shifted_range(block, days=days)
+        old_event_status = str(event.get("status") or "")
+        if event_transition_allowed(old_event_status, "rescheduled"):
+            event_delay_status = "rescheduled"
+        elif event_transition_allowed(old_event_status, "postponed"):
+            event_delay_status = "postponed"
+        else:
+            event_delay_status = old_event_status
         ops: list[dict[str, Any]] = [
             {"type": "UPDATE_SCHEDULE_BLOCK_STATUS", "payload": {"schedule_block_id": block["id"], "status": "rescheduled", "reason": reason}},
-            {"type": "UPDATE_EVENT_STATUS", "payload": {"event_id": event_id, "status": "rescheduled", "reason": reason}},
         ]
+        if event_delay_status and event_delay_status != old_event_status:
+            ops.append({"type": "UPDATE_EVENT_STATUS", "payload": {"event_id": event_id, "status": event_delay_status, "reason": reason}})
         if new_start and new_end:
             ops.append({"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": event_id, "start": new_start, "end": new_end, "block_type": block.get("block_type") or "planned_event", "timezone_name": block.get("timezone") or "UTC"}})
         if proactive and owner_kind == "agent":
@@ -565,12 +581,9 @@ def simulate_schedule_block_execution(
         ops = postpone_ops("天气不适合执行原计划", days=2, proactive=True)
         return record_execution_decision(conn, owner_kind, owner_id, tick_id=tick_id, trace_id=trace_id, wake_job_id=wake_job_id, schedule_block_id=block.get("id"), event_id=event_id, decision_type="postponed", status="proposed", reason="bad weather", score=score, proposed_ops=ops)
 
-    # Split shortages: "vital" (energy/focus/fatigue/mood — the body) vs "hard"
-    # (money/materials — real external constraints).  A committed scheduled event
-    # is never blocked merely because she is low on energy: she pushes through and
-    # completes it, with energy clamped at its floor by apply_delta.  Only a hard
-    # resource shortage (you cannot buy with money you don't have) still gates.
-    hard_shortages = [s for s in shortages if (s.get("resource_class") or "") != "vital"]
+    # 身体/心智容量（energy、focus、fatigue、mood 等）不足时，她可以硬撑完成，
+    # 由资源账本在下限处截断并留下复盘；真正阻断执行的是钱、材料、库存这类外部硬约束。
+    hard_shortages = [s for s in shortages if (s.get("resource_class") or "") not in BODY_RESOURCE_CLASSES]
     pushed_through_vital = bool(shortages) and not hard_shortages
     if hard_shortages:
         if importance >= 75:

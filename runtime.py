@@ -1355,6 +1355,8 @@ class LifeEngineRuntime:
             "meals",
             "recurring_activities",
             "campaigns",
+            "daily_rhythm",
+            "schedule_sweep",
             "venture_supply",
             "venture_opportunities",
             "realtime_sync",
@@ -1369,10 +1371,16 @@ class LifeEngineRuntime:
             status = str(section.get("status") or "").lower()
             if status in {"error", "failed"}:
                 reasons.append(f"{name}:{status}")
+            elif name == "schedule_sweep" and status == "partial":
+                reasons.append(f"{name}:partial")
             elif section.get("ok") is False:
                 reasons.append(f"{name}:ok_false")
             elif section.get("error"):
                 reasons.append(f"{name}:error")
+            if name == "schedule_sweep":
+                for item in section.get("failures") or []:
+                    if isinstance(item, dict):
+                        reasons.append(f"{name}:{item.get('block_id') or 'block'}")
             if name == "resource_recovery":
                 for item in section.get("applied") or []:
                     if isinstance(item, dict) and item.get("error"):
@@ -1494,6 +1502,7 @@ class LifeEngineRuntime:
                 # wake_job). This prevents zombie blocks from clogging overlap
                 # detection forever.
                 processed_block_ids = {c.get("block_id") for c in completed if c.get("block_id")}
+                sweep_results: list[dict[str, Any]] = []
                 for block in due_schedule_blocks(self.conn, owner_kind, owner_id, now):
                     if block["id"] in processed_block_ids:
                         continue
@@ -1516,8 +1525,17 @@ class LifeEngineRuntime:
                                 result_receipt_id=(commit.get("receipt") or {}).get("receipt_id"),
                             )
                         completed.append({"block_id": block["id"], "execution_decision": decision, "commit": commit, "fallback_sweep": True})
+                        sweep_results.append({"block_id": block["id"], "status": "done", "decision_id": decision.get("id")})
                     except Exception as sweep_exc:
+                        sweep_results.append({"block_id": block["id"], "status": "failed", "error": f"{type(sweep_exc).__name__}: {sweep_exc}"})
                         append_audit(self.conn, owner_kind, owner_id, "heartbeat_schedule_sweep_failed", "warning", str(sweep_exc), {"block_id": block["id"]}, trace.id)
+                sweep_failures = [r for r in sweep_results if r.get("status") == "failed"]
+                schedule_sweep = {
+                    "status": "partial" if sweep_failures else "ok",
+                    "processed_count": len(sweep_results),
+                    "failures": sweep_failures,
+                    "items": sweep_results,
+                }
                 minutes_elapsed = self._minutes_since_last_tick(owner_kind, owner_id, now)
                 recovered = self._settle_resources(owner_kind, owner_id, minutes_elapsed, control)
                 autonomy_result = self._run_autonomy_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual, authoring)
@@ -1526,6 +1544,7 @@ class LifeEngineRuntime:
                 meals_result = self._settle_meals_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 recurring_result = self._materialize_recurring_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 campaign_result = self._run_campaigns_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
+                daily_rhythm_result = self._ensure_daily_rhythm_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 supply_result = self._settle_supply_chain_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 opportunity_result = self._roll_opportunities_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
                 realtime_sync = self._sync_realtime_to_schedule_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
@@ -1539,7 +1558,7 @@ class LifeEngineRuntime:
                         delayed_release = release_delayed_replies(self.conn, owner_kind, owner_id, reason="released by heartbeat after agent became available", source="heartbeat", limit=20)
                 except Exception as exc:
                     delayed_release = {"error": f"{type(exc).__name__}: {exc}"}
-                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "reflection": reflection_result, "meals": meals_result, "recurring_activities": recurring_result, "campaigns": campaign_result, "venture_supply": supply_result, "venture_opportunities": opportunity_result, "realtime_sync": realtime_sync, "companion": companion_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
+                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "schedule_sweep": schedule_sweep, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "reflection": reflection_result, "meals": meals_result, "recurring_activities": recurring_result, "campaigns": campaign_result, "daily_rhythm": daily_rhythm_result, "venture_supply": supply_result, "venture_opportunities": opportunity_result, "realtime_sync": realtime_sync, "companion": companion_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
                 partial_reasons = self._heartbeat_partial_reasons(out)
                 tick_status = "partial" if partial_reasons else "done"
                 if partial_reasons:
@@ -1610,6 +1629,207 @@ class LifeEngineRuntime:
         if prev is None or cur is None:
             return 0.0
         return max(0.0, (cur - prev) / 60.0)
+
+    def _ensure_daily_rhythm_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
+                                      tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
+        """在 heartbeat 中补齐当天尚未结束的具体生活节奏。
+
+        输入来自本轮心跳的 owner、控制门、tick/trace 和逻辑时间；输出会进入
+        heartbeat_runs.output_json，说明本轮是已生成、已跳过还是失败。函数只为
+        Agent 自我生活工作，复用既有 life_rhythm_runs/items 作为幂等真相源，
+        并通过 LifeOps 创建事件和日程块。若单个模板冲突或失败，它会记录跳过
+        原因并继续处理其它模板；若子流程整体异常，则降级为 heartbeat partial。
+        """
+        if owner_kind != "agent":
+            return {"status": "skipped", "reason": "non-agent owner"}
+        gates = control.get("module_gates") or {}
+        mode = str(gates.get("daily_rhythm", gates.get("living_rhythm", "auto")) or "auto").lower()
+        if mode in {"off", "disabled", "false", "manual"}:
+            return {"status": "skipped", "reason": f"gate={mode}"}
+        if str(gates.get("schedule", "auto") or "auto").lower() in {"off", "disabled", "false"}:
+            return {"status": "skipped", "reason": "schedule gate off"}
+        try:
+            from zoneinfo import ZoneInfo
+            from .impromptu import _next_free_slot
+            from .living import rhythm_templates
+            from .time_utils import parse_datetime
+
+            canon = get_active_canon(self.conn, owner_kind, owner_id)
+            tz_name = _tz_from_canon(canon) or "Asia/Tokyo"
+            preset = str(((canon.get("schedule_rules") or {}).get("living_preset") if isinstance(canon, dict) else None) or "guimingguan")
+            now_dt = parse_datetime(now)
+            if now_dt is None:
+                return {"status": "skipped", "reason": "unparseable now"}
+            local_now = now_dt.astimezone(ZoneInfo(tz_name))
+            date_key = local_now.date().isoformat()
+            now_ts = int(local_now.timestamp())
+            existing = self.conn.execute(
+                """SELECT id, action, status, event_ids_json, schedule_block_ids_json FROM life_rhythm_runs
+                     WHERE owner_kind=? AND owner_id=? AND date_key=? AND preset=?
+                       AND status IN ('committed','skipped')
+                     ORDER BY created_at DESC LIMIT 1""",
+                (owner_kind, owner_id, date_key, preset),
+            ).fetchone()
+            if existing:
+                return {
+                    "status": "skipped",
+                    "reason": "already generated today",
+                    "date_key": date_key,
+                    "run_id": existing["id"],
+                    "event_ids": loads(existing["event_ids_json"], []),
+                    "schedule_block_ids": loads(existing["schedule_block_ids_json"], []),
+                }
+            defined_resources = {
+                r["key"] for r in self.conn.execute(
+                    "SELECT key FROM resource_definitions WHERE owner_kind=? AND owner_id=?",
+                    (owner_kind, owner_id),
+                ).fetchall()
+            }
+
+            materialized: list[dict[str, Any]] = []
+            skipped_items: list[dict[str, Any]] = []
+            tx_ids: list[str] = []
+            receipts: list[str] = []
+            templates = rhythm_templates(date_key=date_key, tz=tz_name, preset=preset)
+            with trace.span("daily_rhythm", {"date_key": date_key, "template_count": len(templates)}):
+                for item in templates:
+                    start_ts = _to_epoch(item.get("start"))
+                    end_ts = _to_epoch(item.get("end"))
+                    if start_ts is None or end_ts is None or end_ts <= now_ts:
+                        skipped_items.append({"title": item.get("title"), "reason": "already_elapsed"})
+                        continue
+                    duration_s = max(60, int(end_ts) - int(start_ts))
+                    planned_start_ts = int(start_ts)
+                    planned_end_ts = int(end_ts)
+                    overlap = self.conn.execute(
+                        """SELECT id FROM schedule_blocks
+                             WHERE owner_kind=? AND owner_id=? AND status IN ('planned','locked','ready','in_progress')
+                               AND start_ts IS NOT NULL AND end_ts IS NOT NULL
+                               AND NOT(end_ts <= ? OR start_ts >= ?)
+                             LIMIT 1""",
+                        (owner_kind, owner_id, planned_start_ts, planned_end_ts),
+                    ).fetchone()
+                    if overlap:
+                        planned_start_ts, planned_end_ts = _next_free_slot(
+                            self.conn, owner_kind, owner_id,
+                            after_ts=max(planned_start_ts, now_ts), duration_s=duration_s, exclude_ids=set(),
+                        )
+                    start_local = datetime.fromtimestamp(planned_start_ts, tz=ZoneInfo(tz_name))
+                    end_local = datetime.fromtimestamp(planned_end_ts, tz=ZoneInfo(tz_name))
+                    if start_local.date().isoformat() != date_key:
+                        skipped_items.append({"title": item.get("title"), "reason": "no_free_slot_today"})
+                        continue
+                    costs = {
+                        key: value for key, value in (item.get("resource_costs") or {}).items()
+                        if key in defined_resources
+                    }
+                    event_payload = {
+                        "title": item["title"],
+                        "description": f"heartbeat 为 {preset} 自动补齐的当日生活节奏事项。",
+                        "event_type": item.get("event_type") or "routine",
+                        "event_category": item.get("event_category") or "maintenance",
+                        "activity_domain": item.get("activity_domain"),
+                        "source": "heartbeat_daily_rhythm",
+                        "status": "planned",
+                        "priority": int(item.get("priority", 55)),
+                        "importance": int(item.get("importance", 55)),
+                        "tags": (item.get("tags") or []) + ["daily_rhythm", date_key],
+                        "attributes": {
+                            "generated_by": "heartbeat_daily_rhythm",
+                            "preset": preset,
+                            "date_key": date_key,
+                            "worth_diary": item.get("worth_diary", False),
+                            "worth_proactive": item.get("worth_proactive", False),
+                        },
+                        "resource_costs": costs,
+                    }
+                    ev_id = None
+                    try:
+                        c1 = self._commit_ops_locked(
+                            [{"type": "CREATE_EVENT", "payload": event_payload}],
+                            owner_kind, owner_id, "heartbeat_daily_rhythm",
+                            session_id=None, turn_id=tick_id, trace=trace, control=control,
+                        )
+                        ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
+                        if not ev_id:
+                            skipped_items.append({"title": item.get("title"), "reason": "event_not_created"})
+                            continue
+                        try:
+                            c2 = self._commit_ops_locked(
+                                [{"type": "CREATE_SCHEDULE_BLOCK", "payload": {
+                                    "event_id": ev_id,
+                                    "start": start_local.isoformat(),
+                                    "end": end_local.isoformat(),
+                                    "block_type": "daily_rhythm",
+                                    "timezone_name": tz_name,
+                                    "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 20},
+                                }}],
+                                owner_kind, owner_id, "heartbeat_daily_rhythm",
+                                session_id=None, turn_id=tick_id, trace=trace, control=control,
+                            )
+                        except Exception:
+                            try:
+                                self._commit_ops_locked(
+                                    [{"type": "UPDATE_EVENT_STATUS", "payload": {"event_id": ev_id, "status": "cancelled", "reason": "daily rhythm schedule block creation failed"}}],
+                                    owner_kind, owner_id, "heartbeat_daily_rhythm_cleanup",
+                                    session_id=None, turn_id=tick_id, trace=trace, control=control,
+                                )
+                            except Exception:
+                                pass
+                            raise
+                        bid = (((c2.get("results") or [{}])[0].get("result") or {}).get("id"))
+                        tx_ids.extend([c1.get("transaction_id"), c2.get("transaction_id")])
+                        receipts.extend([(c1.get("receipt") or {}).get("receipt_id"), (c2.get("receipt") or {}).get("receipt_id")])
+                        materialized.append({"template": item, "event_id": ev_id, "schedule_block_id": bid, "start": start_local.isoformat(), "end": end_local.isoformat()})
+                    except Exception as item_exc:
+                        skipped_items.append({"title": item.get("title"), "reason": f"{type(item_exc).__name__}: {item_exc}"})
+                        append_audit(self.conn, owner_kind, owner_id, "daily_rhythm_item_failed", "warning", str(item_exc), {"tick_id": tick_id, "title": item.get("title")}, trace.id)
+
+            run_id = new_id("rhythm")
+            event_ids = [m["event_id"] for m in materialized if m.get("event_id")]
+            block_ids = [m["schedule_block_id"] for m in materialized if m.get("schedule_block_id")]
+            rendered = "heartbeat 每日生活节奏\n====================\n" + (
+                "\n".join([f"- {m['start'][11:16]}-{m['end'][11:16]} {m['template']['title']}" for m in materialized])
+                if materialized else "今天剩余时间没有可补齐的节奏事项。"
+            )
+            status = "committed" if materialized else "skipped"
+            self.conn.execute(
+                """INSERT INTO life_rhythm_runs(id, owner_kind, owner_id, date_key, preset, action, status,
+                     event_ids_json, schedule_block_ids_json, transaction_ids_json, receipt_ids_json, rendered_text)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (run_id, owner_kind, owner_id, date_key, preset, "heartbeat_daily_rhythm", status,
+                 dumps(event_ids), dumps(block_ids), dumps([t for t in tx_ids if t]), dumps([r for r in receipts if r]), rendered),
+            )
+            for item in materialized:
+                template = item["template"]
+                self.conn.execute(
+                    """INSERT INTO life_rhythm_items(id, run_id, owner_kind, owner_id, title, category,
+                         activity_domain, start, end, event_id, schedule_block_id, status, payload_json)
+                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        new_id("rhythmitem"), run_id, owner_kind, owner_id, template["title"],
+                        template.get("event_category"), template.get("activity_domain"), item.get("start"), item.get("end"),
+                        item.get("event_id"), item.get("schedule_block_id"), "planned", dumps(template),
+                    ),
+                )
+            append_journal(
+                self.conn, owner_kind, owner_id, "heartbeat_daily_rhythm_generated",
+                {"run_id": run_id, "date_key": date_key, "event_ids": event_ids, "schedule_block_ids": block_ids, "skipped_items": skipped_items},
+                "heartbeat_daily_rhythm", canon_version=control.get("active_canon_version"),
+            )
+            return {
+                "status": "ok" if materialized else "skipped",
+                "date_key": date_key,
+                "run_id": run_id,
+                "count": len(materialized),
+                "event_ids": event_ids,
+                "schedule_block_ids": block_ids,
+                "skipped_items": skipped_items,
+                "rendered": rendered,
+            }
+        except Exception as exc:
+            append_audit(self.conn, owner_kind, owner_id, "daily_rhythm_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
+            return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
     def _settle_resources(self, owner_kind: str, owner_id: str, minutes_elapsed: float,
                           control: dict[str, Any]) -> dict[str, Any]:

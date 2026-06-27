@@ -812,12 +812,14 @@ def validate_life_ops(conn, owner_kind: str, owner_id: str, control: dict[str, A
             _assert_event_exists(conn, owner_kind, owner_id, payload.get("parent_event_id"), "parent event")
             _assert_goal_exists(conn, owner_kind, owner_id, payload.get("goal_id"))
         if op_type == "CREATE_SCHEDULE_BLOCK":
-            validate_schedule_event_against_db(conn, owner_kind, owner_id, payload.get("event_id"))
             validate_schedule_block_against_db(conn, owner_kind, owner_id, payload)
             if payload.get("event_id"):
                 old_status = current_event_status(payload["event_id"])
                 if not event_transition_allowed(old_status, "scheduled"):
                     raise ValidationError(f"invalid event status transition {old_status} -> scheduled")
+                # 同一批 LifeOps 可能先把 in_progress 事件转成 postponed，
+                # 再创建新的 schedule block；这里必须使用批内状态缓存，
+                # 不能重新读取数据库旧状态，否则合法改期会被误判。
                 event_status_cache[payload["event_id"]] = "scheduled"
         if op_type == "UPDATE_EVENT_STATUS":
             event_id = payload.get("event_id")

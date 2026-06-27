@@ -497,10 +497,16 @@ def update_schedule_block_status(conn, owner_kind: str, owner_id: str, schedule_
 
 
 def due_schedule_blocks(conn, owner_kind: str, owner_id: str, now: str) -> list[dict[str, Any]]:
+    """返回已经过结束时间但仍占用日程的 schedule block。
+
+    调用方是 heartbeat fallback sweep，用于补偿缺失、失败或迁移遗留的
+    wake_job。范围只包含仍可能占用时间轴的活动状态，避免重新处理已经
+    completed/rescheduled/cancelled/missed 的历史块。
+    """
     now_ts = to_epoch(now)
     return [dict(r) for r in conn.execute(
         """SELECT * FROM schedule_blocks WHERE owner_kind=? AND owner_id=?
-              AND status IN ('planned','locked','ready') AND end_ts IS NOT NULL AND end_ts <= ? ORDER BY end_ts ASC""",
+              AND status IN ('planned','locked','ready','in_progress') AND end_ts IS NOT NULL AND end_ts <= ? ORDER BY end_ts ASC""",
         (owner_kind, owner_id, now_ts),
     ).fetchall()]
 

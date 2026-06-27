@@ -133,3 +133,96 @@ def test_heartbeat_failed_lifeops_roll_back_partial_event_completion(tmp_path):
         assert results == 0
     finally:
         rt.close()
+
+
+def test_heartbeat_completes_in_progress_capacity_shortage_block(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        activate(rt)
+        rt.control("module", key="autonomy", value="off")
+        rt.control("module", key="daily_rhythm", value="off")
+        rt.control("module", key="managed_review_loop", value="off")
+        rt.resources("define", key="focus", display_name="Focus", resource_class="capacity", initial=0, min_value=0, max_value=100)
+        ev = rt.event_tool(
+            "create",
+            title="常明净愿灯维护",
+            event_type="maintenance",
+            source="agent_prediction",
+            resource_costs={"focus": -1},
+        )
+        event_id = ev["results"][0]["result"]["id"]
+        sch = rt.event_tool(
+            "schedule",
+            event_id=event_id,
+            start="2026-06-07T18:05:00+00:00",
+            end="2026-06-07T18:20:00+00:00",
+            timezone_name="UTC",
+        )
+        block_id = sch["results"][0]["result"]["id"]
+        rt.event_tool("transition", event_id=event_id, status="in_progress")
+
+        tick = rt.tick(now="2026-06-07T18:21:00+00:00")
+
+        assert tick["ok"] is True
+        event = rt.conn.execute("SELECT status FROM events WHERE id=?", (event_id,)).fetchone()
+        block = rt.conn.execute("SELECT status FROM schedule_blocks WHERE id=?", (block_id,)).fetchone()
+        decision = rt.conn.execute(
+            "SELECT decision_type, status, reason FROM execution_decisions WHERE event_id=? ORDER BY created_at DESC LIMIT 1",
+            (event_id,),
+        ).fetchone()
+        assert event["status"] == "completed"
+        assert block["status"] == "completed"
+        assert decision["decision_type"] == "completed"
+        assert decision["status"] == "committed"
+    finally:
+        rt.close()
+
+
+def test_heartbeat_postpones_in_progress_hard_shortage_legally(tmp_path):
+    fresh_home(tmp_path)
+    rt = LifeEngineRuntime()
+    try:
+        activate(rt)
+        rt.control("module", key="autonomy", value="off")
+        rt.control("module", key="daily_rhythm", value="off")
+        rt.control("module", key="managed_review_loop", value="off")
+        rt.resources("define", key="money.coin", display_name="Coin", resource_class="currency", initial=0, min_value=0)
+        ev = rt.event_tool(
+            "create",
+            title="买一包符纸",
+            event_type="purchase",
+            source="agent_prediction",
+            resource_costs={"money.coin": -5},
+        )
+        event_id = ev["results"][0]["result"]["id"]
+        sch = rt.event_tool(
+            "schedule",
+            event_id=event_id,
+            start="2026-06-07T10:00:00+00:00",
+            end="2026-06-07T10:30:00+00:00",
+            timezone_name="UTC",
+        )
+        block_id = sch["results"][0]["result"]["id"]
+        rt.event_tool("transition", event_id=event_id, status="in_progress")
+
+        tick = rt.tick(now="2026-06-07T10:31:00+00:00")
+
+        assert tick["ok"] is True
+        old_block = rt.conn.execute("SELECT status FROM schedule_blocks WHERE id=?", (block_id,)).fetchone()
+        event = rt.conn.execute("SELECT status FROM events WHERE id=?", (event_id,)).fetchone()
+        new_blocks = rt.conn.execute(
+            "SELECT COUNT(*) FROM schedule_blocks WHERE event_id=? AND status='planned'",
+            (event_id,),
+        ).fetchone()[0]
+        decision = rt.conn.execute(
+            "SELECT decision_type, status FROM execution_decisions WHERE event_id=? ORDER BY created_at DESC LIMIT 1",
+            (event_id,),
+        ).fetchone()
+        assert old_block["status"] == "rescheduled"
+        assert event["status"] == "scheduled"
+        assert new_blocks == 1
+        assert decision["decision_type"] == "postponed"
+        assert decision["status"] == "committed"
+    finally:
+        rt.close()

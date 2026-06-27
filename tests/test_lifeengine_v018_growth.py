@@ -134,10 +134,13 @@ def test_heartbeat_partial_reasons_include_v018_sections(tmp_path):
             "reflection": {"status": "error"},
             "campaigns": {"ok": False},
             "companion": {"error": "author failed"},
+            "schedule_sweep": {"status": "partial", "failures": [{"block_id": "block_stale"}]},
         })
         assert "reflection:error" in reasons
         assert "campaigns:ok_false" in reasons
         assert "companion:error" in reasons
+        assert "schedule_sweep:partial" in reasons
+        assert "schedule_sweep:block_stale" in reasons
     finally:
         rt.close()
 

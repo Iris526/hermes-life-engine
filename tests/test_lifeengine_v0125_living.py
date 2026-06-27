@@ -33,6 +33,34 @@ def test_living_day_rhythm_creates_concrete_schedule(monkeypatch, tmp_path):
         rt.close()
 
 
+def test_heartbeat_generates_daily_rhythm_once(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from lifeengine.runtime import LifeEngineRuntime
+    rt = LifeEngineRuntime()
+    try:
+        rt.setup("测试 Agent，heartbeat 要能自己补齐当天生活节奏。")
+        rt.commit_canon()
+        rt.control("resume")
+        rt.control("module", key="autonomy", value="off")
+        rt.control("module", key="managed_review_loop", value="off")
+        rt.living("init_resources")
+
+        first = rt.tick(now="2030-01-02T00:00:00+00:00")
+        second = rt.tick(now="2030-01-02T01:00:00+00:00")
+
+        assert first["daily_rhythm"]["status"] == "ok"
+        assert first["daily_rhythm"]["event_ids"]
+        assert first["daily_rhythm"]["schedule_block_ids"]
+        assert second["daily_rhythm"]["status"] == "skipped"
+        assert second["daily_rhythm"]["reason"] == "already generated today"
+        run_count = rt.conn.execute(
+            "SELECT COUNT(*) FROM life_rhythm_runs WHERE action='heartbeat_daily_rhythm' AND date_key='2030-01-02'",
+        ).fetchone()[0]
+        assert run_count == 1
+    finally:
+        rt.close()
+
+
 def test_living_paper_note_and_interface(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from lifeengine.runtime import LifeEngineRuntime
