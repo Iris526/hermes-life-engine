@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 65
+_SCHEMA_VERSION = 66
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -126,7 +126,7 @@ def migrate(conn: sqlite3.Connection) -> None:
 
     v0 -> v1 creates the original LifeEngine tables; later versions add
     receipts, truth sources, collection items, meals, goals, autonomy, proactive, execution,
-    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets, and v0.12.8 behavior-to-truth-source mapping, and v0.12.8 outfit resolver/current outfit/action-chain closure, and v0.12.9 resolver aliases/outfit presets/collection board, and v0.12.10 prompt/context slimming with progressive disclosure, and v0.18.x first-class travel routes, dynamic world conditions, and social request lifecycle transitions.
+    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets, and v0.12.8 behavior-to-truth-source mapping, and v0.12.8 outfit resolver/current outfit/action-chain closure, and v0.12.9 resolver aliases/outfit presets/collection board, and v0.12.10 prompt/context slimming with progressive disclosure, and v0.18.x first-class travel routes, dynamic world conditions, social request lifecycle transitions, and conversation time arbitration.
     """
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
     _ensure_schema_migration_table(conn)
@@ -327,6 +327,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 65:
         _create_schema_v65(conn)
         _record_schema_migration(conn, 65, "world_chronicle_events")
+    if current < 66:
+        _create_schema_v66(conn)
+        _record_schema_migration(conn, 66, "conversation_time_arbitration")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -4612,4 +4615,77 @@ def _create_schema_v65(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_world_chronicle_expansion ON world_chronicle_events(owner_kind, owner_id, expansion_key, campaign_id, status)"
+    )
+
+
+def _create_schema_v66(conn: sqlite3.Connection) -> None:
+    """对话时间仲裁与用户活动时间窗。
+
+    这两张表把“聊天是否占用 Agent 时间”和“用户刚报告的现实活动是否仍在
+    进行”从普通聊天记录里拆出来。`conversation_activity_judgments` 是每轮
+    对话的运行态判定，不直接改日程；`user_activity_spans` 是带开始、预期
+    结束、过期和证据的短期用户生活事件线索，供 context preflight 判断
+    “用户大概率已经吃完/离开/睡醒了吗”。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS conversation_activity_judgments (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,                 -- Agent 生活域 owner；目前由 agent owner 持有对话时间判定。
+          owner_id TEXT NOT NULL,                   -- Agent 身份 id，用于跨平台共享同一人的日程判断。
+          session_id TEXT,                          -- 来源会话；用于同一 turn 幂等和审计回溯。
+          turn_id TEXT,                             -- 来源 turn/message；非空时与 session_id 共同避免重复记录。
+          user_id TEXT,                             -- 触发消息的用户；默认 anonymous-user。
+          platform TEXT,                            -- 来源平台；只作审计和上下文裁剪参考。
+          message_preview TEXT,                     -- 用户消息短预览；只存短片段，避免把完整聊天复制成状态源。
+          judgment_type TEXT NOT NULL,              -- ambient_chat/background_response/occupy_now/plan_future/defer/interrupt_or_call。
+          agent_time_policy TEXT NOT NULL,          -- free/background/occupy_now/schedule_future/defer/interrupt；供上下文规则读取。
+          occupies_agent_time INTEGER NOT NULL DEFAULT 0, -- 是否建议占用 Agent 当前日程；真正排程仍必须走 LifeOps。
+          expected_duration_minutes INTEGER,        -- 若会占时，预估分钟数；NULL 表示不适用或由后续工具决定。
+          recommended_action TEXT,                  -- 推荐工具动作，如 life_event.do_now、life_event.schedule 或 answer_without_reschedule。
+          confidence REAL NOT NULL DEFAULT 0.5,     -- 本地规则置信度；不是用户事实置信度。
+          reason TEXT,                              -- 人类可读判定原因，供 trace/context/debug 使用。
+          related_user_activity_id TEXT,            -- 本轮创建或关闭的 user_activity_spans.id。
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          created_at_ts INTEGER,
+          metadata_json TEXT NOT NULL DEFAULT '{}', -- 平台、活动创建/关闭 id 等扩展审计信息。
+          source TEXT NOT NULL DEFAULT 'conversation_preflight'
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversation_judgments_owner_time
+          ON conversation_activity_judgments(owner_kind, owner_id, created_at_ts, created_at);
+        CREATE INDEX IF NOT EXISTS idx_conversation_judgments_session
+          ON conversation_activity_judgments(owner_kind, owner_id, session_id, turn_id);
+
+        CREATE TABLE IF NOT EXISTS user_activity_spans (
+          id TEXT PRIMARY KEY,
+          owner_kind TEXT NOT NULL,                 -- 持有该用户活动线索的 Agent 生活域。
+          owner_id TEXT NOT NULL,                   -- Agent 身份 id。
+          user_id TEXT NOT NULL,                    -- 用户身份；同一 Agent 可分别记不同用户的当前活动。
+          activity_type TEXT NOT NULL,              -- meal/meeting_or_class/travel/shower/sleep 等稳定分类。
+          title TEXT NOT NULL,                      -- 面向上下文展示的短标题。
+          status TEXT NOT NULL DEFAULT 'active',    -- active/likely_ended/confirmed_ended/expired/cancelled。
+          started_at TEXT NOT NULL,                 -- 用户报告该活动发生的时间；ISO 展示字段。
+          started_at_ts INTEGER NOT NULL,           -- started_at 的 epoch 秒，用于排序与比较。
+          expected_end_at TEXT,                     -- 按常识预估的“可能已经结束”时间。
+          expected_end_at_ts INTEGER,               -- expected_end_at 的 epoch 秒；过点后 active -> likely_ended。
+          expires_at TEXT,                          -- 该线索不再作为当前活动注入上下文的时间。
+          expires_at_ts INTEGER,                    -- expires_at 的 epoch 秒；过点后 -> expired。
+          ended_at TEXT,                            -- 用户明确说结束时的时间。
+          ended_at_ts INTEGER,                      -- ended_at 的 epoch 秒。
+          expected_duration_minutes INTEGER,        -- 预估持续时间，单位分钟。
+          grace_minutes INTEGER,                    -- 从 expected_end 到 expires 的宽限分钟数。
+          source_session_id TEXT,                   -- 证据会话 id。
+          source_turn_id TEXT,                      -- 证据 turn/message id。
+          source_message_preview TEXT,              -- 证据消息短预览。
+          confidence REAL NOT NULL DEFAULT 0.5,     -- 从用户消息识别该活动的规则置信度。
+          evidence_json TEXT NOT NULL DEFAULT '{}', -- 证据摘要；必须来自用户消息/工具/文件等可追踪来源。
+          source TEXT NOT NULL DEFAULT 'conversation_preflight',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_activity_spans_owner_user_status
+          ON user_activity_spans(owner_kind, owner_id, user_id, status, started_at_ts);
+        CREATE INDEX IF NOT EXISTS idx_user_activity_spans_expiry
+          ON user_activity_spans(owner_kind, owner_id, status, expected_end_at_ts, expires_at_ts);
+        """
     )

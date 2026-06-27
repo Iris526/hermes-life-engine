@@ -144,6 +144,7 @@ from .maintenance import (
 from .heartbeat import heartbeat_installation_status, write_tick_script
 from .heartbeat_authoring import prepare_heartbeat_authoring
 from .confirmations import confirmed_ops, get_confirmation, list_confirmations, mark_confirmation, propose_confirmation
+from .conversation import interaction_time_context, record_turn_interaction
 from .collections import (
     DEFAULT_COLLECTION_PRESETS,
     archive_collection,
@@ -1252,6 +1253,13 @@ class LifeEngineRuntime:
     def assess_incoming_message(self, *, session_id: str | None = None, turn_id: str | None = None,
                                 sender_id: str | None = None, platform: str | None = None,
                                 text: str | None = None, force_call: bool = False) -> dict[str, Any]:
+        """评估网关消息是否应立刻进入对话。
+
+        输入来自 gateway pre-dispatch；输出包含 ReplyGate 决策、可选 delayed
+        reply/call_override，以及本轮聊天对 Agent 时间的占用判定。副作用是写
+        reply_gate 审计、conversation judgment 和可能的用户活动时间窗；所有
+        写入处在同一 SQLite 事务内，失败会回滚，不会直接改 Agent 日程。
+        """
         scope = resolve_owner_scope({}, {"session_id": session_id, "turn_id": turn_id, "sender_id": sender_id, "platform": platform})
         owner_kind, owner_id = scope.owner_kind, scope.owner_id
         with transaction(self.conn):
@@ -1272,7 +1280,14 @@ class LifeEngineRuntime:
                     gate_mode = str(gates.get("reply_gate", "advisory")).lower()
                     if force_call or gate_mode in {"auto", "strict"}:
                         out["call_override"] = call_override(self.conn, owner_kind, owner_id, reason="incoming call override", user_id=sender_id, session_id=session_id, turn_id=turn_id, message_text=text, trace_id=trace.id, source="incoming_message")
-                trace.end(output_obj={"decision": decision, "deferred": bool(out.get("delayed_reply")), "called": bool(out.get("call_override"))})
+                interaction_judgment = record_turn_interaction(
+                    self.conn, owner_kind, owner_id, session_id=session_id, turn_id=turn_id,
+                    user_id=sender_id, platform=platform, text=text, reply_gate_decision=decision,
+                    source="incoming_message",
+                )
+                if interaction_judgment:
+                    out["interaction_judgment"] = interaction_judgment
+                trace.end(output_obj={"decision": decision, "deferred": bool(out.get("delayed_reply")), "called": bool(out.get("call_override")), "interaction": interaction_judgment})
                 return out
             except Exception as exc:
                 trace.end(status="error", error=f"{type(exc).__name__}: {exc}")
@@ -5086,6 +5101,13 @@ class LifeEngineRuntime:
     def build_context_for_turn(self, session_id: str | None, turn_id: str | None, user_message: str,
                                sender_id: str | None = None, platform: str | None = None,
                                model: str | None = None) -> str:
+        """构建单轮 prompt 的 LifeEngine 上下文胶囊。
+
+        输入来自 pre-LLM hook；输出是可注入 prompt 的文本。除既有 context
+        run 记录外，本函数会幂等记录本轮聊天时间判定，并推进用户活动 TTL，
+        避免把“用户一小时前在吃饭”继续当成正在发生。各段读取失败会降级为空
+        胶囊，避免上下文注入阻断正常回复。
+        """
         scope = resolve_owner_scope({}, {"session_id": session_id, "turn_id": turn_id, "sender_id": sender_id, "platform": platform})
         owner_kind, owner_id = scope.owner_kind, scope.owner_id
         with transaction(self.conn):
@@ -5112,6 +5134,16 @@ class LifeEngineRuntime:
                         return fn()
                     except Exception:
                         return default
+                if user_message and not user_message.strip().startswith("/"):
+                    _safe(lambda: record_turn_interaction(
+                        self.conn, owner_kind, owner_id, session_id=session_id, turn_id=turn_id,
+                        user_id=sender_id, platform=platform, text=user_message,
+                        source="context_preflight",
+                    ), None)
+                interaction_time = _safe(lambda: interaction_time_context(
+                    self.conn, owner_kind, owner_id, session_id=session_id, turn_id=turn_id,
+                    user_id=sender_id,
+                ), {})
                 memories = _safe(lambda: search_memories(self.conn, owner_kind, owner_id, user_message or "", 5), [])
                 events = _safe(lambda: list_events(self.conn, owner_kind, owner_id, limit=8), [])
                 resources = _safe(lambda: list_resources(self.conn, owner_kind, owner_id), {"accounts": []})
@@ -5181,6 +5213,7 @@ class LifeEngineRuntime:
                     "social_world": social_world or {},
                     "canon_brief": {"identity": (canon or {}).get("identity"), "worldview": (canon or {}).get("worldview"), "truth_sources": (canon or {}).get("truth_sources")},
                     "realtime": realtime,
+                    "interaction_time": interaction_time,
                     "resources": [{"resource_key": a["resource_key"], "current_value": a["current_value"], "unit": a.get("unit"), "state": a.get("state")} for a in (resources.get("accounts", [])[:20])],
                     "events": [{"id": e["id"], "title": e["title"], "status": e["status"], "event_category": e.get("event_category"), "event_type": e.get("event_type"), "planned_start": e.get("planned_start"), "planned_end": e.get("planned_end"), "progress": e.get("progress")} for e in events[:8]],
                     "memories": [{"id": m["id"], "type": m["memory_type"], "content": m["content"][:220]} for m in memories[:5]],

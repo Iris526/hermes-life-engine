@@ -38,6 +38,13 @@ Impromptu / "happening now" activities:
 - `do_now` resolves schedule conflicts automatically: any planned tasks in that window are rescheduled to the next free slot. The agent self-arbitrates — lower-importance tasks are moved silently; if a higher-importance task is displaced, the result's `notices` / `agent_notice` flags it so the agent tells the user it was moved (e.g. "我把原本现在要做的重要净符委托挪到了晚上").
 - Set `complete=false` if the activity is ongoing rather than finished.
 
+Conversation time / user-current-activity rules:
+
+- Read the `interaction_time` context before assuming chat affects the agent's day. `ambient_chat` and `background_response` do not occupy schedule time; reply normally without moving planned work.
+- If `interaction_time.latest_judgment.judgment_type == "occupy_now"`, the chat is only a recommendation until you call `life_event(action="do_now", ...)` or another LifeOps-backed event path. Do not claim the schedule changed before committing it.
+- If the user reports a current activity ("我在吃饭"), LifeEngine records a short `user_activity_span` with expected end/expiry. When a span is `likely_ended`, do not keep saying the user is still doing it; ask for an update or phrase it as probably over ("刚吃完了吗？").
+- User activity spans are evidence-backed user-life clues, not agent narrative reality. Do not invent or extend them without user/tool/file/calendar/manual evidence.
+
 Typical long-term goal flow:
 
 - Create a goal: `life_goal(action="create", title="准备七月考试", goal_type="study")`

@@ -151,6 +151,43 @@ def _compact_schedule(today_schedule: dict[str, Any] | None, limit: int = 4) -> 
     return {"summary": sched.get("summary") or {}, "next": items}
 
 
+def _compact_interaction_time(interaction_time: dict[str, Any] | None, *, minimal: bool = False) -> dict[str, Any]:
+    """压缩对话时间胶囊。
+
+    输入来自 conversation preflight；输出只保留模型判断本轮是否占时、用户当前
+    活动是否大概率结束所需字段。调用方是 prompt context 渲染；函数无副作用。
+    在 micro/minimal 模式下压缩规则文本，避免时间感规则挤爆上下文预算。
+    """
+
+    data = interaction_time or {}
+    judgment = data.get("latest_judgment") or {}
+    spans = data.get("user_activity_spans") or []
+    out: dict[str, Any] = {}
+    if judgment:
+        out["latest_judgment"] = {
+            "judgment_type": judgment.get("judgment_type"),
+            "occupies_agent_time": judgment.get("occupies_agent_time"),
+            "recommended_action": judgment.get("recommended_action"),
+            "expected_duration_minutes": judgment.get("expected_duration_minutes"),
+        }
+    if spans:
+        out["user_activity_spans"] = [
+            {
+                "activity_type": s.get("activity_type"),
+                "title": s.get("title"),
+                "status": s.get("status"),
+                "started_at": s.get("started_at"),
+                "expected_end_at": s.get("expected_end_at"),
+            }
+            for s in spans[:3 if minimal else 6]
+        ]
+    if minimal:
+        out["rule"] = "occupy_now 需先 do_now；likely_ended 不能继续断言用户仍在做。"
+    else:
+        out["rules"] = data.get("rules") or []
+    return out
+
+
 def _compact_world(world: dict[str, Any] | None, limit: int = 6) -> dict[str, Any]:
     """压缩世界本体给 prompt 使用。
 
@@ -239,10 +276,13 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
         "rules": [
             "LifeEngine state is code-enforced; prompts are only turn-local hints.",
             "Do not narrate durable new life facts unless they already exist or you commit LifeOps first.",
+            "Use interaction_time to decide whether this chat occupies Agent schedule; ordinary chat/background responses do not reschedule her day.",
+            "If a user_activity_span is likely_ended, do not claim the user is still doing it; ask or treat it as probably over.",
             "Use tools for details instead of relying on injected context.",
             "Never expose private behavior sources or internal gate diagnostics to the user.",
         ],
         "realtime": data.get("realtime") or {},
+        "interaction_time": _compact_interaction_time(data.get("interaction_time")),
         "sleep": data.get("sleep") or {},
         "reply_gate": data.get("reply_gate") or {},
         "required_settings": data.get("required_settings") or {},
@@ -320,7 +360,12 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
                 "context_policy": {"mode": policy.mode, "budget_chars": policy.budget_chars, "progressive": policy.progressive},
                 "owner_scope": capsule.get("owner_scope") or {},
                 "engine": capsule.get("engine") or {},
-                "rules": capsule.get("rules") or [],
+                "rules": [
+                    "State is code-enforced; commit LifeOps before durable life claims.",
+                    "interaction_time: occupy_now requires do_now; likely_ended is probably over.",
+                    "Never expose private sources or internal diagnostics.",
+                ],
+                "interaction_time": _compact_interaction_time(data.get("interaction_time"), minimal=True),
                 "sleep": capsule.get("sleep") or {},
                 "reply_gate": capsule.get("reply_gate") or {},
                 "tool_map": {"interface": "Use life_interface catalog/read/write to fetch details."},
