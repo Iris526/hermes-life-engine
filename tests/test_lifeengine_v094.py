@@ -5,9 +5,16 @@ import os
 import shutil
 import zipfile
 
+import pytest
+
 from lifeengine.db import _SCHEMA_VERSION
 from lifeengine.runtime import LifeEngineRuntime
 from lifeengine.tools import life_upgrade
+
+# All three export/import/package/large-smoke tests here take ~160s of call time
+# each and dominate the whole sweep — gate the module behind --run-slow.
+pytestmark = pytest.mark.slow
+
 
 def fresh_home(tmp_path):
     home = tmp_path / "hermes_home_v094"

@@ -1,0 +1,31 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Check out INTO a dir literally named `lifeengine` so `import lifeengine`
+      # resolves (locally this is a `lifeengine -> hermes-life-engine` symlink in
+      # the repo's parent; here the checkout path plays that role).
+      - uses: actions/checkout@v4
+        with:
+          path: lifeengine
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        working-directory: lifeengine
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # Full gate: --run-slow includes the ~160s export/import/upgrade smoke
+      # tests; -n auto parallelises across the runner's cores (~3min total).
+      - name: Run test suite
+        run: PYTHONPATH="$GITHUB_WORKSPACE" pytest lifeengine/tests --run-slow -n auto

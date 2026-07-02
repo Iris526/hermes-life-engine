@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 
+import pytest
+
 from lifeengine.cli import slash_life
 from lifeengine.db import _SCHEMA_VERSION
 from lifeengine.final_gate import detect_life_claim_items
@@ -73,6 +75,7 @@ def test_v095_final_gate_feedback_is_internal_next_turn_context(tmp_path):
         rt.close()
 
 
+@pytest.mark.slow  # ~166s call time (full CLI/tool surface sweep) — gate behind --run-slow
 def test_v095_human_command_surface_is_simple_but_advanced_available(tmp_path):
     fresh_home(tmp_path)
     help_text = slash_life("help")

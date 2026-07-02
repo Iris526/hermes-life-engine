@@ -1,0 +1,5 @@
+# Test/dev dependencies (runtime deps live in requirements.txt).
+-r requirements.txt
+pytest
+pytest-xdist  # parallel test execution (`-n auto`); cuts the full sweep ~10min -> ~3min
+httpx  # FastAPI TestClient dependency for the WebUI tests
