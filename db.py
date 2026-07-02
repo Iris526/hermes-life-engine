@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 66
+_SCHEMA_VERSION = 67
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -330,6 +330,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 66:
         _create_schema_v66(conn)
         _record_schema_migration(conn, 66, "conversation_time_arbitration")
+    if current < 67:
+        _create_schema_v67(conn)
+        _record_schema_migration(conn, 67, "wake_job_retry_backoff")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -4689,3 +4692,21 @@ def _create_schema_v66(conn: sqlite3.Connection) -> None:
           ON user_activity_spans(owner_kind, owner_id, status, expected_end_at_ts, expires_at_ts);
         """
     )
+
+
+def _create_schema_v67(conn: sqlite3.Connection) -> None:
+    """Wake-job failure retry with bounded backoff.
+
+    A wake_job that raised during processing was finished as terminal ``failed``;
+    since ``due_wake_jobs`` only ever selects ``pending`` and the reaper only
+    recovers ``running`` jobs, a single transient error (e.g. a hiccup while
+    waking a sleep session) left the agent asleep forever until a manual call.
+    These columns let a failed job be re-queued as ``pending`` with an
+    exponential backoff, capped by a max attempt count after which it becomes a
+    genuine dead-letter ``failed`` for human attention.
+    """
+    for col, ddl in (
+        ("attempt_count", "attempt_count INTEGER NOT NULL DEFAULT 0"),
+        ("next_retry_ts", "next_retry_ts INTEGER"),
+    ):
+        _add_column_if_missing(conn, "wake_jobs", col, ddl)

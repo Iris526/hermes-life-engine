@@ -375,10 +375,14 @@ def _create_wake_job(conn, owner_kind: str, owner_id: str, wake_at: str | None, 
 
 def due_wake_jobs(conn, owner_kind: str, owner_id: str, now: str) -> list[dict[str, Any]]:
     now_ts = to_epoch(now)
+    # next_retry_ts gates re-queued failures: a job put back to 'pending' after a
+    # transient error carries a backoff deadline and must not be re-picked until
+    # it elapses. Never-failed jobs (next_retry_ts IS NULL) are due as before.
     return [dict(r) for r in conn.execute(
         """SELECT * FROM wake_jobs WHERE owner_kind=? AND owner_id=?
-              AND status='pending' AND wake_at_ts IS NOT NULL AND wake_at_ts <= ? ORDER BY wake_at_ts ASC""",
-        (owner_kind, owner_id, now_ts),
+              AND status='pending' AND wake_at_ts IS NOT NULL AND wake_at_ts <= ?
+              AND (next_retry_ts IS NULL OR next_retry_ts <= ?) ORDER BY wake_at_ts ASC""",
+        (owner_kind, owner_id, now_ts, now_ts),
     ).fetchall()]
 
 
@@ -419,6 +423,53 @@ def finish_wake_job(conn, owner_kind: str, owner_id: str, wake_job_id: str, stat
               WHERE id=? AND owner_kind=? AND owner_id=?""",
         (status, error, wake_job_id, owner_kind, owner_id),
     )
+
+
+# A failed wake_job is retried with exponential backoff up to this many attempts,
+# then dead-lettered as terminal 'failed' for human attention. Backoff is anchored
+# to the tick's logical clock so replays/tests are deterministic.
+WAKE_MAX_ATTEMPTS = 5
+_WAKE_BACKOFF_BASE_S = 60
+_WAKE_BACKOFF_CAP_S = 1800
+
+
+def retry_or_fail_wake_job(conn, owner_kind: str, owner_id: str, wake_job_id: str,
+                           error: str | None, now: str | None,
+                           *, max_attempts: int = WAKE_MAX_ATTEMPTS) -> dict[str, Any]:
+    """Re-queue a failed wake_job with backoff, or dead-letter it past max attempts.
+
+    Replaces the old ``finish_wake_job(status='failed')`` on the failure path.
+    Because ``due_wake_jobs`` only selects ``pending`` and the reaper only recovers
+    ``running`` jobs, a terminal ``failed`` job never runs again — for a
+    ``sleep_plan_wake`` that meant the agent stayed asleep until a manual call.
+    Here each failure bumps ``attempt_count`` and puts the job back to ``pending``
+    with an exponentially growing ``next_retry_ts`` gate; once attempts reach
+    ``max_attempts`` the job becomes a genuine dead-letter ``failed``.
+    """
+    row = conn.execute(
+        "SELECT attempt_count FROM wake_jobs WHERE id=? AND owner_kind=? AND owner_id=?",
+        (wake_job_id, owner_kind, owner_id),
+    ).fetchone()
+    attempts = int((row["attempt_count"] if row else 0) or 0) + 1
+    if attempts >= max_attempts:
+        conn.execute(
+            """UPDATE wake_jobs SET status='failed', attempt_count=?, error=?,
+                  completed_at=datetime('now'), running_at=NULL, claimed_by=NULL, next_retry_ts=NULL
+                  WHERE id=? AND owner_kind=? AND owner_id=?""",
+            (attempts, error, wake_job_id, owner_kind, owner_id),
+        )
+        return {"outcome": "dead_letter", "attempt_count": attempts}
+    backoff = min(_WAKE_BACKOFF_BASE_S * (2 ** (attempts - 1)), _WAKE_BACKOFF_CAP_S)
+    now_ts = to_epoch(now) if now else to_epoch(now_iso())
+    next_retry_ts = int(now_ts or 0) + backoff
+    conn.execute(
+        """UPDATE wake_jobs SET status='pending', attempt_count=?, error=?,
+              running_at=NULL, claimed_by=NULL, next_retry_ts=?
+              WHERE id=? AND owner_kind=? AND owner_id=?""",
+        (attempts, error, next_retry_ts, wake_job_id, owner_kind, owner_id),
+    )
+    return {"outcome": "retry_scheduled", "attempt_count": attempts,
+            "next_retry_ts": next_retry_ts, "backoff_seconds": backoff}
 
 
 def complete_event(conn, owner_kind: str, owner_id: str, event_id: str, summary: str,

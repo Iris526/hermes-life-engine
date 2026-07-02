@@ -287,6 +287,12 @@ def create_app(life_dir: str | None = None) -> FastAPI:
                     return rt.call(state.owner_kind, state.owner_id, reason="webui call", message_text=req.payload.get("message_text"), user_id=req.payload.get("user_id"))
                 if req.action == "review_apply":
                     return rt.review("apply", state.owner_kind, state.owner_id, None, None, item_id=req.payload.get("item_id"), choice=req.payload.get("choice"))
+                if req.action == "review_dismiss":
+                    # Dismiss marks the item resolved WITHOUT executing its action.
+                    # Previously the UI's "忽略" button routed through review_apply,
+                    # which for safe-auto items ran the action — the opposite of the
+                    # user's intent. Route it to the real dismiss path instead.
+                    return rt.review("dismiss", state.owner_kind, state.owner_id, None, None, item_id=req.payload.get("item_id"), reason="dismissed via observatory")
                 if req.action == "review_apply_all":
                     return rt.review("apply_all", state.owner_kind, state.owner_id, None, None, section=req.payload.get("section"), safe_only=True, limit=int(req.payload.get("limit") or 5))
                 if req.action == "world":

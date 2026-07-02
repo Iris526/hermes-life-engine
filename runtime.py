@@ -94,6 +94,7 @@ from .events import (
     due_wake_jobs,
     finish_wake_job,
     reap_stuck_wake_jobs,
+    retry_or_fail_wake_job,
     get_event,
     get_realtime_state,
     list_events,
@@ -1490,12 +1491,19 @@ class LifeEngineRuntime:
                             finish_wake_job(self.conn, owner_kind, owner_id, job["id"], "done")
                             processed.append({"wake_job_id": job["id"], "status": "done"})
                         except Exception as job_exc:
+                            # Don't dead-letter on first failure: a transient error
+                            # (e.g. a hiccup waking a sleep session) must be retried
+                            # with backoff, or the agent can sleep forever. Only a
+                            # job that keeps failing past WAKE_MAX_ATTEMPTS becomes a
+                            # terminal 'failed' for human attention.
+                            retry = {"outcome": "retry_error"}
                             try:
-                                finish_wake_job(self.conn, owner_kind, owner_id, job["id"], "failed", f"{type(job_exc).__name__}: {job_exc}")
+                                retry = retry_or_fail_wake_job(self.conn, owner_kind, owner_id, job["id"], f"{type(job_exc).__name__}: {job_exc}", now)
                             except Exception:
                                 pass
-                            processed.append({"wake_job_id": job["id"], "status": "failed", "error": str(job_exc)})
-                            append_audit(self.conn, owner_kind, owner_id, "heartbeat_wake_job_failed", "warning", str(job_exc), {"wake_job_id": job["id"]}, trace.id)
+                            processed.append({"wake_job_id": job["id"], "status": "failed", "error": str(job_exc), **retry})
+                            severity = "error" if retry.get("outcome") == "dead_letter" else "warning"
+                            append_audit(self.conn, owner_kind, owner_id, "heartbeat_wake_job_failed", severity, str(job_exc), {"wake_job_id": job["id"], **retry}, trace.id)
                 # Fallback sweep: process schedule blocks whose end_ts has
                 # passed but have no corresponding wake_job (e.g. created via
                 # non-standard paths, orphaned by migration, or missing end in
@@ -1603,18 +1611,25 @@ class LifeEngineRuntime:
         return out
 
     def _minutes_since_last_tick(self, owner_kind: str, owner_id: str, now: str) -> float:
-        """Minutes of LOGICAL time since the previous completed tick.
+        """Minutes of LOGICAL time since the previous settled tick.
 
-        Uses the previous done heartbeat_run's logical ``now`` (recorded in its
-        output_json) so tests and replays advance time deterministically; falls
-        back to its wall-clock ``started_at``. First-ever tick returns 0 so we
-        never settle a huge amount on initialization.
+        Uses the previous settled heartbeat_run's logical ``now`` (recorded in
+        its output_json) so tests and replays advance time deterministically;
+        falls back to its wall-clock ``started_at``. First-ever tick returns 0 so
+        we never settle a huge amount on initialization.
+
+        The watermark counts BOTH ``done`` and ``partial`` ticks: a partial tick
+        still ran ``_settle_resources`` inside the (committed) transaction, so
+        excluding it would make the next tick re-settle the window a partial tick
+        already accounted for — double-counting energy/mood/fatigue. ``noop``
+        ticks return before settling and ``failed`` ticks roll their settlement
+        back, so neither is a valid watermark and both stay excluded.
         """
         # rowid tiebreak: in tests/replays many ticks can share the same
         # wall-clock started_at, so order by insertion order as well to pick the
-        # genuinely most-recent completed tick.
+        # genuinely most-recent settled tick.
         row = self.conn.execute(
-            "SELECT output_json, started_at FROM heartbeat_runs WHERE owner_kind=? AND owner_id=? AND status='done' ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            "SELECT output_json, started_at FROM heartbeat_runs WHERE owner_kind=? AND owner_id=? AND status IN ('done','partial') ORDER BY started_at DESC, rowid DESC LIMIT 1",
             (owner_kind, owner_id),
         ).fetchone()
         if not row:
@@ -2082,14 +2097,21 @@ class LifeEngineRuntime:
                 }
                 if act.get("location"):
                     ev_payload["location"] = {"name": act.get("location"), "kind": act.get("location_kind") or "fixed"}
-                with trace.span("recurring_materialize", {"activity_id": act["id"]}):
-                    c1 = self._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "recurring_activity", session_id=None, turn_id=tick_id, trace=trace, control=control)
-                ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
-                bid = None
-                if ev_id and start_iso and end_iso and not passive:
-                    c2 = self._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": ev_id, "start": start_iso, "end": end_iso, "block_type": "recurring_activity", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 30}}}], owner_kind, owner_id, "recurring_activity", session_id=None, turn_id=tick_id, trace=trace, control=control)
-                    bid = (((c2.get("results") or [{}])[0].get("result") or {}).get("id"))
-                recurring.record_occurrence(self.conn, owner_kind, owner_id, act["id"], date_key, ev_id, bid)
+                # Atomicity: the occurrence row is the idempotency guard
+                # (due_activities skips activities that already have one for the
+                # day). If the event were created but record_occurrence then
+                # failed, the next tick would re-materialize a duplicate. Wrap the
+                # event + block + occurrence in one savepoint so they all commit or
+                # all roll back together — an un-guarded orphan event can't survive.
+                with savepoint(self.conn, f"recurring_{act['id']}_{date_key}"):
+                    with trace.span("recurring_materialize", {"activity_id": act["id"]}):
+                        c1 = self._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "recurring_activity", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                    ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
+                    bid = None
+                    if ev_id and start_iso and end_iso and not passive:
+                        c2 = self._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": ev_id, "start": start_iso, "end": end_iso, "block_type": "recurring_activity", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 30}}}], owner_kind, owner_id, "recurring_activity", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                        bid = (((c2.get("results") or [{}])[0].get("result") or {}).get("id"))
+                    recurring.record_occurrence(self.conn, owner_kind, owner_id, act["id"], date_key, ev_id, bid)
                 materialized.append({"activity_id": act["id"], "title": act["title"], "event_id": ev_id, "schedule_block_id": bid})
             return {"status": "ok", "date_key": date_key, "count": len(materialized), "materialized": materialized}
         except Exception as exc:
@@ -2126,23 +2148,29 @@ class LifeEngineRuntime:
                     continue
                 if plan["already_done"]:
                     continue
+                # Atomicity: record_phase_occurrence is this phase-day's idempotency
+                # guard (plan_today reports already_done from it). Wrap the spawns +
+                # occurrence + progress in one savepoint so a failure after spawning
+                # can't leave events on the schedule without the guard — which would
+                # re-spawn duplicates on the next tick.
                 spawned_ids = []
-                for ev in plan["spawn"]:
-                    duration_minutes = int(ev.get("duration_minutes") or 60)
-                    ev_payload = {k: v for k, v in ev.items() if k != "duration_minutes"}
-                    ev_payload.setdefault("status", "planned")
-                    ev_payload["source"] = "campaign"
-                    with trace.span("campaign_materialize", {"campaign_id": camp["id"], "phase": plan["phase_idx"]}):
-                        c1 = self._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "campaign", session_id=None, turn_id=tick_id, trace=trace, control=control)
-                    ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
-                    if ev_id:
-                        spawned_ids.append(ev_id)
-                        try:
-                            self._schedule_campaign_event(owner_kind, owner_id, control, tick_id, trace, now, ctz, ev_id, duration_minutes)
-                        except Exception:
-                            pass
-                _campaigns.record_phase_occurrence(self.conn, camp["id"], owner_kind, owner_id, plan["phase_idx"], date_key, spawned_ids)
-                _campaigns.update_phase_progress(self.conn, camp["id"], plan["phase_idx"], plan["progress"])
+                with savepoint(self.conn, f"campaign_{camp['id']}_{plan['phase_idx']}_{date_key}"):
+                    for ev in plan["spawn"]:
+                        duration_minutes = int(ev.get("duration_minutes") or 60)
+                        ev_payload = {k: v for k, v in ev.items() if k != "duration_minutes"}
+                        ev_payload.setdefault("status", "planned")
+                        ev_payload["source"] = "campaign"
+                        with trace.span("campaign_materialize", {"campaign_id": camp["id"], "phase": plan["phase_idx"]}):
+                            c1 = self._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "campaign", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                        ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
+                        if ev_id:
+                            spawned_ids.append(ev_id)
+                            try:
+                                self._schedule_campaign_event(owner_kind, owner_id, control, tick_id, trace, now, ctz, ev_id, duration_minutes)
+                            except Exception:
+                                pass
+                    _campaigns.record_phase_occurrence(self.conn, camp["id"], owner_kind, owner_id, plan["phase_idx"], date_key, spawned_ids)
+                    _campaigns.update_phase_progress(self.conn, camp["id"], plan["phase_idx"], plan["progress"])
                 out.append({"campaign_id": camp["id"], "phase": plan["phase_idx"], "spawned": len(spawned_ids), "progress": plan["progress"]})
             return {"status": "ok", "campaigns": out}
         except Exception as exc:

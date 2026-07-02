@@ -152,10 +152,15 @@ async function loadSchedule() {
 }
 
 let sseSource = null;
+let sseReconnectTimer = null;
+let sseReconnectDelay = 2000;
+const SSE_RECONNECT_MAX = 30000;
 function connectSSE() {
   if (sseSource) return;
+  clearTimeout(sseReconnectTimer);
   try {
     sseSource = new EventSource(`${API}/api/stream?period=${currentPeriod}`);
+    sseSource.addEventListener("open", () => { sseReconnectDelay = 2000; });
     sseSource.addEventListener("snapshot", async (e) => {
       try {
         const data = JSON.parse(e.data);
@@ -167,10 +172,19 @@ function connectSSE() {
       } catch {}
     });
     sseSource.addEventListener("error", () => {
+      // A dropped stream must reconnect, otherwise one network blip freezes the
+      // whole observatory until a manual reload. Back off up to SSE_RECONNECT_MAX.
       if (sseSource) sseSource.close();
       sseSource = null;
+      clearTimeout(sseReconnectTimer);
+      sseReconnectTimer = setTimeout(connectSSE, sseReconnectDelay);
+      sseReconnectDelay = Math.min(sseReconnectDelay * 2, SSE_RECONNECT_MAX);
     });
-  } catch {}
+  } catch {
+    clearTimeout(sseReconnectTimer);
+    sseReconnectTimer = setTimeout(connectSSE, sseReconnectDelay);
+    sseReconnectDelay = Math.min(sseReconnectDelay * 2, SSE_RECONNECT_MAX);
+  }
 }
 
 // ── 渲染编排 ──────────────────────────────────
@@ -270,7 +284,7 @@ function renderSidebar() {
       : 50;
     const cls = pct < 25 ? "low" : pct > 75 ? "high" : "";
     return `<div class="vital-bar">
-      <div class="vital-bar-head"><span class="name">${r.display_name || r.resource_key}</span><span class="num">${formatNum(r.current_value)}</span></div>
+      <div class="vital-bar-head"><span class="name">${escapeHtml(r.display_name || r.resource_key)}</span><span class="num">${formatNum(r.current_value)}</span></div>
       <div class="vital-bar-track"><div class="vital-bar-fill ${cls}" style="width:${pct}%"></div></div>
     </div>`;
   }).join("") || '<div class="empty-state">无状态资源</div>';
@@ -278,7 +292,7 @@ function renderSidebar() {
   // 货币/物资
   const currencies = resources.filter(r => !["energy", "mood", "fatigue"].includes(r.resource_key));
   document.getElementById("currency-stats").innerHTML = currencies.map(r =>
-    `<div class="currency-item"><span class="ckey">${r.display_name || r.resource_key}</span><span class="cval">${formatNum(r.current_value)}${r.unit ? " " + r.unit : ""}</span></div>`
+    `<div class="currency-item"><span class="ckey">${escapeHtml(r.display_name || r.resource_key)}</span><span class="cval">${formatNum(r.current_value)}${r.unit ? " " + escapeHtml(r.unit) : ""}</span></div>`
   ).join("") || '<div class="empty-state">无财物</div>';
 
   // 睡眠指标
@@ -306,8 +320,8 @@ function renderSidebar() {
       const label = { breakfast: "早", lunch: "午", dinner: "晚", brunch: "早午", afternoon_tea: "茶", late_night_snack: "夜宵", snack: "加餐" };
       const extras = (snapshotData.meals_today || {}).extras || [];
       const chip = (m, name) =>
-        `<div class="meal-chip ${m.status}" title="${name}${m.skip_reason ? " — " + m.skip_reason : ""}">
-          <span class="meal-name">${name}</span><span class="meal-mark">${icon[m.status] || "🍚"}</span>
+        `<div class="meal-chip ${m.status}" title="${escapeHtml(name)}${m.skip_reason ? " — " + escapeHtml(m.skip_reason) : ""}">
+          <span class="meal-name">${escapeHtml(name)}</span><span class="meal-mark">${icon[m.status] || "🍚"}</span>
         </div>`;
       mealsRow.innerHTML =
         meals.map(m => chip(m, (label[m.meal_type] || m.meal_type) + (m.time ? " " + m.time : ""))).join("") +
@@ -332,7 +346,7 @@ function renderSidebar() {
       const drift = Number(t.drift) || 0;
       const driftTag = Math.abs(drift) >= 0.3 ? ` <span class="persona-drift">${drift > 0 ? "↑" : "↓"}</span>` : "";
       return `<div class="persona-trait" title="基线 ${t.baseline}, 经历 ${t.evidence_count} 次">
-        <div class="persona-trait-head"><span class="name">${t.key}${driftTag}</span><span class="num">${v.toFixed(2)}</span></div>
+        <div class="persona-trait-head"><span class="name">${escapeHtml(t.key)}${driftTag}</span><span class="num">${v.toFixed(2)}</span></div>
         <div class="persona-trait-track"><div class="persona-trait-center"></div><div class="persona-trait-fill ${cls}" style="width:${pct}%"></div></div>
       </div>`;
     }).join("");
@@ -622,11 +636,11 @@ function renderProactive() {
   }
   el.innerHTML = all.slice(0, 10).map(item => {
     const iid = item._t === "outbox" ? (item.intent_id || "") : (item.id || "");
-    const sendBtn = (item._t === "outbox" && item.id) ? `<button class="pi-act send" title="标记为已送达" onclick="doAction('proactive_send',{outbox_id:'${item.id}'})">送达</button>` : "";
-    const dropBtn = iid ? `<button class="pi-act drop" title="消掉这条" onclick="doAction('proactive_dismiss',{intent_id:'${iid}'})">消掉</button>` : "";
+    const sendBtn = (item._t === "outbox" && item.id) ? `<button class="pi-act send" title="标记为已送达" onclick="doAction('proactive_send',{outbox_id:${escapeJsArg(item.id)}})">送达</button>` : "";
+    const dropBtn = iid ? `<button class="pi-act drop" title="消掉这条" onclick="doAction('proactive_dismiss',{intent_id:${escapeJsArg(iid)}})">消掉</button>` : "";
     return `<div class="proactive-card ${item._t === "outbox" ? "queued" : ""}">
-      <div class="pi-type">${item.intent_type || item._t}</div>
-      <div class="pi-summary">${(item.summary || "").slice(0, 60)}</div>
+      <div class="pi-type">${escapeHtml(item.intent_type || item._t)}</div>
+      <div class="pi-summary">${escapeHtml((item.summary || "").slice(0, 60))}</div>
       <div class="pi-acts">${sendBtn}${dropBtn}</div>
     </div>`;
   }).join("");
@@ -651,7 +665,7 @@ function renderRecentEvents() {
     const e = g.e;
     const cls = e.status === "completed" ? "completed" : "";
     const badge = g.count > 1 ? `<span class="re-badge">×${g.count}</span>` : "";
-    return `<div class="recent-event ${cls}" onclick="showEventDetail('${e.id}')">
+    return `<div class="recent-event ${cls}" onclick="showEventDetail(${escapeJsArg(e.id)})">
       <div class="re-title">${escapeHtml(e.title)}${badge}</div>
       <div class="re-meta"><span class="ev-status ${e.status}">${escapeHtml(e.status)}</span>${e.event_category ? " · " + escapeHtml(e.event_category) : ""}</div>
     </div>`;
@@ -681,7 +695,7 @@ function renderCollections() {
   // tabs
   document.getElementById("collection-tabs").innerHTML = board.map(b => {
     const c = b.collection;
-    return `<button class="sub-tab ${c.id === currentCollectionTab ? "active" : ""}" onclick="switchCollectionTab('${c.id}')">${c.name} (${b.item_count})</button>`;
+    return `<button class="sub-tab ${c.id === currentCollectionTab ? "active" : ""}" onclick="switchCollectionTab(${escapeJsArg(c.id)})">${escapeHtml(c.name)} (${b.item_count})</button>`;
   }).join("");
   // grid
   const entry = board.find(b => b.collection?.id === currentCollectionTab);
@@ -702,11 +716,11 @@ function renderItemCards(items, options = {}) {
     if (item.attributes?.is_consumable) badges.push('<span class="item-badge consumable">耗</span>');
     if (item.cleanliness_state === "dirty" || item.cleanliness_state === "laundry") badges.push('<span class="item-badge laundry">待洗</span>');
     if (item.usage_state?.checkout_for?.length) badges.push('<span class="item-badge used">在用</span>');
-    if (options.showSlot && item.slot) badges.push(`<span>${item.slot}</span>`);
+    if (options.showSlot && item.slot) badges.push(`<span>${escapeHtml(item.slot)}</span>`);
     const detailId = item.item_id || item.id;
-    return `<div class="item-card" onclick="showItemDetail('${detailId}')">
+    return `<div class="item-card" onclick="showItemDetail(${escapeJsArg(detailId)})">
       ${img ? `<img class="item-card-img" src="${assetPreviewUrl(img)}" decoding="async" onerror="this.outerHTML='<div class=\\'item-card-img placeholder\\'>◈</div>'">` : '<div class="item-card-img placeholder">◈</div>'}
-      <div class="item-card-name">${item.name}</div>
+      <div class="item-card-name">${escapeHtml(item.name)}</div>
       <div class="item-card-meta">
         ${item.quantity > 1 ? `<span>×${item.quantity}</span>` : ""}
         ${badges.join("")}
@@ -731,7 +745,7 @@ function renderCloset() {
     const wornItems = itemIds.map(id => allItems.find(item => item.id === id)).filter(Boolean);
     currentEl.innerHTML = wornItems.length
       ? renderItemCards(wornItems)
-      : `<div class="outfit-preset-card"><span>${current.context?.query_text || current.occasion || "当前穿着"}</span><span style="color:var(--cyan)">${itemIds.length} 件</span></div>`;
+      : `<div class="outfit-preset-card"><span>${escapeHtml(current.context?.query_text || current.occasion || "当前穿着")}</span><span style="color:var(--cyan)">${itemIds.length} 件</span></div>`;
   } else {
     currentEl.innerHTML = '<div class="outfit-empty">当前没有着装记录</div>';
   }
@@ -739,7 +753,7 @@ function renderCloset() {
   const presetEl = document.getElementById("outfit-presets");
   if (presets.length) {
     presetEl.innerHTML = presets.slice(0, 10).map(p =>
-      `<div class="outfit-preset-card"><span>${p.name}</span><span style="color:var(--text-dim)">${(p.item_refs||[]).length} 件</span></div>`
+      `<div class="outfit-preset-card"><span>${escapeHtml(p.name)}</span><span style="color:var(--text-dim)">${(p.item_refs||[]).length} 件</span></div>`
     ).join("");
   } else {
     presetEl.innerHTML = '<div class="outfit-empty">无预设</div>';
@@ -748,7 +762,7 @@ function renderCloset() {
   const histEl = document.getElementById("outfit-history");
   if (outfits.length) {
     histEl.innerHTML = outfits.slice(0, 10).map(o =>
-      `<div class="outfit-snapshot-card"><span>${o.name || o.title || "—"}</span><span style="color:var(--text-dim)">${o.status}</span></div>`
+      `<div class="outfit-snapshot-card"><span>${escapeHtml(o.name || o.title || "—")}</span><span style="color:var(--text-dim)">${escapeHtml(o.status)}</span></div>`
     ).join("");
   } else {
     histEl.innerHTML = '<div class="outfit-empty">无穿搭记录</div>';
@@ -766,10 +780,10 @@ function renderDreams() {
   el.innerHTML = dreams.slice(0, 20).map(d => {
     const sev = d.severity === "high" ? "severity-high" : d.severity === "warn" ? "severity-warn" : "";
     const symbols = (d.symbols || []).slice(0, 6);
-    return `<div class="dream-card ${sev}" onclick="showDreamDetail('${d.id}')">
+    return `<div class="dream-card ${sev}" onclick="showDreamDetail(${escapeJsArg(d.id)})">
       <div class="dream-date">${formatTime(d.created_at)}</div>
-      <div class="dream-content">${(d.content || d.summary || "—").slice(0, 200)}</div>
-      ${symbols.length ? `<div class="dream-symbols">${symbols.map(s => `<span class="dream-symbol">${s}</span>`).join("")}</div>` : ""}
+      <div class="dream-content">${escapeHtml((d.content || d.summary || "—").slice(0, 200))}</div>
+      ${symbols.length ? `<div class="dream-symbols">${symbols.map(s => `<span class="dream-symbol">${escapeHtml(s)}</span>`).join("")}</div>` : ""}
     </div>`;
   }).join("");
 }
@@ -2255,7 +2269,7 @@ async function renderCodex() {
     return;
   }
   listEl.innerHTML = codexDocs.map((d, i) =>
-    `<div class="codex-item" onclick="loadDoc(${i})"><div>${d.name}</div><div class="doc-root">${d.root_label || ""}</div></div>`
+    `<div class="codex-item" onclick="loadDoc(${i})"><div>${escapeHtml(d.name)}</div><div class="doc-root">${escapeHtml(d.root_label || "")}</div></div>`
   ).join("");
 }
 
@@ -2269,7 +2283,7 @@ async function loadDoc(idx) {
   try {
     const res = await fetch(`${API}/api/workspace/file?path=${encodeURIComponent(doc.path)}`);
     const data = await res.json();
-    reader.innerHTML = `<h1>${data.name}</h1><div style="font-size:10px;color:var(--text-dim);margin-bottom:12px">${doc.root_label || ""} · ${(data.size_bytes/1024).toFixed(1)}KB</div><div class="codex-md">${escapeMd(data.content || "")}</div>`;
+    reader.innerHTML = `<h1>${escapeHtml(data.name)}</h1><div style="font-size:10px;color:var(--text-dim);margin-bottom:12px">${escapeHtml(doc.root_label || "")} · ${(data.size_bytes/1024).toFixed(1)}KB</div><div class="codex-md">${escapeMd(data.content || "")}</div>`;
   } catch {
     reader.innerHTML = '<p class="codex-hint">载入失败</p>';
   }
@@ -2290,15 +2304,38 @@ function renderReview() {
   }
   listEl.innerHTML = reviews.slice(0, 30).map((r, i) => {
     const sev = r.severity === "high" ? "severity-high" : r.severity === "warn" ? "severity-warn" : "severity-info";
+    // Items that require an explicit decision (send vs suppress, confirm vs
+    // reject, …) get one button per real choice. A blanket 采纳 on these used to
+    // silently no-op because the engine returns needs_choice. Only genuinely
+    // auto-appliable items keep the single 采纳.
+    const choices = (r.requires_choice && Array.isArray(r.choices)) ? r.choices : [];
+    const actionButtons = choices.length
+      ? choices.map(c =>
+          `<button class="rv-act-btn accept" onclick="doAction('review_apply', {item_id:${escapeJsArg(r.id)}, choice:${escapeJsArg(c)}})">${escapeHtml(reviewChoiceLabel(c))}</button>`
+        ).join("")
+      : `<button class="rv-act-btn accept" onclick="doAction('review_apply', {item_id:${escapeJsArg(r.id)}, choice:'accept'})">采纳</button>`;
     return `<div class="review-card ${sev}">
-      <div class="rv-title">${r.title}</div>
-      <div class="rv-meta"><span>${r.severity || ""}</span><span>${r.item_type || ""}</span></div>
+      <div class="rv-title">${escapeHtml(r.title)}</div>
+      <div class="rv-meta"><span>${escapeHtml(r.severity || "")}</span><span>${escapeHtml(r.item_type || "")}</span></div>
       ${r.id ? `<div class="rv-actions">
-        <button class="rv-act-btn accept" onclick="doAction('review_apply', {item_id:'${r.id}', choice:'accept'})">采纳</button>
-        <button class="rv-act-btn dismiss" onclick="doAction('review_apply', {item_id:'${r.id}', choice:'dismiss'})">忽略</button>
+        ${actionButtons}
+        <button class="rv-act-btn dismiss" onclick="doAction('review_dismiss', {item_id:${escapeJsArg(r.id)}})">忽略</button>
       </div>` : ""}
     </div>`;
   }).join("");
+}
+
+// Human-readable labels for review choice enums so the option buttons don't show
+// raw English identifiers. Unknown choices fall back to the raw value.
+const REVIEW_CHOICE_LABELS = {
+  send: "发送", suppress: "抑制", confirm: "确认", reject: "拒绝",
+  accept: "接受", complete: "完成", convert_event: "转为日程",
+  review: "查看", archive: "归档", keep_active: "保留",
+  leave_suppressed: "保持抑制", adjust_policy: "调整策略", create_new_intent: "新建意图",
+  fix_adapter_then_retry: "修复后重试",
+};
+function reviewChoiceLabel(choice) {
+  return REVIEW_CHOICE_LABELS[choice] || choice;
 }
 
 // ── 追溯面板 ──────────────────────────────────
@@ -2385,8 +2422,8 @@ async function showEventDetail(id) {
     const res = await fetch(`${API}/api/event/${id}`);
     const data = await res.json();
     const ev = data.event || {};
-    body.innerHTML = `<h4>${ev.title || id}</h4>
-      <div class="desc">${ev.description || ""}</div>
+    body.innerHTML = `<h4>${escapeHtml(ev.title || id)}</h4>
+      <div class="desc">${escapeHtml(ev.description || "")}</div>
       ${kv("类别", ev.event_category)}${kv("类型", ev.event_type)}${kv("状态", ev.status)}${kv("重要度", ev.importance)}
       ${kv("开始", formatTime(ev.planned_start))}${kv("结束", formatTime(ev.planned_end))}
       ${ev.resource_costs && Object.keys(ev.resource_costs).length ? `<h4>资源消耗</h4><pre>${JSON.stringify(ev.resource_costs, null, 2)}</pre>` : ""}
@@ -2405,8 +2442,8 @@ async function showDreamDetail(id) {
     const data = await res.json();
     const d = data.dream || {};
     body.innerHTML = `<h4>${formatTime(d.created_at)}</h4>
-      <div class="desc">${d.content || d.summary || ""}</div>
-      ${d.symbols?.length ? `<h4>象征</h4><div>${d.symbols.map(s => `<span class="dream-symbol">${s}</span>`).join(" ")}</div>` : ""}
+      <div class="desc">${escapeHtml(d.content || d.summary || "")}</div>
+      ${d.symbols?.length ? `<h4>象征</h4><div>${d.symbols.map(s => `<span class="dream-symbol">${escapeHtml(s)}</span>`).join(" ")}</div>` : ""}
       ${data.findings?.length ? `<h4>审计发现 (${data.findings.length})</h4><pre>${JSON.stringify(data.findings, null, 2)}</pre>` : ""}`;
   } catch { body.innerHTML = '<p class="empty-state">载入失败</p>'; }
 }
@@ -2422,13 +2459,13 @@ function showItemDetail(itemId) {
   const attrs = item.attributes || {};
   const attrItems = Object.entries(attrs).filter(([k]) => !["reference_image","presentation_board","reference_crop","primary_image","display_image"].includes(k));
   body.innerHTML = `${img ? `<img class="detail-img" src="${assetUrl(img)}" onerror="this.remove()">` : ""}
-    <h4>${item.name}</h4>
-    <div class="desc">${item.description || ""}</div>
+    <h4>${escapeHtml(item.name)}</h4>
+    <div class="desc">${escapeHtml(item.description || "")}</div>
     ${kv("状态", item.status)}${kv("数量", item.quantity)}${kv("清洁度", item.cleanliness_state)}
-    ${item.aliases?.length ? `<h4>别名</h4><div>${item.aliases.map(a => `<span class="dream-symbol">${a}</span>`).join(" ")}</div>` : ""}
+    ${item.aliases?.length ? `<h4>别名</h4><div>${item.aliases.map(a => `<span class="dream-symbol">${escapeHtml(a)}</span>`).join(" ")}</div>` : ""}
     ${attrItems.length ? `<h4>属性</h4>${attrItems.map(([k,v]) => kv(attrLabel(k), v)).join("")}` : ""}
     ${item.material_spec ? `<h4>材质</h4><pre>${JSON.stringify(item.material_spec, null, 2)}</pre>` : ""}
-    ${item.tags?.length ? `<h4>标签</h4><div>${item.tags.map(t => `<span class="dream-symbol">${t}</span>`).join(" ")}</div>` : ""}`;
+    ${item.tags?.length ? `<h4>标签</h4><div>${item.tags.map(t => `<span class="dream-symbol">${escapeHtml(t)}</span>`).join(" ")}</div>` : ""}`;
 }
 
 function showScheduleDetail(eventId) { if (eventId) showEventDetail(eventId); }
@@ -2551,7 +2588,7 @@ function formatNum(n) {
 
 function kv(k, v) {
   if (v == null || v === "" || v === "—") return "";
-  return `<div class="kv"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+  return `<div class="kv"><span class="k">${k}</span><span class="v">${escapeHtml(v)}</span></div>`;
 }
 
 function escapeHtml(value) {

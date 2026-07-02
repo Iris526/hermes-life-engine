@@ -11,8 +11,11 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import logging
 import os
 import sqlite3
+
+_LOG = logging.getLogger("lifeengine.webui.reader")
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -103,13 +106,18 @@ class LifeEngineReader:
     def _first(self, conn: sqlite3.Connection, sql: str, params: tuple = ()) -> dict[str, Any] | None:
         try:
             return _rowdict(conn.execute(sql, params).fetchone())
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            # Don't render a schema/query failure as "no data" silently — that is
+            # how an engine that IS writing life gets shown as a blank life. Log
+            # the failing query head so schema drift is diagnosable.
+            _LOG.warning("reader query failed (_first): %s | %s", exc, sql.split(" WHERE")[0].strip()[:100])
             return None
 
     def _all(self, conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
         try:
             return [dict(r) for r in conn.execute(sql, params).fetchall()]
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            _LOG.warning("reader query failed (_all): %s | %s", exc, sql.split(" WHERE")[0].strip()[:100])
             return []
 
     def meta(self) -> dict[str, Any]:
@@ -866,8 +874,14 @@ class LifeEngineReader:
                 ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, created_at DESC
                 LIMIT ?
             """, (owner_kind, owner_id, limit))
+            from ..review import review_item_choices
             for r in rows:
                 r["action_hint"] = _safe_json(r.get("action_hint_json"), {})
+                # Annotate each item with whether it needs an explicit human choice
+                # (and which options), so the Observatory can draw the real option
+                # buttons — e.g. send/suppress, confirm/reject — instead of a blanket
+                # "采纳" that silently no-ops on requires_choice items.
+                r.update(review_item_choices(r))
             # v0.12.1+ WebUI UX: stale duplicate Doctor transition warnings are
             # internal maintenance noise once the Observatory can explain events
             # directly. Keep them out of the human Review Inbox surface; doctor
@@ -885,7 +899,9 @@ class LifeEngineReader:
         with self._connect() as conn:
             if not self._table_exists(conn, "delayed_replies"):
                 return []
-            return self._all(conn, "SELECT * FROM delayed_replies WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT ?", (owner_kind, owner_id, limit))
+            # delayed_replies records its creation time as queued_at (there is no
+            # created_at column); the old ORDER BY created_at failed every build.
+            return self._all(conn, "SELECT * FROM delayed_replies WHERE owner_kind=? AND owner_id=? ORDER BY queued_at DESC LIMIT ?", (owner_kind, owner_id, limit))
 
     def dreams(self, owner_kind: str, owner_id: str, limit: int = 20) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -1062,19 +1078,34 @@ class LifeEngineReader:
             return {"collections": collections, "items": items, "board": board, "loadout": loadout, "outfits": outfits, "outfit_presets": presets}
 
     def doctor_latest(self, owner_kind: str, owner_id: str) -> dict[str, Any] | None:
+        # The engine persists invariant checks to life_invariant_checks (written by
+        # invariants.run_doctor). The old query hit a doctor_runs table that no code
+        # path ever creates, so the observatory's health panel was permanently blank.
+        # Read the real table; shape it into the {status, summary, issues} the UI expects.
         with self._connect() as conn:
-            if not self._table_exists(conn, "doctor_runs"):
+            if not self._table_exists(conn, "life_invariant_checks"):
                 return None
-            row = self._first(conn, "SELECT * FROM doctor_runs WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT 1", (owner_kind, owner_id))
-            if row:
-                row["summary"] = _safe_json(row.get("summary_json"), {})
-            return row
+            row = self._first(conn, "SELECT * FROM life_invariant_checks WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1", (owner_kind, owner_id))
+            if not row:
+                return None
+            checks = _safe_json(row.get("checks_json"), {})
+            summary = dict(checks) if isinstance(checks, dict) else {}
+            summary["status"] = row.get("status")
+            return {
+                "status": row.get("status"),
+                "created_at": row.get("created_at"),
+                "summary": summary,
+                "issues": _safe_json(row.get("issues_json"), []),
+            }
 
     def trace_latest(self, limit: int = 20) -> list[dict[str, Any]]:
         with self._connect() as conn:
             if not self._table_exists(conn, "life_journal"):
                 return []
-            return self._all(conn, "SELECT id, owner_kind, owner_id, entry_type, source, source_turn_id, source_tick_id, created_at FROM life_journal ORDER BY created_at DESC LIMIT ?", (limit,))
+            # life_journal has no source_turn_id/source_tick_id columns; the old
+            # query drifted and failed every build, blanking the trace panel. Use
+            # the real linkage columns (transaction_id/op_id).
+            return self._all(conn, "SELECT id, owner_kind, owner_id, entry_type, source, transaction_id, op_id, created_at FROM life_journal ORDER BY created_at DESC LIMIT ?", (limit,))
 
 
     def event_detail(self, event_id: str) -> dict[str, Any]:
@@ -1390,9 +1421,23 @@ class LifeEngineReader:
             "recent_events": self.events(owner_kind, owner_id, limit=30),
             "trace": self.trace_latest(limit=15),
             "avatar": sprite,
-            "updated_at": _now().isoformat(),
         }
-        payload["snapshot_hash"] = hashlib.sha256(json.dumps(_jsonable(payload), sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
+        # Hash the substantive payload only, excluding fields that change on every
+        # 2s rebuild even when nothing the human cares about changed. A churning
+        # hash defeats SSE de-duplication and forces a full client re-render each
+        # tick (forms cleared, panels re-collapsed) — the root cause of the page
+        # "twitching instead of breathing". Excluded:
+        #   - updated_at: the build wall-clock (added back AFTER hashing);
+        #   - clock.iso / clock.hour: sub-minute live time. The minute-granularity
+        #     clock parts (hhmm/phase/label) stay IN the digest so a real
+        #     day->night transition still pushes.
+        hash_input = dict(payload)
+        stable_clock = dict(payload.get("clock") or {})
+        stable_clock.pop("iso", None)
+        stable_clock.pop("hour", None)
+        hash_input["clock"] = stable_clock
+        payload["snapshot_hash"] = hashlib.sha256(json.dumps(_jsonable(hash_input), sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
+        payload["updated_at"] = _now().isoformat()
         return payload
 
 

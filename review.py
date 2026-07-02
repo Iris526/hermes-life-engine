@@ -1302,6 +1302,52 @@ def get_review_action_run(conn, owner_kind: str, owner_id: str, action_run_id: s
     return d
 
 
+# Discrete option sets for review items that require an explicit human decision.
+# Single-sourced here so the apply side (plan_review_item_action) and the read
+# side (review_item_choices, consumed by the WebUI to draw real option buttons)
+# cannot drift — the audit found "采纳/忽略" was the only surface even for items
+# that actually need e.g. send-vs-suppress or confirm-vs-reject.
+_REVIEW_CHOICES: dict[str, list[str]] = {
+    "proactive_outbox": ["send", "suppress"],
+    "proactive_outbox:inspect_delivery_failure": ["fix_adapter_then_retry", "suppress"],
+    "proactive_suppressed": ["leave_suppressed", "adjust_policy", "create_new_intent"],
+    "social_request": ["accept", "reject", "convert_event", "complete"],
+    "world_hook": ["review", "archive", "keep_active"],
+    "user_confirmation": ["confirm", "reject"],
+}
+_OPEN_REVIEW_STATUSES = {"open", "created", "pending", "action"}
+
+
+def review_item_choices(item: dict[str, Any]) -> dict[str, Any]:
+    """Read-only view of whether a review item needs an explicit choice, and which.
+
+    Mirrors the ``requires_choice`` branches of :func:`plan_review_item_action`
+    but takes a plain item dict (no DB, no already-chosen action), so a reader
+    such as the WebUI can render the genuine option buttons instead of a blanket
+    accept. Returns ``{requires_choice, choices}``. Both sides read
+    ``_REVIEW_CHOICES`` so the option set stays single-sourced.
+    """
+    item_type = str(item.get("item_type") or "")
+    hint = item.get("action_hint") or {}
+    if str(item.get("status") or "open") not in _OPEN_REVIEW_STATUSES:
+        return {"requires_choice": False, "choices": []}
+    if item_type == "proactive_outbox":
+        if hint.get("action") == "inspect_delivery_failure":
+            return {"requires_choice": True, "choices": list(hint.get("suggested_actions") or _REVIEW_CHOICES["proactive_outbox:inspect_delivery_failure"])}
+        return {"requires_choice": True, "choices": list(_REVIEW_CHOICES["proactive_outbox"])}
+    if item_type == "proactive_suppressed":
+        return {"requires_choice": True, "choices": list(hint.get("suggested_actions") or _REVIEW_CHOICES["proactive_suppressed"])}
+    if item_type == "social_request":
+        return {"requires_choice": True, "choices": list(hint.get("suggested_actions") or _REVIEW_CHOICES["social_request"])}
+    if item_type in {"world_condition", "world_route", "world_faction_presence"}:
+        return {"requires_choice": True, "choices": list(hint.get("suggested_actions") or _REVIEW_CHOICES["world_hook"])}
+    if item_type == "user_confirmation":
+        return {"requires_choice": True, "choices": list(_REVIEW_CHOICES["user_confirmation"])}
+    # policy_conflict without a suggested patch is requires_choice too, but has no
+    # discrete option set — it stays a manual-review item, not a button row.
+    return {"requires_choice": False, "choices": []}
+
+
 def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, *, choice: str | None = None) -> dict[str, Any]:
     """Return a safe action plan for a review item without mutating state."""
     item = get_review_item(conn, owner_kind, owner_id, item_id)
@@ -1338,11 +1384,11 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
                 "action": "inspect_delivery_failure",
                 "safe_auto": False,
                 "requires_choice": True,
-                "choices": hint.get("suggested_actions") or ["fix_adapter_then_retry", "suppress"],
+                "choices": hint.get("suggested_actions") or list(_REVIEW_CHOICES["proactive_outbox:inspect_delivery_failure"]),
                 "message": "Inspect the delivery adapter failure before retrying or suppressing this proactive outbox item.",
             })
         elif choice not in {"send", "suppress"}:
-            plan.update({"application_type": "manual_choice", "requires_choice": True, "safe_auto": False, "choices": ["send", "suppress"], "message": "Choose send or suppress for proactive outbox items."})
+            plan.update({"application_type": "manual_choice", "requires_choice": True, "safe_auto": False, "choices": list(_REVIEW_CHOICES["proactive_outbox"]), "message": "Choose send or suppress for proactive outbox items."})
         elif choice == "send":
             plan.update({"application_type": "lifeops", "tool": "life_proactive", "action": "send", "safe_auto": False, "ops": [{"type": "MARK_PROACTIVE_SENT", "payload": {"outbox_id": hint.get("outbox_id") or item.get("source_id"), "manual": True, "source": "life_review_action"}}], "message": "Mark this outbox message as sent."})
         else:
@@ -1357,7 +1403,7 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
             "intent_id": hint.get("intent_id") or item.get("source_id"),
             "safe_auto": False,
             "requires_choice": True,
-            "choices": hint.get("suggested_actions") or ["leave_suppressed", "adjust_policy", "create_new_intent"],
+            "choices": hint.get("suggested_actions") or list(_REVIEW_CHOICES["proactive_suppressed"]),
             "message": "Inspect why this proactive thought was suppressed; LifeEngine will not resurrect it automatically.",
         })
     elif item_type == "social_projection_failed":
@@ -1380,7 +1426,7 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
             "request_id": hint.get("request_id") or item.get("source_id"),
             "safe_auto": False,
             "requires_choice": True,
-            "choices": hint.get("suggested_actions") or ["accept", "reject", "convert_event", "complete"],
+            "choices": hint.get("suggested_actions") or list(_REVIEW_CHOICES["social_request"]),
             "message": "Choose the next social-request transition; LifeEngine will not invent an event or close it automatically.",
         })
     elif item_type in {"world_condition", "world_route", "world_faction_presence"}:
@@ -1390,7 +1436,7 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
             "action": hint.get("action") or "review",
             "safe_auto": False,
             "requires_choice": True,
-            "choices": hint.get("suggested_actions") or ["review", "archive", "keep_active"],
+            "choices": hint.get("suggested_actions") or list(_REVIEW_CHOICES["world_hook"]),
             "world_object_id": (
                 hint.get("condition_id")
                 or hint.get("route_id")
@@ -1401,7 +1447,7 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
         })
     elif item_type == "user_confirmation":
         if choice not in {"confirm", "reject"}:
-            plan.update({"application_type": "manual_choice", "requires_choice": True, "choices": ["confirm", "reject"], "safe_auto": False, "message": "Choose confirm or reject for user-life confirmation items."})
+            plan.update({"application_type": "manual_choice", "requires_choice": True, "choices": list(_REVIEW_CHOICES["user_confirmation"]), "safe_auto": False, "message": "Choose confirm or reject for user-life confirmation items."})
         else:
             plan.update({"application_type": "confirmation", "tool": "life_confirmation", "action": choice, "confirmation_id": hint.get("confirmation_id") or item.get("source_id"), "safe_auto": False, "message": f"{choice} this user-life pending confirmation."})
     elif item_type == "policy_conflict":

@@ -299,7 +299,11 @@ def test_companion_rejects_recently_rephrased_idle_prop(tmp_path):
         for reason in ("今天阳光很好", "收到一条暖心的消息", "顺手把活儿干完了", "傍晚的风很舒服"):
             rt.mood("react", delta=20, reason=reason)
 
-        out = rt.tick()
+        # Inject a fixed logical `now` one day after the suppressed intent so the
+        # 7-day dedup window deterministically contains it. Before the dedup query
+        # was anchored to logical time, this test used wall-clock `datetime('now')`
+        # and went red once the calendar moved >7 days past the hardcoded date.
+        out = rt.tick(now="2026-06-25 12:00:00")
 
         assert out["companion"]["generated"] is None
         idle = _intents_of_type(rt, "idle_share")

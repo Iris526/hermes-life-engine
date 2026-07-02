@@ -113,8 +113,16 @@ def _line_bigrams(text: str) -> set[str]:
     return {s[i:i + 2] for i in range(max(0, len(s) - 1)) if s[i:i + 2].strip()}
 
 
-def _looks_like_recent_idle_repeat(conn, agent_id: str, user_id: str | None, text: str) -> bool:
-    """Return True when a draft is too similar to recent companion prose."""
+def _looks_like_recent_idle_repeat(conn, agent_id: str, user_id: str | None, text: str,
+                                   now: str | None = None) -> bool:
+    """Return True when a draft is too similar to recent companion prose.
+
+    The recency window is anchored to the tick's LOGICAL ``now`` when supplied,
+    not wall-clock ``datetime('now')``. A wall-clock anchor made the window slide
+    out from under fixed-date test fixtures (and, in replays, drift off the data),
+    so an intent authored inside the tick's own timeframe could fall outside the
+    dedup window and reappear as a rephrased repeat.
+    """
     mine = _line_bigrams(text)
     if len(mine) < 6:
         return False
@@ -127,9 +135,9 @@ def _looks_like_recent_idle_repeat(conn, agent_id: str, user_id: str | None, tex
         "SELECT summary FROM proactive_intents WHERE agent_id=? "
         "AND intent_type IN ('idle_share','ask_about_user')"
         f"{target_sql} "
-        "AND created_at >= datetime('now', ?) "
+        "AND created_at >= datetime(?, ?) "
         "ORDER BY created_at DESC LIMIT 20",
-        (*params, f"-{_RECENT_IDLE_REPEAT_WINDOW_DAYS} days"),
+        (*params, now or "now", f"-{_RECENT_IDLE_REPEAT_WINDOW_DAYS} days"),
     ).fetchall()
     for row in rows:
         other = _line_bigrams(str(row["summary"] or ""))
@@ -145,14 +153,15 @@ def _looks_like_recent_idle_repeat(conn, agent_id: str, user_id: str | None, tex
 
 
 def _sanitize_parsed_line(conn, agent_id: str, kind: str, parsed: dict[str, Any] | None, *,
-                          user_id: str | None = None, trace_id: str | None = None) -> dict[str, Any] | None:
+                          user_id: str | None = None, now: str | None = None,
+                          trace_id: str | None = None) -> dict[str, Any] | None:
     """Validate and normalize LifeAuthor companion output before persistence."""
     if not isinstance(parsed, dict):
         return None
     raw = str(parsed.get("summary") or "")
     msg = _trim_companion_line(raw)
     reason = _companion_rejection_reason(raw)
-    if not reason and _looks_like_recent_idle_repeat(conn, agent_id, user_id, msg):
+    if not reason and _looks_like_recent_idle_repeat(conn, agent_id, user_id, msg, now=now):
         reason = "recent_repeat"
     if reason:
         append_audit(
@@ -378,7 +387,7 @@ def author_companion_for_tick(conn, agent_id: str, *, control: dict[str, Any] | 
         else:
             parsed = _author_idle_line(conn, agent_id, cand["user_id"], trace_id=trace_id)
             note_id = None
-        parsed = _sanitize_parsed_line(conn, agent_id, cand["kind"], parsed, user_id=cand["user_id"], trace_id=trace_id)
+        parsed = _sanitize_parsed_line(conn, agent_id, cand["kind"], parsed, user_id=cand["user_id"], now=now, trace_id=trace_id)
         if not parsed or not str(parsed.get("summary") or "").strip():
             return None
         return {"kind": cand["kind"], "user_id": cand["user_id"], "note_id": note_id, "parsed": parsed}
@@ -413,7 +422,7 @@ def maybe_generate_companion_intent(conn, agent_id: str, *, control: dict[str, A
             package = author_companion_for_tick(conn, agent_id, control=control, user_id=cand.get("user_id"), now=now, trace_id=trace_id)
         if not package or not isinstance(package.get("parsed"), dict):
             return None
-        parsed = _sanitize_parsed_line(conn, agent_id, cand["kind"], package.get("parsed"), user_id=cand["user_id"], trace_id=trace_id)
+        parsed = _sanitize_parsed_line(conn, agent_id, cand["kind"], package.get("parsed"), user_id=cand["user_id"], now=now, trace_id=trace_id)
         if not parsed:
             return None
         package = {**package, "parsed": parsed}
