@@ -408,6 +408,32 @@ def resolve_owner(args: dict[str, Any] | None = None, *, owner_kind: str | None 
     return scope.owner_kind, scope.owner_id
 
 
+# Heartbeat module registry — the SINGLE source of truth for the per-tick
+# subprocess sequence. Each entry is (output_key, method_name, extra_ctx_keys):
+# tick() runs ``self.<method_name>(owner_kind, owner_id, control, tick_id, trace,
+# now, *extras)`` where each extra is pulled positionally from the tick context
+# by key. tick() loops over this to build ``out``, and _heartbeat_partial_reasons
+# derives its check-list from it — so adding/removing a heartbeat module is a
+# one-line edit here instead of hand-syncing three parallel lists (the audit's
+# "4 处平行清单" module-drift root cause). Order is significant: modules run and
+# land in ``out`` in this order.
+_HEARTBEAT_MODULES: list[tuple[str, str, tuple[str, ...]]] = [
+    ("autonomy", "_run_autonomy_for_tick", ("manual", "authoring")),
+    ("persona_drift", "_run_persona_drift_for_tick", ("minutes_elapsed",)),
+    ("reflection", "_run_reflection_for_tick", ("authoring",)),
+    ("meals", "_settle_meals_for_tick", ()),
+    ("recurring_activities", "_materialize_recurring_for_tick", ()),
+    ("campaigns", "_run_campaigns_for_tick", ()),
+    ("daily_rhythm", "_ensure_daily_rhythm_for_tick", ()),
+    ("venture_supply", "_settle_supply_chain_for_tick", ()),
+    ("venture_opportunities", "_roll_opportunities_for_tick", ()),
+    ("realtime_sync", "_sync_realtime_to_schedule_for_tick", ()),
+    ("companion", "_run_companion_for_tick", ("authoring",)),
+    ("proactive", "_run_proactive_for_tick", ()),
+    ("managed_review", "_run_managed_review_for_tick", ("manual",)),
+]
+
+
 class LifeEngineRuntime:
     def __init__(self) -> None:
         self.conn = connect()
@@ -1348,22 +1374,14 @@ class LifeEngineRuntime:
             if isinstance(job, dict) and job.get("status") == "failed":
                 reasons.append(f"wake_job:{job.get('wake_job_id') or job.get('id') or 'unknown'}")
 
+        # The per-module keys come straight from the registry so this list can't
+        # drift from the tick's actual module set; resource_recovery /
+        # schedule_sweep / delayed_reply_release are the non-module tick outputs
+        # that also carry failure status.
         for name in [
             "resource_recovery",
-            "autonomy",
-            "persona_drift",
-            "reflection",
-            "meals",
-            "recurring_activities",
-            "campaigns",
-            "daily_rhythm",
+            *(out_key for out_key, _method, _extra in _HEARTBEAT_MODULES),
             "schedule_sweep",
-            "venture_supply",
-            "venture_opportunities",
-            "realtime_sync",
-            "companion",
-            "proactive",
-            "managed_review",
             "delayed_reply_release",
         ]:
             section = out.get(name)
@@ -1546,19 +1564,15 @@ class LifeEngineRuntime:
                 }
                 minutes_elapsed = self._minutes_since_last_tick(owner_kind, owner_id, now)
                 recovered = self._settle_resources(owner_kind, owner_id, minutes_elapsed, control)
-                autonomy_result = self._run_autonomy_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual, authoring)
-                persona_result = self._run_persona_drift_for_tick(owner_kind, owner_id, control, tick_id, trace, now, minutes_elapsed)
-                reflection_result = self._run_reflection_for_tick(owner_kind, owner_id, control, tick_id, trace, now, authoring)
-                meals_result = self._settle_meals_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
-                recurring_result = self._materialize_recurring_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
-                campaign_result = self._run_campaigns_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
-                daily_rhythm_result = self._ensure_daily_rhythm_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
-                supply_result = self._settle_supply_chain_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
-                opportunity_result = self._roll_opportunities_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
-                realtime_sync = self._sync_realtime_to_schedule_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
-                companion_result = self._run_companion_for_tick(owner_kind, owner_id, control, tick_id, trace, now, authoring)
-                proactive_result = self._run_proactive_for_tick(owner_kind, owner_id, control, tick_id, trace, now)
-                managed_review_result = self._run_managed_review_for_tick(owner_kind, owner_id, control, tick_id, trace, now, manual)
+                # Run the registered heartbeat modules in order, each under its
+                # output key. Extra args (manual/authoring/minutes_elapsed) are
+                # pulled positionally from tick_ctx per the registry — see
+                # _HEARTBEAT_MODULES. Result keys land in `out` in registry order.
+                tick_ctx = {"manual": manual, "authoring": authoring, "minutes_elapsed": minutes_elapsed}
+                module_results: dict[str, Any] = {}
+                for out_key, method_name, extra_keys in _HEARTBEAT_MODULES:
+                    runner = getattr(self, method_name)
+                    module_results[out_key] = runner(owner_kind, owner_id, control, tick_id, trace, now, *(tick_ctx[k] for k in extra_keys))
                 delayed_release = {"released_count": 0}
                 try:
                     state = get_realtime_state(self.conn, owner_kind, owner_id)
@@ -1566,7 +1580,7 @@ class LifeEngineRuntime:
                         delayed_release = release_delayed_replies(self.conn, owner_kind, owner_id, reason="released by heartbeat after agent became available", source="heartbeat", limit=20)
                 except Exception as exc:
                     delayed_release = {"error": f"{type(exc).__name__}: {exc}"}
-                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "schedule_sweep": schedule_sweep, "truth_refresh": truth_refresh, "autonomy": autonomy_result, "persona_drift": persona_result, "reflection": reflection_result, "meals": meals_result, "recurring_activities": recurring_result, "campaigns": campaign_result, "daily_rhythm": daily_rhythm_result, "venture_supply": supply_result, "venture_opportunities": opportunity_result, "realtime_sync": realtime_sync, "companion": companion_result, "proactive": proactive_result, "managed_review": managed_review_result, "delayed_reply_release": delayed_release}
+                out = {"now": now, "completed": completed, "resource_recovery": recovered, "wake_jobs": processed, "schedule_sweep": schedule_sweep, "truth_refresh": truth_refresh, **module_results, "delayed_reply_release": delayed_release}
                 partial_reasons = self._heartbeat_partial_reasons(out)
                 tick_status = "partial" if partial_reasons else "done"
                 if partial_reasons:
