@@ -188,6 +188,37 @@ def _compact_interaction_time(interaction_time: dict[str, Any] | None, *, minima
     return out
 
 
+def _compact_time(time_data: dict[str, Any] | None, *, minimal: bool = False) -> dict[str, Any]:
+    """Compact the temporal-grounding facts for the prompt budget.
+
+    Keeps the sharp anchor — current local time, day phase, and precise gap since
+    the last exchange — always. In full mode it also lists only the daily windows
+    that matter RIGHT NOW (open, just-closed, or about to open); far-future windows
+    are dropped as noise. The complete window set stays in the raw `time` block for
+    programmatic consumers (deterministic gating of agent-initiated content).
+    """
+    t = time_data or {}
+    if not t:
+        return {}
+    out: dict[str, Any] = {
+        "now_local": t.get("now_local"),
+        "phase": t.get("phase_label"),
+        "weekday": t.get("weekday"),
+    }
+    since = t.get("since_last_exchange")
+    if since:
+        out["since_last_exchange"] = since.get("human")
+    if not minimal:
+        windows = []
+        for w in (t.get("today_windows") or []):
+            rel, mins = w.get("relation"), int(w.get("minutes") or 0)
+            if rel == "in_window" or (rel == "passed" and mins <= 240) or (rel == "upcoming" and mins <= 60):
+                windows.append({"key": w.get("key"), "relation": rel, "minutes": mins, "recorded_today": w.get("recorded_today")})
+        if windows:
+            out["today_windows"] = windows
+    return {k: v for k, v in out.items() if v is not None}
+
+
 def _compact_world(world: dict[str, Any] | None, limit: int = 6) -> dict[str, Any]:
     """压缩世界本体给 prompt 使用。
 
@@ -282,6 +313,7 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
             "Never expose private behavior sources or internal gate diagnostics to the user.",
         ],
         "realtime": data.get("realtime") or {},
+        "time": _compact_time(data.get("time")),
         "interaction_time": _compact_interaction_time(data.get("interaction_time")),
         "sleep": data.get("sleep") or {},
         "reply_gate": data.get("reply_gate") or {},
@@ -365,6 +397,7 @@ def render_progressive_context(data: dict[str, Any], user_message: str | None, c
                     "interaction_time: occupy_now requires do_now; likely_ended is probably over.",
                     "Never expose private sources or internal diagnostics.",
                 ],
+                "time": _compact_time(data.get("time"), minimal=True),
                 "interaction_time": _compact_interaction_time(data.get("interaction_time"), minimal=True),
                 "sleep": capsule.get("sleep") or {},
                 "reply_gate": capsule.get("reply_gate") or {},

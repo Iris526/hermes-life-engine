@@ -145,7 +145,7 @@ from .maintenance import (
 from .heartbeat import heartbeat_installation_status, write_tick_script
 from .heartbeat_authoring import prepare_heartbeat_authoring
 from .confirmations import confirmed_ops, get_confirmation, list_confirmations, mark_confirmation, propose_confirmation
-from .conversation import interaction_time_context, record_turn_interaction
+from .conversation import interaction_time_context, record_turn_interaction, temporal_grounding
 from .collections import (
     DEFAULT_COLLECTION_PRESETS,
     archive_collection,
@@ -5410,6 +5410,14 @@ class LifeEngineRuntime:
                     self.conn, owner_kind, owner_id, session_id=session_id, turn_id=turn_id,
                     user_id=sender_id,
                 ), {})
+                # Sharp temporal anchor: exact local time + day phase, precise gap
+                # since the last exchange, and each daily window's status vs now.
+                # Facts the model reasons over — so it notices hours passed instead
+                # of continuing a stale thread (e.g. offering dinner at 3am).
+                temporal = _safe(lambda: temporal_grounding(
+                    self.conn, owner_kind, owner_id, canon=canon,
+                    session_id=session_id, turn_id=turn_id,
+                ), {})
                 memories = _safe(lambda: search_memories(self.conn, owner_kind, owner_id, user_message or "", 5), [])
                 events = _safe(lambda: list_events(self.conn, owner_kind, owner_id, limit=8), [])
                 resources = _safe(lambda: list_resources(self.conn, owner_kind, owner_id), {"accounts": []})
@@ -5480,6 +5488,7 @@ class LifeEngineRuntime:
                     "canon_brief": {"identity": (canon or {}).get("identity"), "worldview": (canon or {}).get("worldview"), "truth_sources": (canon or {}).get("truth_sources")},
                     "realtime": realtime,
                     "interaction_time": interaction_time,
+                    "time": temporal,
                     "resources": [{"resource_key": a["resource_key"], "current_value": a["current_value"], "unit": a.get("unit"), "state": a.get("state")} for a in (resources.get("accounts", [])[:20])],
                     "events": [{"id": e["id"], "title": e["title"], "status": e["status"], "event_category": e.get("event_category"), "event_type": e.get("event_type"), "planned_start": e.get("planned_start"), "planned_end": e.get("planned_end"), "progress": e.get("progress")} for e in events[:8]],
                     "memories": [{"id": m["id"], "type": m["memory_type"], "content": m["content"][:220]} for m in memories[:5]],

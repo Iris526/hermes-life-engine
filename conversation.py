@@ -12,11 +12,27 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .constants import DEFAULT_USER_ID
 from .jsonutil import dumps, loads
 from .time_utils import parse_datetime
 from .trace import append_journal, new_id
+
+# Day-phase bands by local hour. Deliberately distinguishes 深夜/凌晨 from 夜晚 so
+# a reply at 00:30 reads "凌晨", not the same "夜晚" as 20:00 — that distinction is
+# exactly what was missing when the agent kept suggesting dinner in the small hours.
+_DAY_PHASES = [
+    (0, "small_hours", "凌晨"),
+    (5, "early_morning", "清晨"),
+    (8, "morning", "上午"),
+    (11, "noon", "中午"),
+    (13, "afternoon", "下午"),
+    (17, "dusk", "傍晚"),
+    (19, "evening", "夜晚"),
+    (23, "late_night", "深夜"),
+]
+_WEEKDAY_ZH = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
 
 @dataclass(frozen=True)
@@ -510,3 +526,133 @@ def interaction_time_context(conn, owner_kind: str, owner_id: str, *, session_id
             "用户活动 status=likely_ended 时，不要继续断言用户仍在做这件事；应询问或按已大概率结束处理。",
         ],
     }
+
+
+def _tz_from_canon(canon: dict[str, Any] | None) -> tuple[ZoneInfo, str]:
+    data = canon or {}
+    name = (
+        ((data.get("schedule_rules") or {}).get("timezone"))
+        or (((data.get("truth_sources") or {}).get("bindings") or {}).get("time") or {}).get("timezone")
+    )
+    try:
+        return ZoneInfo(str(name or "UTC")), str(name or "UTC")
+    except Exception:
+        return ZoneInfo("UTC"), "UTC"
+
+
+def _phase_for_hour(hour: int) -> tuple[str, str]:
+    chosen = _DAY_PHASES[0]
+    for band in _DAY_PHASES:
+        if hour >= band[0]:
+            chosen = band
+    return chosen[1], chosen[2]
+
+
+def _humanize_gap(minutes: int) -> str:
+    """Precise (not bucketed) human phrasing for an elapsed gap."""
+    if minutes < 1:
+        return "刚刚"
+    hours, mins = divmod(minutes, 60)
+    if hours and mins:
+        return f"{hours}小时{mins}分钟前"
+    if hours:
+        return f"{hours}小时前"
+    return f"{mins}分钟前"
+
+
+def _today_windows(conn, owner_kind: str, owner_id: str, canon: dict[str, Any] | None,
+                   local: datetime) -> list[dict[str, Any]]:
+    """Each of today's canon-defined daily windows, related to the current local
+    time. Meals are the source of windows today, but the relation logic is generic
+    — nothing here is meal-specific; any windowed daily routine flows through it.
+    A dinner window reads relation='passed', minutes=421 late at night instead of
+    'pending', which is the fact the model needs to stop offering dinner at 3am.
+    """
+    from .meals import _meal_config, meal_status_for_date
+
+    cfg = _meal_config(canon)
+    if not cfg.get("enabled"):
+        return []
+    date_key = local.date().isoformat()
+    try:
+        status = (meal_status_for_date(conn, owner_kind, owner_id, date_key, canon) or {}).get("meals") or {}
+    except Exception:
+        status = {}
+    window_min = int(cfg.get("window_minutes") or 150)
+    now_min = local.hour * 60 + local.minute
+    out: list[dict[str, Any]] = []
+    for key, hhmm in (cfg.get("times") or {}).items():
+        try:
+            h, m = (int(x) for x in str(hhmm).split(":")[:2])
+        except Exception:
+            continue
+        start = h * 60 + m
+        end = start + window_min
+        if now_min < start:
+            relation, delta = "upcoming", start - now_min      # minutes until it opens
+        elif now_min <= end:
+            relation, delta = "in_window", end - now_min        # minutes left in window
+        else:
+            relation, delta = "passed", now_min - end           # minutes since it closed
+        st = (status.get(key) or {}).get("status") or "pending"
+        out.append({
+            "key": key,
+            "window": f"{h:02d}:{m:02d}-{end // 60:02d}:{end % 60:02d}",
+            "relation": relation,
+            "minutes": delta,
+            "status": st,
+            "recorded_today": st != "pending",
+        })
+    return out
+
+
+def temporal_grounding(conn, owner_kind: str, owner_id: str, *, canon: dict[str, Any] | None = None,
+                       now: str | None = None, session_id: str | None = None,
+                       turn_id: str | None = None) -> dict[str, Any]:
+    """Precise temporal facts for the reply capsule — DATA, not prose instructions.
+
+    The reply context had no sharp sense of *when now is* or *how long since we
+    last spoke*, so after a 4h gap the model kept the previous thread going (e.g.
+    still suggesting dinner at 3am). This returns exact facts the model reasons
+    over on its own: local time + day phase, the precise gap since the previous
+    exchange, and each daily window's status relative to now. No behavioural
+    instruction is added — the facts carry it.
+    """
+    now_dt = _now_dt(now)
+    tz, tz_name = _tz_from_canon(canon)
+    local = now_dt.astimezone(tz)
+    now_ts = int(now_dt.timestamp())
+    phase, phase_label = _phase_for_hour(local.hour)
+    grounding: dict[str, Any] = {
+        "now_local": local.strftime("%Y-%m-%d %H:%M"),
+        "timezone": tz_name,
+        "weekday": _WEEKDAY_ZH[local.weekday()],
+        "phase": phase,
+        "phase_label": phase_label,
+    }
+
+    # Precise gap since the previous exchange: the newest prior conversation
+    # judgment's timestamp (this turn's row, if already written, is excluded by
+    # turn_id). None on the first exchange — never fabricate a gap.
+    params: list[Any] = [owner_kind, owner_id]
+    exclude = ""
+    if turn_id is not None:
+        exclude = " AND (turn_id IS NULL OR turn_id != ?)"
+        params.append(turn_id)
+    row = conn.execute(
+        "SELECT created_at_ts FROM conversation_activity_judgments "
+        "WHERE owner_kind=? AND owner_id=? AND created_at_ts IS NOT NULL" + exclude +
+        " ORDER BY created_at_ts DESC, rowid DESC LIMIT 1",
+        tuple(params),
+    ).fetchone()
+    if row and row["created_at_ts"] is not None:
+        gap_min = max(0, int((now_ts - int(row["created_at_ts"])) // 60))
+        grounding["since_last_exchange"] = {
+            "minutes": gap_min,
+            "human": _humanize_gap(gap_min),
+        }
+    else:
+        grounding["since_last_exchange"] = None
+
+    grounding["today_windows"] = _today_windows(conn, owner_kind, owner_id, canon, local)
+    return grounding
