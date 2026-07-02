@@ -5180,14 +5180,18 @@ class LifeEngineRuntime:
             control = ensure_control(self.conn, owner_kind, owner_id)
             canon = get_active_canon(self.conn, owner_kind, owner_id)
             required = check_required_settings(self.conn, owner_kind, owner_id, canon, persist=True, source=source) if owner_kind == "agent" else {"ok": True}
-            # Make self-life management opt-out rather than opt-in. Human/user-life
-            # confirmation remains protected elsewhere.
+            # Make self-life management opt-out rather than opt-in: default it ON
+            # only when the user has NOT set it. Previously this reverted an
+            # explicit "off"/"manual" back to full/auto on every startup, silently
+            # overriding a deliberate choice (audit: startup_check 静默覆盖). New
+            # agents already get "full"/"auto" from DEFAULT_MODULE_GATES, so this
+            # now only fills a genuinely-absent key.
             gates = dict(control.get("module_gates") or {})
             changed = False
-            if gates.get("autonomy") in {None, "manual", "off"}:
+            if gates.get("autonomy") is None:
                 gates["autonomy"] = "full"
                 changed = True
-            if gates.get("managed_review_loop") in {None, "off", "manual"}:
+            if gates.get("managed_review_loop") is None:
                 gates["managed_review_loop"] = "auto"
                 changed = True
             if changed:
