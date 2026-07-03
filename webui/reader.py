@@ -1439,6 +1439,32 @@ class LifeEngineReader:
             "content": text,
         }
 
+    def _life_feed_head(self, owner_kind: str, owner_id: str) -> str | None:
+        """Newest-life-content signal for the snapshot hash: the max created_at
+        across the narrative tables. Bumping it lets the SSE fire (and the
+        LifeFeed live-refresh) whenever she lives something new."""
+        heads: list[str] = []
+        with self._connect() as conn:
+            for table, agent_keyed in (
+                ("diary_entries", False), ("dream_entries", False), ("serendipity_events", False),
+                ("memories", False), ("rumors", False), ("persona_drift_log", False),
+                ("proactive_intents", True),
+            ):
+                if not self._table_exists(conn, table):
+                    continue
+                cols = self._columns(conn, table)
+                if "created_at" not in cols:
+                    continue
+                if agent_keyed and "agent_id" in cols:
+                    row = self._first(conn, f"SELECT MAX(created_at) AS m FROM {table} WHERE agent_id=?", (owner_id,))
+                elif "owner_id" in cols:
+                    row = self._first(conn, f"SELECT MAX(created_at) AS m FROM {table} WHERE owner_kind=? AND owner_id=?", (owner_kind, owner_id))
+                else:
+                    continue
+                if row and row.get("m"):
+                    heads.append(str(row["m"]))
+        return max(heads) if heads else None
+
     def snapshot(self, owner_kind: str, owner_id: str, period: str = "today", date: str | None = None) -> dict[str, Any]:
         state = self.realtime_state(owner_kind, owner_id)
         current = self.current_event(owner_kind, owner_id, state)
@@ -1491,6 +1517,7 @@ class LifeEngineReader:
             "recent_events": self.events(owner_kind, owner_id, limit=30),
             "trace": self.trace_latest(limit=15),
             "avatar": sprite,
+            "life_feed_head": self._life_feed_head(owner_kind, owner_id),
         }
         # Hash the substantive payload only, excluding fields that change on every
         # 2s rebuild even when nothing the human cares about changed. A churning

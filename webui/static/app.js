@@ -171,7 +171,7 @@ async function loadFeed(before = null) {
   }
 }
 
-function renderFeed() {
+function renderFeed(fresh = null) {
   const list = document.getElementById("feed-list");
   if (!list) return;
   if (!feedItems.length) {
@@ -186,13 +186,34 @@ function renderFeed() {
     if (t.day !== lastDay) { lastDay = t.day; dayHead = `<div class="feed-day">${escapeHtml(t.day)}</div>`; }
     const syms = (it.meta && Array.isArray(it.meta.symbols) && it.meta.symbols.length)
       ? `<div class="feed-symbols">${it.meta.symbols.map(s => `<span>${escapeHtml(s)}</span>`).join("")}</div>` : "";
-    return `${dayHead}<div class="feed-item feed-${meta.cls}">
+    const isNew = fresh && fresh.has(it.id) ? " feed-new" : "";
+    return `${dayHead}<div class="feed-item feed-${meta.cls}${isNew}" data-id="${escapeHtml(it.id)}">
       <div class="feed-rail"><span class="feed-icon">${escapeHtml(it.icon || "•")}</span><span class="feed-time">${escapeHtml(t.time)}</span></div>
       <div class="feed-card">
         <div class="feed-head"><span class="feed-kind">${escapeHtml(meta.label)}</span><span class="feed-title">${escapeHtml(it.title || "")}</span></div>
         <div class="feed-text">${escapeHtml(it.text || "")}</div>${syms}
       </div></div>`;
   }).join("");
+}
+
+// Live update: on an SSE snapshot change, if the feed is open, pull the newest
+// page and fade in only genuinely-new cards (by id) — the feed breathes instead
+// of the whole page re-rendering.
+async function refreshFeedLive() {
+  if (activeOverlay !== "feed") return;
+  try {
+    const data = await (await fetch(apiUrl("/api/feed", { limit: 40 }, true))).json();
+    const items = data.items || [];
+    const known = new Set(feedItems.map(it => it.id));
+    const freshIds = new Set(items.filter(it => !known.has(it.id)).map(it => it.id));
+    if (!freshIds.size) return;
+    feedItems = items;
+    feedCursor = data.next_cursor || null;
+    renderFeed(freshIds);
+    const more = document.getElementById("feed-more");
+    if (more) { more.hidden = !feedCursor; more.onclick = () => loadFeed(feedCursor); }
+    blip("open");
+  } catch {}
 }
 
 async function loadSchedule() {
@@ -222,6 +243,7 @@ function connectSSE() {
           snapshotData = data;
           collectionsData = data;
           render();
+          refreshFeedLive();
         }
       } catch {}
     });

@@ -804,3 +804,9 @@ html,body { height: 100vh; width: 100vw; overflow: hidden; background: var(--bg-
 .feed-campaign    .feed-card { border-left-color: var(--cinnabar-dim); }     .feed-campaign .feed-title { color: var(--gold); }
 .feed-more { display: block; margin: 16px auto 4px; background: var(--bg-2); border: 1px solid var(--border-dim); color: var(--text-dim); font-family: var(--font-mono); font-size: 12px; letter-spacing: 1px; padding: 6px 18px; border-radius: 2px; cursor: pointer; transition: all .15s; }
 .feed-more:hover { border-color: var(--gold-dim); color: var(--text); }
+/* a new card fades in when the engine lives something new (SSE changefeed) */
+@keyframes feed-in { 0% { opacity: 0; transform: translateY(-10px); } 60% { opacity: 1; } 100% { opacity: 1; transform: translateY(0); } }
+@keyframes feed-glow { 0% { box-shadow: 0 0 0 transparent; } 30% { box-shadow: -3px 0 14px var(--gold-glow); } 100% { box-shadow: 0 0 0 transparent; } }
+.feed-item.feed-new { animation: feed-in .55s cubic-bezier(.2,.8,.3,1); }
+.feed-item.feed-new .feed-card { animation: feed-glow 1.7s ease; }
+@media (prefers-reduced-motion: reduce) { .feed-item.feed-new, .feed-item.feed-new .feed-card { animation: none; } }

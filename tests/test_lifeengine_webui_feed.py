@@ -68,3 +68,23 @@ def test_life_feed_cursor_paginates(monkeypatch):
     # the older page is strictly older than the cursor, no overlap
     assert all(it["ts"] < first["next_cursor"] for it in older["items"])
     assert older["items"], "cursor should return the remaining older item(s)"
+
+
+def test_new_life_content_changes_snapshot_hash(monkeypatch):
+    """The SSE fires (and the LifeFeed live-refreshes) only if new narrative
+    content bumps the snapshot hash — via life_feed_head."""
+    import sqlite3
+    db = _seed(monkeypatch)
+    reader = LifeEngineReader(db)
+    snap1 = reader.snapshot("agent", A)
+    conn = sqlite3.connect(db)
+    with conn:
+        conn.execute(
+            "INSERT INTO serendipity_events(id,owner_kind,owner_id,event_id,serendipity_type,title,description,intensity,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (new_id("se"), "agent", A, new_id("ev"), "minor_discovery", "捡到旧纽扣", "河滩上捡到一枚旧铜纽扣。", 40, "applied", "2026-07-03 23:30:00"),
+        )
+    conn.close()
+    snap2 = reader.snapshot("agent", A)
+    assert snap2["life_feed_head"] == "2026-07-03 23:30:00"
+    assert snap2["life_feed_head"] != snap1["life_feed_head"]
+    assert snap2["snapshot_hash"] != snap1["snapshot_hash"]
