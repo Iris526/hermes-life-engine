@@ -409,6 +409,7 @@ _HEARTBEAT_MODULES: list[tuple[str, str, tuple[str, ...]]] = [
     ("meals", "_settle_meals_for_tick", ()),
     ("venture", "_materialize_recurring_for_tick", ()),
     ("campaigns", "_run_campaigns_for_tick", ("authoring",)),
+    ("world_evolution", "_run_world_evolution_for_tick", ()),
     ("daily_rhythm", "_ensure_daily_rhythm_for_tick", ()),
     ("venture_supply", "_settle_supply_chain_for_tick", ("authoring",)),
     ("venture_opportunities", "_roll_opportunities_for_tick", ()),
@@ -941,6 +942,12 @@ class LifeEngineRuntime:
         elif op_type == "SOCIAL_RECORD_RUMOR":
             from . import social_world as _social
             return _social.record_rumor(
+                self.conn, owner_kind, owner_id,
+                source=payload.get("source") or source,
+                **{k: v for k, v in payload.items() if k != "source"})
+        elif op_type == "SOCIAL_RUMOR_DECAY":
+            from . import social_world as _social
+            return _social.apply_rumor_decay(
                 self.conn, owner_kind, owner_id,
                 source=payload.get("source") or source,
                 **{k: v for k, v in payload.items() if k != "source"})
@@ -2245,6 +2252,79 @@ class LifeEngineRuntime:
         except Exception as exc:
             append_audit(self.conn, owner_kind, owner_id, "campaign_materialize_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+    def _run_world_evolution_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
+                                      tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
+        """推进世界/社会状态的确定性时间演化。
+
+        输入来自 heartbeat registry；输出进入 heartbeat_runs.output_json。函数本身只
+        读取候选并逐条提交 LifeOps：条件过期走 WORLD_UPSERT_CONDITION，流言衰退走
+        SOCIAL_RUMOR_DECAY，声望静置回归走 SOCIAL_REPUTATION_EVENT。单条失败会写
+        warning audit 并继续后续条目，保持 heartbeat 的 best-effort 隔离语义。
+        """
+        if owner_kind != "agent":
+            return {"ok": True, "status": "skipped", "reason": "non-agent owner"}
+        gates = control.get("module_gates") or {}
+        mode = str(gates.get("world_evolution", "auto") or "auto").lower()
+        if mode in {"off", "disabled", "manual", "false"}:
+            return {"ok": True, "status": "skipped", "reason": f"gate={mode}"}
+        try:
+            from .world_evolution import plan_world_evolution
+
+            plan = plan_world_evolution(self.conn, owner_kind, owner_id, now=now)
+            if plan.get("status") == "skipped":
+                return {"ok": True, **plan}
+            items = plan.get("items") or []
+            applied: list[dict[str, Any]] = []
+            failures: list[dict[str, Any]] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                op = item.get("op")
+                if not isinstance(op, dict):
+                    continue
+                category = str(item.get("category") or op.get("type") or "world_evolution")
+                target_id = item.get("target_id")
+                try:
+                    with trace.span("world_evolution", {"category": category, "target_id": target_id, "op_type": op.get("type")}):
+                        commit = self._commit_ops_locked(
+                            [op], owner_kind, owner_id, "heartbeat_world_evolution",
+                            session_id=None, turn_id=tick_id, trace=trace, control=control,
+                        )
+                    applied.append({
+                        "category": category,
+                        "target_id": target_id,
+                        "op_type": op.get("type"),
+                        "transaction_id": commit.get("transaction_id"),
+                        "receipt_id": (commit.get("receipt") or {}).get("receipt_id"),
+                    })
+                except Exception as item_exc:
+                    failure = {
+                        "category": category,
+                        "target_id": target_id,
+                        "op_type": op.get("type"),
+                        "error": f"{type(item_exc).__name__}: {item_exc}",
+                    }
+                    failures.append(failure)
+                    append_audit(
+                        self.conn, owner_kind, owner_id,
+                        "world_evolution_item_failed", "warning", failure["error"],
+                        {"tick_id": tick_id, **failure}, trace.id,
+                    )
+            status = "partial" if failures else "ok"
+            return {
+                "ok": not failures,
+                "status": status,
+                "planned_count": len(items),
+                "applied_count": len(applied),
+                "counts": plan.get("counts") or {},
+                "formulas": plan.get("formulas") or {},
+                "applied": applied,
+                "failures": failures,
+            }
+        except Exception as exc:
+            append_audit(self.conn, owner_kind, owner_id, "world_evolution_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
+            return {"ok": False, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
     def _schedule_campaign_event(self, owner_kind: str, owner_id: str, control: dict[str, Any],
                                  tick_id: str, trace: Trace, now: str, tz_name: str,

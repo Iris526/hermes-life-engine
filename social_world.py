@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from .jsonutil import dumps, loads
+from .time_utils import now_iso, to_epoch
 from .trace import append_journal, new_id
 
 WORLD_AUDIENCE = "__world__"
@@ -580,12 +581,15 @@ def apply_reputation_event(conn, owner_kind: str, owner_id: str, *, subject_enti
                            reason: str | None = None, evidence_kind: str | None = None,
                            evidence_id: str | None = None,
                            evidence: dict[str, Any] | None = None,
+                           effective_at: str | None = None,
                            source: str = "life_social") -> dict[str, Any]:
     """把一次社会后果写入声望账本。
 
     输入是主体实体、声望轴、增量和可选 audience；输出包含 reputation event 与聚合
     account。副作用是插入 `reputation_events`、更新/创建 `reputation_accounts`
-    并写 journal。声望值限制在 -100..100；具体轴含义由世界观包定义。
+    并写 journal。`effective_at` 是可选逻辑发生时间，heartbeat 演化用它作为幂等
+    水位；为空时保持原有 SQLite 当前时间行为。声望值限制在 -100..100；具体轴
+    含义由世界观包定义。
     """
     if not _entity_belongs(conn, owner_kind, owner_id, subject_entity_id):
         raise ValueError(f"subject entity not found: {subject_entity_id}")
@@ -597,14 +601,24 @@ def apply_reputation_event(conn, owner_kind: str, owner_id: str, *, subject_enti
         raise ValueError("reputation axis is required")
     delta_value = _clamp_float(delta, -100.0, 100.0, 0.0)
     event_id = new_id("repevt")
-    conn.execute(
-        """INSERT INTO reputation_events(
-             id, owner_kind, owner_id, subject_entity_id, audience_entity_id, axis,
-             delta, reason, evidence_kind, evidence_id, evidence_json, source
-           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (event_id, owner_kind, owner_id, subject_entity_id, audience, axis,
-         delta_value, reason, evidence_kind, evidence_id, dumps(evidence or {}), source),
-    )
+    if effective_at:
+        conn.execute(
+            """INSERT INTO reputation_events(
+                 id, owner_kind, owner_id, subject_entity_id, audience_entity_id, axis,
+                 delta, reason, evidence_kind, evidence_id, evidence_json, source, created_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (event_id, owner_kind, owner_id, subject_entity_id, audience, axis,
+             delta_value, reason, evidence_kind, evidence_id, dumps(evidence or {}), source, effective_at),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO reputation_events(
+                 id, owner_kind, owner_id, subject_entity_id, audience_entity_id, axis,
+                 delta, reason, evidence_kind, evidence_id, evidence_json, source
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (event_id, owner_kind, owner_id, subject_entity_id, audience, axis,
+             delta_value, reason, evidence_kind, evidence_id, dumps(evidence or {}), source),
+        )
     existing = conn.execute(
         """SELECT * FROM reputation_accounts
            WHERE owner_kind=? AND owner_id=? AND subject_entity_id=? AND audience_entity_id=? AND axis=?""",
@@ -614,23 +628,40 @@ def apply_reputation_event(conn, owner_kind: str, owner_id: str, *, subject_enti
         account_id = existing["id"]
         next_value = _clamp_float(float(existing["value"]) + delta_value, -100.0, 100.0, 0.0)
         next_conf = _clamp_float(float(existing["confidence"]) + 0.05, 0.0, 1.0, 0.5)
-        conn.execute(
-            "UPDATE reputation_accounts SET value=?, confidence=?, updated_at=datetime('now') WHERE id=?",
-            (next_value, next_conf, account_id),
-        )
+        if effective_at:
+            conn.execute(
+                "UPDATE reputation_accounts SET value=?, confidence=?, updated_at=? WHERE id=?",
+                (next_value, next_conf, effective_at, account_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE reputation_accounts SET value=?, confidence=?, updated_at=datetime('now') WHERE id=?",
+                (next_value, next_conf, account_id),
+            )
     else:
         account_id = new_id("repacct")
-        conn.execute(
-            """INSERT INTO reputation_accounts(
-                 id, owner_kind, owner_id, subject_entity_id, audience_entity_id, axis,
-                 value, confidence
-               ) VALUES(?,?,?,?,?,?,?,?)""",
-            (account_id, owner_kind, owner_id, subject_entity_id, audience, axis,
-             _clamp_float(delta_value, -100.0, 100.0, 0.0), 0.55),
-        )
+        if effective_at:
+            conn.execute(
+                """INSERT INTO reputation_accounts(
+                     id, owner_kind, owner_id, subject_entity_id, audience_entity_id, axis,
+                     value, confidence, created_at, updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (account_id, owner_kind, owner_id, subject_entity_id, audience, axis,
+                 _clamp_float(delta_value, -100.0, 100.0, 0.0), 0.55, effective_at, effective_at),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO reputation_accounts(
+                     id, owner_kind, owner_id, subject_entity_id, audience_entity_id, axis,
+                     value, confidence
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                (account_id, owner_kind, owner_id, subject_entity_id, audience, axis,
+                 _clamp_float(delta_value, -100.0, 100.0, 0.0), 0.55),
+            )
     append_journal(conn, owner_kind, owner_id, "reputation_event_recorded",
                    {"event_id": event_id, "account_id": account_id, "subject_entity_id": subject_entity_id,
-                    "audience_entity_id": audience, "axis": axis, "delta": delta_value}, source)
+                    "audience_entity_id": audience, "axis": axis, "delta": delta_value,
+                    "effective_at": effective_at}, source)
     return {
         "event": _decode_reputation_event(conn.execute("SELECT * FROM reputation_events WHERE id=?", (event_id,)).fetchone()),
         "account": _row(conn.execute("SELECT * FROM reputation_accounts WHERE id=?", (account_id,)).fetchone()),
@@ -752,12 +783,14 @@ def record_rumor(conn, owner_kind: str, owner_id: str, *, content: str,
                  sentiment: str | None = None, visibility: str = "local",
                  truth_layer: str = "rumor_unverified",
                  evidence: dict[str, Any] | None = None,
+                 effective_at: str | None = None,
                  source: str = "life_social") -> dict[str, Any]:
     """记录一条流言或未证实社会叙事。
 
     输入包含内容、渠道、热度、可信度和 truth_layer；输出 rumor 行。副作用是写
-    `rumors` 和 journal。默认 truth_layer 为 `rumor_unverified`，调用方不得把它
-    当事实写入事件或记忆，除非后续世界观规则确认。
+    `rumors` 和 journal。`effective_at` 允许 heartbeat/测试用逻辑时间初始化
+    updated_at 水位；默认 truth_layer 为 `rumor_unverified`，调用方不得把它当事实
+    写入事件或记忆，除非后续世界观规则确认。
     """
     content = str(content or "").strip()
     channel = str(channel or "").strip()
@@ -768,19 +801,89 @@ def record_rumor(conn, owner_kind: str, owner_id: str, *, content: str,
     if subject_entity_id and not _entity_belongs(conn, owner_kind, owner_id, subject_entity_id):
         raise ValueError(f"subject entity not found: {subject_entity_id}")
     rumor_id = new_id("rumor")
-    conn.execute(
-        """INSERT INTO rumors(
-             id, owner_kind, owner_id, subject_entity_id, target_kind, target_id,
-             content, channel, heat, credibility, sentiment, visibility, truth_layer,
-             evidence_json, source
-           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (rumor_id, owner_kind, owner_id, subject_entity_id, target_kind or "entity", target_id,
-         content, channel, _clamp_float(heat, 0.0, 1.0, 0.5), _clamp_float(credibility, 0.0, 1.0, 0.3),
-         sentiment, visibility, truth_layer, dumps(evidence or {}), source),
-    )
+    if effective_at:
+        conn.execute(
+            """INSERT INTO rumors(
+                 id, owner_kind, owner_id, subject_entity_id, target_kind, target_id,
+                 content, channel, heat, credibility, sentiment, visibility, truth_layer,
+                 evidence_json, source, created_at, updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (rumor_id, owner_kind, owner_id, subject_entity_id, target_kind or "entity", target_id,
+             content, channel, _clamp_float(heat, 0.0, 1.0, 0.5), _clamp_float(credibility, 0.0, 1.0, 0.3),
+             sentiment, visibility, truth_layer, dumps(evidence or {}), source, effective_at, effective_at),
+        )
+    else:
+        conn.execute(
+            """INSERT INTO rumors(
+                 id, owner_kind, owner_id, subject_entity_id, target_kind, target_id,
+                 content, channel, heat, credibility, sentiment, visibility, truth_layer,
+                 evidence_json, source
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (rumor_id, owner_kind, owner_id, subject_entity_id, target_kind or "entity", target_id,
+             content, channel, _clamp_float(heat, 0.0, 1.0, 0.5), _clamp_float(credibility, 0.0, 1.0, 0.3),
+             sentiment, visibility, truth_layer, dumps(evidence or {}), source),
+        )
     append_journal(conn, owner_kind, owner_id, "rumor_recorded",
-                   {"rumor_id": rumor_id, "channel": channel, "truth_layer": truth_layer}, source)
+                   {"rumor_id": rumor_id, "channel": channel, "truth_layer": truth_layer,
+                    "effective_at": effective_at}, source)
     return _decode_rumor(conn.execute("SELECT * FROM rumors WHERE id=?", (rumor_id,)).fetchone())
+
+
+def apply_rumor_decay(conn, owner_kind: str, owner_id: str, *, rumor_id: str,
+                      heat: float, status: str = "active", effective_at: str | None = None,
+                      reason: str | None = None, previous_heat: float | None = None,
+                      elapsed_hours: float | None = None,
+                      source: str = "life_social") -> dict[str, Any]:
+    """通过 LifeOps 更新一条流言的热度和终态。
+
+    输入来自 heartbeat world_evolution 规划层；输出包含更新后的 rumor。函数会检查
+    owner、终态和 `effective_at` 水位：如果同一逻辑时刻已经处理过，返回 skipped
+    而不再写领域表。副作用是更新 `rumors` 并写 journal；调用方必须处在 LifeOps
+    savepoint 中，失败由 LifeOps 回滚。
+    """
+    row = conn.execute(
+        "SELECT * FROM rumors WHERE id=? AND owner_kind=? AND owner_id=?",
+        (rumor_id, owner_kind, owner_id),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"rumor not found: {rumor_id}")
+    rumor = _decode_rumor(row)
+    if rumor.get("status") != "active":
+        return {"rumor": rumor, "skipped": True, "reason": f"terminal_status={rumor.get('status')}"}
+    effective = effective_at or now_iso()
+    current_ts = None
+    target_ts = None
+    try:
+        current_ts = to_epoch(rumor.get("updated_at"))
+        target_ts = to_epoch(effective)
+    except Exception:
+        current_ts = None
+        target_ts = None
+    if current_ts is not None and target_ts is not None and target_ts <= current_ts:
+        return {"rumor": rumor, "skipped": True, "reason": "stale_decay_watermark"}
+    next_status = str(status or "active").strip()
+    if next_status not in {"active", "faded"}:
+        raise ValueError("rumor decay status must be active/faded")
+    next_heat = _clamp_float(heat, 0.0, 1.0, 0.0)
+    conn.execute(
+        """UPDATE rumors
+              SET heat=?, status=?, source=?, updated_at=?
+            WHERE id=? AND owner_kind=? AND owner_id=?""",
+        (next_heat, next_status, source, effective, rumor_id, owner_kind, owner_id),
+    )
+    append_journal(conn, owner_kind, owner_id, "rumor_decayed",
+                   {"rumor_id": rumor_id, "previous_heat": previous_heat,
+                    "heat": next_heat, "status": next_status, "elapsed_hours": elapsed_hours,
+                    "effective_at": effective, "reason": reason}, source)
+    updated = _decode_rumor(conn.execute("SELECT * FROM rumors WHERE id=?", (rumor_id,)).fetchone())
+    return {
+        "rumor": updated,
+        "previous_heat": previous_heat,
+        "heat": next_heat,
+        "status": next_status,
+        "effective_at": effective,
+        "elapsed_hours": elapsed_hours,
+    }
 
 
 def list_rumors(conn, owner_kind: str, owner_id: str, *, channel: str | None = None,

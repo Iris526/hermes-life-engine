@@ -131,6 +131,7 @@ ALLOWED_OPS = {
     "SOCIAL_REPUTATION_EVENT",
     "SOCIAL_RECORD_EVALUATION",
     "SOCIAL_RECORD_RUMOR",
+    "SOCIAL_RUMOR_DECAY",
     "SOCIAL_RECORD_RUMOR_EXPOSURE",
     "SOCIAL_RECORD_REQUEST",
     "SOCIAL_REQUEST_TRANSITION",
@@ -173,6 +174,7 @@ USER_WRITE_OPS = {
     "SOCIAL_REPUTATION_EVENT",
     "SOCIAL_RECORD_EVALUATION",
     "SOCIAL_RECORD_RUMOR",
+    "SOCIAL_RUMOR_DECAY",
     "SOCIAL_RECORD_RUMOR_EXPOSURE",
     "SOCIAL_RECORD_REQUEST",
     "SOCIAL_REQUEST_TRANSITION",
@@ -232,6 +234,20 @@ def _validate_0_100(name: str, value: Any) -> None:
         raise ValidationError(f"{name} must be numeric") from exc
     if not 0 <= v <= 100:
         raise ValidationError(f"{name} must be 0..100")
+
+
+def _validate_0_1(name: str, value: Any) -> None:
+    """校验 0..1 的比例字段。
+
+    输入来自社会世界的 heat/credibility 等小数比例；输出只负责抛错或放行，
+    调用方仍保留原始 payload 值，避免校验层改变展示精度。
+    """
+    try:
+        v = float(value)
+    except Exception as exc:
+        raise ValidationError(f"{name} must be numeric") from exc
+    if not 0 <= v <= 1:
+        raise ValidationError(f"{name} must be 0..1")
 
 
 def _validate_int_range(name: str, value: Any, *, minimum: int, maximum: int) -> int:
@@ -628,6 +644,11 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
             float(payload.get("delta"))
         except Exception as exc:
             raise ValidationError("reputation delta must be numeric") from exc
+        if payload.get("effective_at"):
+            try:
+                to_epoch(payload.get("effective_at"))
+            except Exception as exc:
+                raise ValidationError("invalid reputation effective_at") from exc
     elif op_type == "SOCIAL_RECORD_EVALUATION":
         _require(payload, "subject_entity_id", "axis", "score")
         try:
@@ -636,6 +657,32 @@ def validate_op_shape(op_type: str, payload: dict[str, Any]) -> dict[str, Any]:
             raise ValidationError("evaluation score must be numeric") from exc
     elif op_type == "SOCIAL_RECORD_RUMOR":
         _require(payload, "content", "channel")
+        if payload.get("heat") is not None:
+            _validate_0_1("rumor heat", payload.get("heat"))
+        if payload.get("credibility") is not None:
+            _validate_0_1("rumor credibility", payload.get("credibility"))
+        if payload.get("effective_at"):
+            try:
+                to_epoch(payload.get("effective_at"))
+            except Exception as exc:
+                raise ValidationError("invalid rumor effective_at") from exc
+    elif op_type == "SOCIAL_RUMOR_DECAY":
+        _require(payload, "rumor_id", "heat")
+        _validate_0_1("rumor heat", payload.get("heat"))
+        status = payload.get("status", "active")
+        if status not in {"active", "faded"}:
+            raise ValidationError("rumor decay status must be active/faded")
+        if payload.get("effective_at"):
+            try:
+                to_epoch(payload.get("effective_at"))
+            except Exception as exc:
+                raise ValidationError("invalid rumor decay effective_at") from exc
+        if payload.get("elapsed_hours") is not None:
+            try:
+                if float(payload.get("elapsed_hours")) < 0:
+                    raise ValidationError("rumor elapsed_hours must be non-negative")
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("rumor elapsed_hours must be numeric") from exc
     elif op_type == "SOCIAL_RECORD_RUMOR_EXPOSURE":
         _require(payload, "rumor_id", "entity_id")
     elif op_type == "SOCIAL_RECORD_REQUEST":

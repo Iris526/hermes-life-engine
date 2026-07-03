@@ -92,6 +92,7 @@ GATE_SPECS: dict[str, GateSpec] = {
     # "recurring_activities"; the runtime read falls back to that key.
     "venture": GateSpec("mode", "auto", "runtime.py _materialize_recurring / _settle_supply_chain / _roll_opportunities", _GATE_ONOFF),
     "campaigns": GateSpec("mode", "auto", "runtime.py _run_campaigns_for_tick", _GATE_ONOFF),
+    "world_evolution": GateSpec("mode", "auto", "runtime.py _run_world_evolution_for_tick", _GATE_ONOFF),
     # --- reply / autonomy / proactive -------------------------------------
     "reply_gate": GateSpec("mode", "advisory", "reply_gate.py / runtime.py assess_incoming_message", _GATE_ONOFF + ("advisory", "strict")),
     "autonomy": GateSpec("mode", "full", "autonomy.py / runtime.py _run_autonomy_for_tick", _GATE_ONOFF + ("full", "low_spontaneity")),

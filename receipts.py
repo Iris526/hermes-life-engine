@@ -207,6 +207,37 @@ def _fact_text_for(op_type: str, payload: dict[str, Any], result: Any) -> tuple[
         return "mood", f"心情 {sign}{d}: {payload.get('reason') or ''}".strip(), {
             "delta": d, "value_after": res.get("value_after"), "trigger": payload.get("trigger"), "source": payload.get("source"),
         }
+    if op_type == "WORLD_UPSERT_CONDITION":
+        res = result if isinstance(result, dict) else {}
+        return "world_condition", f"world condition {payload.get('key')} status={payload.get('status', res.get('status', 'active'))}", {
+            "condition_id": res.get("id"),
+            "key": payload.get("key"),
+            "status": payload.get("status", res.get("status")),
+            "source": payload.get("source"),
+        }
+    if op_type == "SOCIAL_REPUTATION_EVENT":
+        res = result if isinstance(result, dict) else {}
+        account = res.get("account") if isinstance(res.get("account"), dict) else {}
+        event = res.get("event") if isinstance(res.get("event"), dict) else {}
+        return "social_reputation", f"reputation {payload.get('axis')} delta={payload.get('delta')} reason={payload.get('reason','')}", {
+            "reputation_event_id": event.get("id"),
+            "reputation_account_id": account.get("id"),
+            "subject_entity_id": payload.get("subject_entity_id"),
+            "audience_entity_id": payload.get("audience_entity_id"),
+            "axis": payload.get("axis"),
+            "delta": payload.get("delta"),
+            "source": payload.get("source"),
+        }
+    if op_type == "SOCIAL_RUMOR_DECAY":
+        res = result if isinstance(result, dict) else {}
+        rumor = res.get("rumor") if isinstance(res.get("rumor"), dict) else {}
+        return "social_rumor", f"rumor {payload.get('rumor_id')} heat {payload.get('previous_heat')}->{payload.get('heat')} status={payload.get('status','active')}", {
+            "rumor_id": payload.get("rumor_id"),
+            "heat": rumor.get("heat", payload.get("heat")),
+            "status": rumor.get("status", payload.get("status")),
+            "effective_at": payload.get("effective_at"),
+            "source": payload.get("source"),
+        }
     return "op", f"{op_type} {payload}", {}
 
 
