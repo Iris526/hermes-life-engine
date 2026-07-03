@@ -29,6 +29,7 @@ from .time_utils import now_iso, parse_datetime
 from .trace import append_journal, new_id
 
 _TERMINAL = {"resolved", "cancelled"}
+DEFAULT_AUTOSEED_IDLE_DAYS = 7
 
 # JSON schema for LifeAuthor to seed a campaign blueprint (kind="campaign_seed").
 _EVENT_SCHEMA: dict[str, Any] = {
@@ -107,6 +108,93 @@ def _decode(row) -> dict[str, Any]:
     d["phases"] = loads(d.get("phases_json"), [])
     d["theme"] = loads(d.get("theme_json"), {})
     return d
+
+
+def autoseed_idle_days(canon: dict[str, Any] | None, *, default: int = DEFAULT_AUTOSEED_IDLE_DAYS) -> int:
+    """读取 campaign 自动开新弧的空窗天数配置。
+
+    输入是当前 active Canon 数据；输出是正整数天数，作用域只限 heartbeat
+    campaign auto-seed 判定。调用方是事务外 authoring 预备层和事务内 campaign
+    runner。副作用为零；配置缺失、类型不合法或小于 1 时回退到默认值，避免错误
+    Canon 让 heartbeat 进入快速重复开弧。
+    """
+    try:
+        raw = (((canon or {}).get("campaigns") or {}) if isinstance(canon, dict) else {}).get("autoseed_idle_days")
+        days = int(raw if raw is not None else default)
+        return max(1, days)
+    except Exception:
+        return max(1, int(default or DEFAULT_AUTOSEED_IDLE_DAYS))
+
+
+def latest_campaign_activity_at(conn, owner_kind: str, owner_id: str) -> str | None:
+    """返回当前 owner 最近一次 campaign 创建、更新或解决时间。
+
+    输入是 owner 标识；输出是 campaign 表中 `created_at`、`updated_at`、
+    `resolved_at` 三类时间戳的最大值，或从未有 campaign 时返回 `None`。调用方是
+    auto-seed idle 判定；副作用为零。三列用 UNION 展平后取 MAX，避免某列为 NULL
+    时 SQLite 标量 max 的空值语义影响幂等判断。
+    """
+    row = conn.execute(
+        """SELECT MAX(ts) AS ts FROM (
+             SELECT created_at AS ts FROM campaigns WHERE owner_kind=? AND owner_id=? AND created_at IS NOT NULL
+             UNION ALL
+             SELECT updated_at AS ts FROM campaigns WHERE owner_kind=? AND owner_id=? AND updated_at IS NOT NULL
+             UNION ALL
+             SELECT resolved_at AS ts FROM campaigns WHERE owner_kind=? AND owner_id=? AND resolved_at IS NOT NULL
+           )""",
+        (owner_kind, owner_id, owner_kind, owner_id, owner_kind, owner_id),
+    ).fetchone()
+    if not row or not row["ts"]:
+        return None
+    return str(row["ts"])
+
+
+def autoseed_eligibility(conn, owner_kind: str, owner_id: str, control: dict[str, Any] | None, *,
+                         now: str | None, idle_days: int) -> dict[str, Any]:
+    """判断 heartbeat 是否允许自动 seed 一个新的 campaign。
+
+    输入是当前 owner、控制门、逻辑时间和 idle 天数；输出包含 `eligible`、`reason`
+    以及最近 campaign 时间。调用方在事务外预生成前和事务内创建前各调用一次，保证
+    模型输出不会绕过最新数据库状态。副作用为零；任何时间解析或读取异常都保守返回
+    `eligible=False`，让失败路径保持沉默并避免重复开弧。
+    """
+    try:
+        if owner_kind != "agent":
+            return {"eligible": False, "reason": "non_agent_owner"}
+        gates = (control or {}).get("module_gates") or {}
+        mode = str(gates.get("campaigns", "auto") or "auto").strip().lower()
+        if mode in {"off", "disabled", "false"}:
+            return {"eligible": False, "reason": f"gate={mode}"}
+        active = conn.execute(
+            "SELECT id FROM campaigns WHERE owner_kind=? AND owner_id=? AND status='active' LIMIT 1",
+            (owner_kind, owner_id),
+        ).fetchone()
+        if active:
+            return {"eligible": False, "reason": "active_campaign", "campaign_id": active["id"]}
+        last_at = latest_campaign_activity_at(conn, owner_kind, owner_id)
+        if not last_at:
+            return {"eligible": True, "reason": "never_had_campaign", "last_campaign_at": None}
+        now_dt = parse_datetime(now or now_iso())
+        last_dt = parse_datetime(last_at)
+        if now_dt is None or last_dt is None:
+            return {"eligible": False, "reason": "unparseable_time", "last_campaign_at": last_at}
+        elapsed_seconds = (now_dt - last_dt).total_seconds()
+        required_seconds = max(1, int(idle_days)) * 86400
+        if elapsed_seconds < required_seconds:
+            return {
+                "eligible": False,
+                "reason": "campaign_recent",
+                "last_campaign_at": last_at,
+                "idle_days": max(1, int(idle_days)),
+            }
+        return {
+            "eligible": True,
+            "reason": "idle_window_elapsed",
+            "last_campaign_at": last_at,
+            "idle_days": max(1, int(idle_days)),
+        }
+    except Exception:
+        return {"eligible": False, "reason": "autoseed_check_failed"}
 
 
 def create_campaign(conn, owner_kind: str, owner_id: str, *, title: str, phases: list[dict[str, Any]],

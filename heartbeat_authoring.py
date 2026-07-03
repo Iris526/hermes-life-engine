@@ -10,9 +10,11 @@ from __future__ import annotations
 from typing import Any
 
 from . import autonomy
+from . import campaigns
 from . import companion
 from . import dream
 from . import execution
+from . import life_author
 from . import opinions
 from . import proactive
 from . import social_projector
@@ -57,6 +59,156 @@ def _authoring_now_grounding(conn, owner_kind: str, owner_id: str, *,
         return {}
 
 
+def owner_authoring_pack_key(owner_kind: str, owner_id: str) -> str:
+    """生成 heartbeat authoring 包里的 owner 级键。
+
+    输入是 owner_kind/owner_id；输出只在本次内存包中使用的稳定字符串。调用方是
+    campaign auto-seed 的事务外写入和事务内读取；副作用为零。用双字段拼接而不是只
+    用 owner_id，避免未来多 owner 类型共用同一 authoring 包时发生键碰撞。
+    """
+    return f"{owner_kind}:{owner_id}"
+
+
+def _top_active_goals_for_campaign_brief(conn, owner_kind: str, owner_id: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    """读取自动开 campaign brief 所需的高优先级 active goals。
+
+    输入是 owner 和数量上限；输出是精简后的 goal 列表，作用域只限本次
+    `campaign_seed` LifeAuthor context。调用方是事务外 authoring 预备层；副作用为零。
+    读取失败时返回空列表，让无 goal/旧库路径仍可静默降级。
+    """
+    try:
+        rows = conn.execute(
+            """SELECT id, title, description, goal_type, priority, progress, target_date
+                 FROM goals
+                WHERE owner_kind=? AND owner_id=? AND status='active'
+                ORDER BY priority DESC, updated_at DESC
+                LIMIT ?""",
+            (owner_kind, owner_id, int(limit)),
+        ).fetchall()
+        return [
+            {
+                "id": str(r["id"]),
+                "title": str(r["title"] or ""),
+                "description": r["description"],
+                "goal_type": r["goal_type"],
+                "priority": int(r["priority"] or 0),
+                "progress": float(r["progress"] or 0),
+                "target_date": r["target_date"],
+            }
+            for r in rows
+        ]
+    except Exception:
+        return []
+
+
+def _campaign_autoseed_brief(conn, owner_kind: str, owner_id: str, *, now: str,
+                             idle_days: int, eligibility: dict[str, Any]) -> str:
+    """把显著观点和高优先级目标压成 campaign seed brief。
+
+    输入是当前 owner、逻辑时间、idle 配置和前置判定结果；输出是一段给
+    `life_author.author(kind="campaign_seed")` 的自然语言 brief。调用方是事务外
+    heartbeat authoring；副作用只读 opinions/goals。没有任何显著看法和 active goal
+    时返回空字符串，避免模型在无生活信号时凭空编资料片。brief 只陈述她已有的看法
+    和目标，不硬编码人物名、主题或剧情，具体资料片内容交给宿主模型生成。
+    """
+    salient = []
+    try:
+        salient = opinions.salient_opinions(conn, owner_id, limit=6)
+    except Exception:
+        salient = []
+    goals = _top_active_goals_for_campaign_brief(conn, owner_kind, owner_id, limit=5)
+    if not salient and not goals:
+        return ""
+    lines = [
+        f"当前时间：{now}",
+        f"已经没有正在推进的资料片；最近一次资料片活动：{eligibility.get('last_campaign_at') or '从未有过'}。",
+        f"如果要自发开始一条新的多日生活弧，请至少避开过去 {max(1, int(idle_days))} 天内刚结束或刚创建过资料片的重复感。",
+        "请从下面这些已有看法和目标里找由头，不必逐条覆盖，也不要编造系统语境。",
+        "显著看法：",
+    ]
+    if salient:
+        for op in salient:
+            target = str(op.get("target") or "").strip()
+            if not target:
+                continue
+            strength = round(float(op.get("strength") or 0), 2)
+            confidence = round(float(op.get("confidence") or 0), 2)
+            reason = str(op.get("reason") or "").strip()
+            suffix = f"；原因：{reason}" if reason else ""
+            lines.append(f"- 对「{target}」：{op.get('opinion_type') or '看法'}，强度 {strength}，信心 {confidence}{suffix}")
+    else:
+        lines.append("- 暂无显著看法。")
+    lines.append("高优先级目标：")
+    if goals:
+        for goal in goals:
+            desc = str(goal.get("description") or "").strip()
+            desc_part = f"；说明：{desc}" if desc else ""
+            lines.append(
+                f"- {goal.get('title')}（类型 {goal.get('goal_type')}，优先级 {goal.get('priority')}，"
+                f"进度 {goal.get('progress')}%{desc_part}）"
+            )
+    else:
+        lines.append("- 暂无 active goal。")
+    return "\n".join(lines)
+
+
+def _campaign_seed_instructions() -> str:
+    """返回 heartbeat auto-seed 复用的 campaign_seed 输出契约说明。
+
+    调用方是事务外 auto-seed authoring；输出与 manual `campaign(action="seed")`
+    使用同一类 `campaign_seed` schema。副作用为零。说明只定义资料片结构，不写入
+    任何具体主题，确保资料片内容仍来自模型和她的生活数据。
+    """
+    return (
+        "给你自己张罗一件最近想做的大事，铺成一条跨越若干天的弧。"
+        "分几个阶段（预兆/铺垫→升温→高潮→收尾），越往后越密、越要紧。"
+        "每个阶段给 title、duration_days、daily_spawns（每天铺几件相关小事）、"
+        "spawn_template（每天那类事的模板：title/event_type/importance/duration_minutes）、"
+        "可选 one_time_events（这个阶段的关键节点事件）。输出 title、description、importance、phases。"
+        "全部关于*生活*，自洽，别提任何系统/工程词。"
+    )
+
+
+def _prepare_campaign_autoseed_authoring(conn, owner_kind: str, owner_id: str, control: dict[str, Any], *,
+                                         now: str, trace_id: str | None) -> dict[str, Any] | None:
+    """在写事务外预生成 heartbeat 自动开 campaign 的 blueprint。
+
+    输入是当前 owner/control/逻辑时间；输出是 `{blueprint, brief, idle_days, eligibility}`
+    或 `None`。调用方是 `prepare_heartbeat_authoring`，事务内 runner 只消费这个
+    blueprint，不再访问宿主模型。副作用仅限 LifeAuthor 自身审计；无 host、门控关闭、
+    已有 active campaign、idle 未到或模型异常都返回 `None`，保证 campaign 表不变。
+    """
+    try:
+        canon = get_active_canon(conn, owner_kind, owner_id)
+        idle_days = campaigns.autoseed_idle_days(canon)
+        eligibility = campaigns.autoseed_eligibility(
+            conn, owner_kind, owner_id, control, now=now, idle_days=idle_days,
+        )
+        if not eligibility.get("eligible"):
+            return None
+        brief = _campaign_autoseed_brief(
+            conn, owner_kind, owner_id, now=now, idle_days=idle_days, eligibility=eligibility,
+        )
+        if not brief.strip():
+            return None
+        parsed = life_author.author(
+            conn, owner_kind, owner_id, kind="campaign_seed",
+            instructions=_campaign_seed_instructions(),
+            context={"由头/想法": brief},
+            schema=campaigns.SEED_SCHEMA, max_tokens=1400, temperature=0.85, trace_id=trace_id,
+        )
+        if not parsed or not (parsed.get("phases") or []):
+            return None
+        return {
+            "blueprint": parsed,
+            "brief": brief,
+            "idle_days": idle_days,
+            "eligibility": eligibility,
+        }
+    except Exception:
+        return None
+
+
 def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: dict[str, Any], *,
                                 now: str, tick_id: str, trace_id: str | None,
                                 manual: bool) -> dict[str, Any]:
@@ -64,7 +216,7 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
 
     输入来自 `LifeEngineRuntime.tick()` 已创建的 tick/trace/control；输出是一个只在
     本次 tick 内有效的内存包，键包括 `autonomy_goal_step`、`reflection`、
-    `companion`、`execution_narratives_by_block_id`、`serendipity_texts_by_block_id`、
+    `companion`、`campaign_autoseeds_by_owner`、`execution_narratives_by_block_id`、`serendipity_texts_by_block_id`、
     `social_projection_rumors_by_block_id`、`venture_sale_projection_rumors_by_occurrence_id`、
     `proactive_outbox_drafts` 和 `dreams_by_sleep_plan_id`。调用方会把这些结构化结果
     传入事务内子流程消费。副作用仅限各 LifeAuthor 调用自己的审计记录；本函数不写
@@ -74,6 +226,7 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
     package: dict[str, Any] = {
         "autonomy_goal_step": None,
         "reflection": None,
+        "campaign_autoseeds_by_owner": {},
         "companion": None,
         "execution_narratives_by_block_id": {},
         "serendipity_texts_by_block_id": {},
@@ -157,6 +310,15 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
         )
     except Exception:
         package["proactive_outbox_drafts"] = {}
+
+    try:
+        campaign_seed = _prepare_campaign_autoseed_authoring(
+            conn, owner_kind, owner_id, control, now=now, trace_id=trace_id,
+        )
+        if campaign_seed:
+            package["campaign_autoseeds_by_owner"][owner_authoring_pack_key(owner_kind, owner_id)] = campaign_seed
+    except Exception:
+        package["campaign_autoseeds_by_owner"] = {}
 
     try:
         dream_mode = str(gates.get("dream", "auto") or "auto").strip().lower()

@@ -145,7 +145,7 @@ from .maintenance import (
     run_install_check,
 )
 from .heartbeat import heartbeat_installation_status, write_tick_script
-from .heartbeat_authoring import prepare_heartbeat_authoring
+from .heartbeat_authoring import owner_authoring_pack_key, prepare_heartbeat_authoring
 from .confirmations import confirmed_ops, get_confirmation, list_confirmations, mark_confirmation, propose_confirmation
 from .conversation import interaction_time_context, record_turn_interaction, temporal_grounding
 from .collections import (
@@ -408,7 +408,7 @@ _HEARTBEAT_MODULES: list[tuple[str, str, tuple[str, ...]]] = [
     ("reflection", "_run_reflection_for_tick", ("authoring",)),
     ("meals", "_settle_meals_for_tick", ()),
     ("venture", "_materialize_recurring_for_tick", ()),
-    ("campaigns", "_run_campaigns_for_tick", ()),
+    ("campaigns", "_run_campaigns_for_tick", ("authoring",)),
     ("daily_rhythm", "_ensure_daily_rhythm_for_tick", ()),
     ("venture_supply", "_settle_supply_chain_for_tick", ("authoring",)),
     ("venture_opportunities", "_roll_opportunities_for_tick", ()),
@@ -2141,13 +2141,16 @@ class LifeEngineRuntime:
             return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
     def _run_campaigns_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
-                                tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
+                                tick_id: str, trace: Trace, now: str,
+                                authoring: dict[str, Any] | None = None) -> dict[str, Any]:
         """v0.18.0 P3: materialize each active campaign (资料片) day by day — spawn
         the current phase's themed events (one-time beats on first entry +
         per-day spawns), auto-advance phases by elapsed time, escalate via the
         per-phase data, and resolve at the arc's end. Idempotent per
         (campaign, phase, day); conflict-arbitrated like venture. Gated by
-        `campaigns`."""
+        `campaigns`. 若事务外 authoring 包已预生成 auto-seed blueprint，则本函数只在
+        事务内二次确认“无 active campaign 且 idle 窗口仍成立”后创建 campaign，绝不在
+        写锁内调用 LifeAuthor。"""
         if owner_kind != "agent":
             return {"status": "skipped", "reason": "non-agent owner"}
         gates = control.get("module_gates") or {}
@@ -2159,6 +2162,50 @@ class LifeEngineRuntime:
             canon = get_active_canon(self.conn, owner_kind, owner_id)
             tz_name = _tz_from_canon(canon) or "UTC"
             out = []
+            owner_seed = ((authoring or {}).get("campaign_autoseeds_by_owner") or {}).get(
+                owner_authoring_pack_key(owner_kind, owner_id)
+            )
+            if isinstance(owner_seed, dict):
+                blueprint = owner_seed.get("blueprint")
+                if isinstance(blueprint, dict) and (blueprint.get("phases") or []):
+                    try:
+                        idle_days = int(owner_seed.get("idle_days") or _campaigns.autoseed_idle_days(canon))
+                    except Exception:
+                        idle_days = _campaigns.autoseed_idle_days(canon)
+                    eligibility = _campaigns.autoseed_eligibility(
+                        self.conn, owner_kind, owner_id, control, now=now, idle_days=idle_days,
+                    )
+                    if eligibility.get("eligible"):
+                        try:
+                            with savepoint(self.conn, f"campaign_autoseed_{tick_id}"):
+                                camp = _campaigns.create_campaign(
+                                    self.conn, owner_kind, owner_id,
+                                    title=str(blueprint.get("title") or "近来想做的一件大事"),
+                                    phases=blueprint["phases"],
+                                    description=blueprint.get("description"),
+                                    theme={"seed_brief": owner_seed.get("brief", "")},
+                                    importance=int(blueprint.get("importance", 60)),
+                                    timezone=tz_name,
+                                    start_date=None,
+                                    now=now,
+                                    source="campaign_seed",
+                                )
+                                append_journal(
+                                    self.conn, owner_kind, owner_id, "campaign_auto_seeded",
+                                    {
+                                        "campaign_id": camp.get("id"),
+                                        "title": camp.get("title"),
+                                        "idle_days": max(1, int(idle_days)),
+                                        "last_campaign_at": eligibility.get("last_campaign_at"),
+                                    },
+                                    "campaign",
+                                )
+                            out.append({"campaign_id": camp.get("id"), "autoseeded": True})
+                        except Exception as seed_exc:
+                            append_audit(
+                                self.conn, owner_kind, owner_id, "campaign_autoseed_failed",
+                                "warning", str(seed_exc), {"tick_id": tick_id}, trace.id,
+                            )
             for camp in _campaigns.list_campaigns(self.conn, owner_kind, owner_id, status="active"):
                 ctz = camp.get("timezone") or tz_name
                 date_key = _campaigns._local_date_key(now, ctz)
