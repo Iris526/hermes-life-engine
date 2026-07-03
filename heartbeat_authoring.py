@@ -12,6 +12,7 @@ from typing import Any
 from . import autonomy
 from . import companion
 from . import dream
+from . import execution
 from . import opinions
 from . import proactive
 from .events import due_wake_jobs
@@ -24,15 +25,17 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
 
     输入来自 `LifeEngineRuntime.tick()` 已创建的 tick/trace/control；输出是一个只在
     本次 tick 内有效的内存包，键包括 `autonomy_goal_step`、`reflection`、
-    `companion`、`proactive_outbox_drafts` 和 `dreams_by_sleep_plan_id`。调用方会把
-    这些结构化结果传入事务内子流程消费。副作用仅限各 LifeAuthor 调用自己的审计
-    记录；本函数不写生活事实、不 claim wake job、不创建 event/outbox/opinion/dream。
-    失败逐项降级为空包，保证 heartbeat 仍可用确定性模板继续执行。
+    `companion`、`execution_narratives_by_block_id`、`proactive_outbox_drafts` 和
+    `dreams_by_sleep_plan_id`。调用方会把这些结构化结果传入事务内子流程消费。
+    副作用仅限各 LifeAuthor 调用自己的审计记录；本函数不写生活事实、不 claim wake
+    job、不创建 event/outbox/opinion/dream。失败逐项降级为空包，保证 heartbeat 仍可用
+    确定性模板继续执行。
     """
     package: dict[str, Any] = {
         "autonomy_goal_step": None,
         "reflection": None,
         "companion": None,
+        "execution_narratives_by_block_id": {},
         "dreams_by_sleep_plan_id": {},
         "proactive_outbox_drafts": {},
     }
@@ -65,6 +68,13 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
         )
     except Exception:
         package["companion"] = None
+
+    try:
+        package["execution_narratives_by_block_id"] = execution.prepare_execution_completion_authoring_for_tick(
+            conn, owner_kind, owner_id, now=now, trace_id=trace_id,
+        )
+    except Exception:
+        package["execution_narratives_by_block_id"] = {}
 
     try:
         package["proactive_outbox_drafts"] = proactive.prepare_auto_send_outbox_authoring(

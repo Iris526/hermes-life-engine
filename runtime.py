@@ -112,6 +112,7 @@ from .execution import (
     list_execution_decisions,
     list_execution_sleep_adjustments,
     list_serendipity_events,
+    prepare_execution_completion_authoring_for_block,
     simulate_schedule_block_execution,
     update_execution_decision_result,
 )
@@ -1432,6 +1433,9 @@ class LifeEngineRuntime:
                 truth_refresh = self._refresh_truth_sources_for_heartbeat(owner_kind, owner_id, trace.id)
                 reaped = reap_stuck_wake_jobs(self.conn, owner_kind, owner_id)
                 completed: list[dict[str, Any]] = []
+                execution_narratives = (authoring or {}).get("execution_narratives_by_block_id") or {}
+                if not isinstance(execution_narratives, dict):
+                    execution_narratives = {}
                 jobs = due_wake_jobs(self.conn, owner_kind, owner_id, now)
                 processed: list[dict[str, Any]] = []
                 with trace.span("due_wake_jobs", {"count": len(jobs)}):
@@ -1478,6 +1482,8 @@ class LifeEngineRuntime:
                                         decision = simulate_schedule_block_execution(
                                             self.conn, owner_kind, owner_id, control, tick_id=tick_id, trace_id=trace.id,
                                             wake_job_id=job["id"], block=block, now=now, manual=manual,
+                                            completion_authoring=execution_narratives.get(str(block.get("id") or "")),
+                                            allow_authoring=False,
                                         )
                                     ops = decision.get("proposed_ops") or []
                                     commit = None
@@ -1523,6 +1529,8 @@ class LifeEngineRuntime:
                             decision = simulate_schedule_block_execution(
                                 self.conn, owner_kind, owner_id, control, tick_id=tick_id, trace_id=trace.id,
                                 wake_job_id=None, block=block, now=now, manual=manual,
+                                completion_authoring=execution_narratives.get(str(block.get("id") or "")),
+                                allow_authoring=False,
                             )
                         ops = decision.get("proposed_ops") or []
                         commit = None
@@ -2843,6 +2851,30 @@ class LifeEngineRuntime:
             with transaction(self.conn):
                 return {"ok": True, "sleep_adjustments": list_execution_sleep_adjustments(self.conn, owner_kind, owner_id, int(payload.get("limit", 20)))}
         if action in {"run", "simulate", "execute"}:
+            completion_authoring = None
+            authoring_block_id = None
+            if bool(payload.get("allow_authoring", True)):
+                try:
+                    requested_block_id = payload.get("schedule_block_id") or payload.get("block_id")
+                    if requested_block_id:
+                        authoring_block_row = self.conn.execute(
+                            "SELECT * FROM schedule_blocks WHERE id=? AND owner_kind=? AND owner_id=?",
+                            (requested_block_id, owner_kind, owner_id),
+                        ).fetchone()
+                    else:
+                        authoring_block_row = self.conn.execute(
+                            """SELECT * FROM schedule_blocks WHERE owner_kind=? AND owner_id=? AND status IN ('planned','locked','ready','in_progress')
+                                 ORDER BY COALESCE(end_ts,start_ts,unixepoch(created_at)) ASC LIMIT 1""",
+                            (owner_kind, owner_id),
+                        ).fetchone()
+                    authoring_block = dict(authoring_block_row) if authoring_block_row else None
+                    authoring_block_id = str((authoring_block or {}).get("id") or "") or None
+                    completion_authoring = prepare_execution_completion_authoring_for_block(
+                        self.conn, owner_kind, owner_id, authoring_block,
+                    )
+                except Exception:
+                    completion_authoring = None
+                    authoring_block_id = None
             with transaction(self.conn):
                 control = ensure_control(self.conn, owner_kind, owner_id)
                 trace = Trace(self.conn, owner_kind, owner_id, "execution", session_id=session_id, turn_id=turn_id,
@@ -2862,9 +2894,12 @@ class LifeEngineRuntime:
                         trace.end(status="blocked", output_obj={"reason": "no schedule block"})
                         return {"ok": False, "error": "schedule block not found"}
                     block = dict(block_row)
+                    block_completion_authoring = completion_authoring if authoring_block_id == str(block.get("id") or "") else None
                     decision = simulate_schedule_block_execution(
                         self.conn, owner_kind, owner_id, control, tick_id=payload.get("tick_id"), trace_id=trace.id,
                         wake_job_id=payload.get("wake_job_id"), block=block, now=payload.get("now"), manual=True,
+                        completion_authoring=block_completion_authoring,
+                        allow_authoring=False,
                     )
                     ops = decision.get("proposed_ops") or []
                     commit = None

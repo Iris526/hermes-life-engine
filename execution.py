@@ -11,7 +11,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .events import get_event, create_event
+from . import life_author
+from .events import get_event, create_event, due_schedule_blocks, due_wake_jobs
 from .jsonutil import dumps, loads
 from .lifecycle import event_transition_allowed
 from .time_utils import normalized_iso, parse_datetime
@@ -23,6 +24,22 @@ BAD_WEATHER_WORDS = {"rain", "light_rain", "heavy_rain", "storm", "snow", "typho
 SLEEP_SENSITIVE_TYPES = {"work", "study", "creative", "fitness", "health", "purchase", "travel", "social", "maintenance", "fieldwork", "repair_task"}
 SLEEP_EXEMPT_TYPES = {"sleep", "core_sleep", "nap", "recovery_sleep", "dream", "meal", "reflection", "serendipity", "rest"}
 BODY_RESOURCE_CLASSES = {"vital", "capacity"}
+
+_EXECUTION_NARRATIVE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "narrative": {
+            "type": "string",
+            "description": "一句写入事件完成结果的自然叙事摘要。",
+        },
+        "memory": {
+            "type": "string",
+            "description": "一句写入 episodic memory 的已完成生活记忆。",
+        },
+    },
+    "required": ["narrative", "memory"],
+}
 
 
 def _row_dict(row) -> dict[str, Any] | None:
@@ -505,6 +522,278 @@ def _serendipity_for(event: dict[str, Any], decision_type: str) -> dict[str, Any
     }
 
 
+def _completion_result_fallback(title: Any) -> str:
+    """返回执行完成结果的历史确定性模板。
+
+    输入是事件标题，输出逐字兼容旧版 `COMPLETE_EVENT.summary` 的字符串。调用方是
+    执行模拟 completed 分支；无副作用。这个函数存在的维护约束是 no-host、
+    LifeAuthor 返回空或事务外 authoring 失败时，必须保持旧结果摘要 byte-identical。
+    """
+    return f"执行完成：{title}"
+
+
+def _completion_memory_fallback(title: Any) -> str:
+    """返回执行完成记忆的历史确定性模板。
+
+    输入是事件标题，输出逐字兼容旧版 `CREATE_MEMORY.content` 的字符串。调用方是
+    执行模拟 completed 分支；无副作用。这个函数和 `_completion_result_fallback`
+    一起保证无宿主模型的开发/CI 路径不改变任何人类可见文本。
+    """
+    return f"完成了『{title}』。"
+
+
+def _clean_authored_completion_field(value: Any) -> str | None:
+    """规整 LifeAuthor 返回的单行完成文本。
+
+    输入是模型 parsed JSON 中的某个字段；输出是去除首尾空白后的非空字符串，或
+    `None`。调用方是执行完成 authoring 消费层。副作用为零；字段为空时调用方会
+    逐字段回落到旧模板，不让半成品覆盖确定性 fallback。
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _authored_completion_texts(authored: dict[str, Any] | None, title: Any) -> dict[str, str]:
+    """把事务外 authoring 包转换为最终 result/memory 文本。
+
+    输入是 `{narrative, memory}` 的短期内存包和事件标题；输出总是包含
+    `narrative`、`memory` 两个字符串。调用方是 `simulate_schedule_block_execution`
+    的 completed 分支。无副作用；每个字段单独降级，保证 LifeAuthor 缺字段、空字段
+    或完全缺席时仍逐字使用旧模板。
+    """
+    authored = authored if isinstance(authored, dict) else {}
+    narrative = _clean_authored_completion_field(authored.get("narrative"))
+    memory = _clean_authored_completion_field(authored.get("memory"))
+    return {
+        "narrative": narrative or _completion_result_fallback(title),
+        "memory": memory or _completion_memory_fallback(title),
+    }
+
+
+def _completion_authoring_context(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    block: dict[str, Any],
+) -> dict[str, Any] | None:
+    """收集某个 schedule block 是否会进入 completed 分支的只读上下文。
+
+    输入是 owner 与一个 schedule block；输出是给 LifeAuthor 的 compact context，
+    或在该 block 当前不会自然完成时返回 `None`。调用方是 heartbeat/manual 的
+    事务外 authoring 准备层。副作用限定为 SELECT：读取 event、资源余额、天气、
+    睡眠压力和依赖状态；不记录 execution_decision、不创建 LifeOps、不结算资源。
+    """
+    event_id = block.get("event_id")
+    if not event_id:
+        return None
+    event = get_event(conn, str(event_id))
+    if event.get("status") in TERMINAL_EVENT_STATUSES:
+        return None
+
+    resource_costs = event.get("resource_costs") or {}
+    shortages = _resource_shortages(conn, owner_kind, owner_id, resource_costs)
+    unmet_dependencies = _dependencies_unmet(conn, owner_kind, owner_id, str(event_id))
+    weather = _latest_weather(conn, owner_kind, owner_id)
+    bad_weather = _weather_is_bad(weather)
+    sleep_ctx = _latest_sleep_execution_context(conn, owner_kind, owner_id)
+    event_type = str(event.get("event_type") or "other")
+    importance = int(event.get("importance") or 50)
+
+    if unmet_dependencies:
+        return None
+    if _sleep_adjusted_ops(event, block, sleep_ctx, importance, postpone_ops_fn=lambda *_args, **_kwargs: []):
+        return None
+    if bad_weather and event_type in OUTDOOR_EVENT_TYPES and importance < 85:
+        return None
+
+    hard_shortages = [s for s in shortages if (s.get("resource_class") or "") not in BODY_RESOURCE_CLASSES]
+    if hard_shortages:
+        return None
+    pushed_through_vital = bool(shortages) and not hard_shortages
+    return {
+        "event": {
+            "id": event.get("id"),
+            "title": event.get("title"),
+            "event_type": event_type,
+            "importance": importance,
+            "status_before": event.get("status"),
+            "description": event.get("description"),
+            "tags": event.get("tags") or [],
+        },
+        "schedule_block": {
+            "id": block.get("id"),
+            "block_type": block.get("block_type"),
+            "start": block.get("start"),
+            "end": block.get("end"),
+            "timezone": block.get("timezone"),
+        },
+        "outcome": {
+            "decision_type": "completed",
+            "reason": "pushed through low energy" if pushed_through_vital else "resources and conditions ok",
+            "pushed_through_vital": pushed_through_vital,
+            "resource_deltas": resource_costs,
+            "shortages": shortages,
+            "weather": weather,
+            "sleep_context": {
+                "severity": sleep_ctx.get("severity"),
+                "sleep_debt_minutes": sleep_ctx.get("sleep_debt_minutes"),
+                "fatigue": sleep_ctx.get("fatigue"),
+                "focus_penalty": sleep_ctx.get("focus_penalty"),
+            },
+        },
+    }
+
+
+def _author_execution_completion(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    context: dict[str, Any],
+    *,
+    trace_id: str | None = None,
+) -> dict[str, str] | None:
+    """用 LifeAuthor 生成执行完成结果和记忆文本。
+
+    输入是 `_completion_authoring_context` 产出的只读上下文；输出是可供 completed
+    分支消费的 `{narrative, memory}`，或在无 host、门控关闭、模型失败、字段为空、
+    以及调用方误处于 SQLite 事务内时返回 `None`。调用方式是事务外 best-effort；
+    除 LifeAuthor 自身审计外不写生活事实、不触发 LifeOps、不结算资源。
+    """
+    if getattr(conn, "in_transaction", False):
+        return None
+    try:
+        parsed = life_author.author(
+            conn,
+            owner_kind,
+            owner_id,
+            kind="execution_narrative",
+            instructions=(
+                "为一个刚自然完成的日程事件写两条生活化中文文本。"
+                " narrative 是写入结果摘要的一句话；memory 是写入个人 episodic memory 的一句话。"
+                " 保持具体、像亲历后的记录，不要像系统播报；不要提 LifeEngine、调度、数据库、"
+                "tick、资源账本或执行模拟器；不要硬塞人物名或世界观设定。"
+            ),
+            context=context,
+            schema=_EXECUTION_NARRATIVE_SCHEMA,
+            max_tokens=220,
+            temperature=0.6,
+            trace_id=trace_id,
+        )
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    narrative = _clean_authored_completion_field(parsed.get("narrative"))
+    memory = _clean_authored_completion_field(parsed.get("memory"))
+    if not narrative and not memory:
+        return None
+    out: dict[str, str] = {}
+    if narrative:
+        out["narrative"] = narrative
+    if memory:
+        out["memory"] = memory
+    return out
+
+
+def prepare_execution_completion_authoring_for_block(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    block: dict[str, Any] | None,
+    *,
+    trace_id: str | None = None,
+) -> dict[str, str] | None:
+    """在写事务外为单个执行完成 block 预生成叙事文本。
+
+    输入是已选中的 schedule block；输出是 `{narrative, memory}` 或 `None`。
+    调用方包括 `life_execution run/simulate` 手动路径和 heartbeat tick 预备层。
+    失败处理是全程吞掉异常并返回 `None`，让事务内 completed 分支使用旧模板；
+    副作用只允许 LifeAuthor 审计，不会创建事件、记忆、结果、资源流水或 proposed ops。
+    """
+    if not isinstance(block, dict):
+        return None
+    try:
+        context = _completion_authoring_context(conn, owner_kind, owner_id, block)
+        if not context:
+            return None
+        return _author_execution_completion(conn, owner_kind, owner_id, context, trace_id=trace_id)
+    except Exception:
+        return None
+
+
+def _execution_authoring_blocks_for_tick(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    now: str,
+    *,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """列出 heartbeat 本轮可能完成的 schedule block。
+
+    输入是 tick 的 owner 与逻辑时间；输出按 block id 去重的只读 block 列表。调用方
+    是 heartbeat 的事务外 execution authoring 准备层。副作用只有 SELECT：读取
+    pending wake jobs 和 due schedule sweep 候选，不 claim/finish wake job，也不改
+    schedule 状态；真正执行仍由 runtime 在写事务内重新读取并提交。
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    for job in due_wake_jobs(conn, owner_kind, owner_id, now):
+        if job.get("reason") != "schedule_block_end" or not job.get("target_id"):
+            continue
+        row = conn.execute(
+            "SELECT * FROM schedule_blocks WHERE id=? AND owner_kind=? AND owner_id=?",
+            (job["target_id"], owner_kind, owner_id),
+        ).fetchone()
+        if not row:
+            continue
+        block = dict(row)
+        if block.get("block_type") == "sleep":
+            continue
+        if block.get("status") in {"planned", "locked", "ready", "in_progress"}:
+            by_id[str(block["id"])] = block
+    for block in due_schedule_blocks(conn, owner_kind, owner_id, now):
+        if block.get("block_type") == "sleep":
+            continue
+        by_id.setdefault(str(block["id"]), block)
+    return list(by_id.values())[: max(1, int(limit))]
+
+
+def prepare_execution_completion_authoring_for_tick(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    *,
+    now: str,
+    trace_id: str | None = None,
+    limit: int = 20,
+) -> dict[str, dict[str, str]]:
+    """在 heartbeat 写事务外预生成执行完成叙事包。
+
+    输入来自 `prepare_heartbeat_authoring` 的 owner、逻辑时间和 trace；输出是
+    `{block_id: {narrative, memory}}`，只在本次 tick 内使用。调用方式是同步
+    best-effort：逐个 due block 只读判断是否会自然完成，再调用 LifeAuthor 的
+    `execution_narrative` kind。无 host、模型空返回或任意异常都会跳过该 block，
+    事务内执行模拟继续使用旧的 `执行完成：{title}` / `完成了『{title}』。` 模板。
+    """
+    authored: dict[str, dict[str, str]] = {}
+    try:
+        blocks = _execution_authoring_blocks_for_tick(conn, owner_kind, owner_id, now, limit=limit)
+    except Exception:
+        return authored
+    for block in blocks:
+        block_id = str(block.get("id") or "")
+        if not block_id:
+            continue
+        item = prepare_execution_completion_authoring_for_block(
+            conn, owner_kind, owner_id, block, trace_id=trace_id,
+        )
+        if item:
+            authored[block_id] = item
+    return authored
+
+
 def simulate_schedule_block_execution(
     conn,
     owner_kind: str,
@@ -517,14 +806,19 @@ def simulate_schedule_block_execution(
     block: dict[str, Any],
     now: str | None = None,
     manual: bool = False,
+    completion_authoring: dict[str, Any] | None = None,
+    allow_authoring: bool = False,
 ) -> dict[str, Any]:
     """记录一次到点日程块的确定性执行决策。
 
     输入来自 heartbeat 找到的到期 schedule_block、当前控制状态和逻辑时间；
-    输出是一条 execution_decision 以及待提交 LifeOps。本函数只写执行审计，
-    不直接改变事件/日程/资源，调用方必须继续走 LifeOps 校验和事务提交。
-    失败时由 heartbeat 标记 wake job 或 fallback sweep 异常，避免状态机半写。
+    输出是一条 execution_decision 以及待提交 LifeOps。`completion_authoring`
+    是事务外预生成的完成叙事包；`allow_authoring` 只保留调用合同标记，本函数不会
+    访问宿主模型。本函数只写执行审计，不直接改变事件/日程/资源，调用方必须继续
+    走 LifeOps 校验和事务提交。失败时由 heartbeat 标记 wake job 或 fallback sweep
+    异常，避免状态机半写。
     """
+    _ = allow_authoring
     event_id = block.get("event_id")
     if not event_id:
         ops = [{"type": "UPDATE_SCHEDULE_BLOCK_STATUS", "payload": {"schedule_block_id": block["id"], "status": "completed", "reason": "scheduled block without event elapsed"}}]
@@ -599,12 +893,13 @@ def simulate_schedule_block_execution(
         ops = postpone_ops("资源不足", days=1, proactive=True)
         return record_execution_decision(conn, owner_kind, owner_id, tick_id=tick_id, trace_id=trace_id, wake_job_id=wake_job_id, schedule_block_id=block.get("id"), event_id=event_id, decision_type="postponed", status="proposed", reason="resource shortage", score=score, proposed_ops=ops)
 
+    authored_completion = _authored_completion_texts(completion_authoring, event.get("title"))
     ops = [
         {"type": "UPDATE_SCHEDULE_BLOCK_STATUS", "payload": {"schedule_block_id": block["id"], "status": "completed", "reason": "execution simulator completed the scheduled block"}},
-        {"type": "COMPLETE_EVENT", "payload": {"event_id": event_id, "summary": f"执行完成：{event.get('title')}", "source": "execution_simulator"}},
+        {"type": "COMPLETE_EVENT", "payload": {"event_id": event_id, "summary": authored_completion["narrative"], "source": "execution_simulator"}},
     ]
     if importance >= 50:
-        ops.append({"type": "CREATE_MEMORY", "payload": {"memory_type": "episodic", "content": f"完成了『{event.get('title')}』。", "event_id": event_id, "source": "execution_simulator", "importance": min(100, importance)}})
+        ops.append({"type": "CREATE_MEMORY", "payload": {"memory_type": "episodic", "content": authored_completion["memory"], "event_id": event_id, "source": "execution_simulator", "importance": min(100, importance)}})
     ser = _serendipity_for(event, "completed")
     if ser:
         ops.append(ser)
