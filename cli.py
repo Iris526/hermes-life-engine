@@ -303,7 +303,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_sleep.add_argument("--status")
     p_sleep.add_argument("--limit", type=int, default=20)
 
-    p_dream = sub.add_parser("dream", help="DreamRun, DreamAudit, dream entries, and wake-share intents")
+    p_dream = sub.add_parser("dream", help="DreamRun, the nightly engine check (housekeeping), dream entries, and wake-share intents")
     p_dream.add_argument("action", choices=["status", "run", "audit", "repair_plan", "repair", "repairs", "list", "runs", "entries", "findings", "get", "get_entry", "create_entry"])
     p_dream.add_argument("--dream-run-id")
     p_dream.add_argument("--dream-entry-id")
@@ -836,7 +836,7 @@ def _simple_help() -> str:
         "  /life resume         恢复运行\n"
         "  /life run            手动推进一次 heartbeat\n"
         "  /life call           紧急叫醒/打断，释放延迟回复\n"
-        "  /life dream          查看/运行 Dream 自检与梦境分享意图\n"
+        "  /life dream          查看梦境与醒后分享意图（夜间自检是引擎家务，不进梦）\n"
         "  /life policy         查看睡眠/回复/梦分享策略\n"
         "  /life review         人类可读待办/建议列表\n"
         "  /life behavior       查看/设置行为映射（内部真相源不对用户暴露）\n"

@@ -366,7 +366,7 @@ LIFE_MEALS = {
 
 LIFE_ACTIVITY = {
     "name": "life_activity",
-    "description": "Register / list / pause / resume / cancel a recurring activity (营生) — an engine-enforced occupation like running a stall to earn money. Once registered, the heartbeat materializes one scheduled event per due day automatically (not via prompt or memory), and income/cost settles when that event completes. register: give title, cadence_kind (daily|weekly, with weekdays for weekly), start_time/end_time (HH:MM local) + timezone, and resource_costs you judge for each occurrence (e.g. {\"money.lingzhu\": 30, \"energy\": -14}). cancel/pause stop future occurrences; past records are kept.",
+    "description": "Register / list / pause / resume / cancel a venture (营生) — an engine-enforced occupation like running a stall to earn money. Once registered, the heartbeat materializes one scheduled event per due day automatically (not via prompt or memory), and income/cost settles when that event completes. register: give title, cadence_kind (daily|weekly, with weekdays for weekly), start_time/end_time (HH:MM local) + timezone, and resource_costs you judge for each occurrence (e.g. {\"money.lingzhu\": 30, \"energy\": -14}). cancel/pause stop future occurrences; past records are kept.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -901,7 +901,7 @@ LIFE_REPLY = {
 
 LIFE_DREAM = {
     "name": "life_dream",
-    "description": "DreamRun / DreamAudit / DreamEntry. Use after sleep wakes to audit LifeEngine state flow/resource settlement, consolidate recent memory into a dream_symbolic entry, and optionally create a shareable proactive intent. Dreams are symbolic and must not be treated as real-world facts.",
+    "description": "DreamRun / nightly engine check / DreamEntry. On wake the engine runs a nightly housekeeping check (stale schedule / resource settlement) that stays internal, then consolidates recent memory into a dream_symbolic entry and optionally a shareable proactive intent. Dreams are symbolic and must not be treated as real-world facts; the housekeeping check never appears in the dream.",
     "parameters": {
         "type": "object",
         "properties": {
