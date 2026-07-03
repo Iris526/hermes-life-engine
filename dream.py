@@ -326,7 +326,7 @@ def _author_dream(conn, owner_kind: str, owner_id: str, ctx: dict[str, Any],
     # v0.18.0 P2: a few things the user shared about THEIR life can surface in
     # the dream too — the mutual-companionship setting cuts both ways.
     try:
-        user_notes = [str(n.get("content") or "")[:120] for n in rel.recent_salient_notes(conn, owner_id, limit=2) if str(n.get("content") or "").strip()]
+        user_notes = [str(n.get("content") or "")[:120] for n in rel.recent_salient_notes(conn, owner_id, rel.resolve_primary_user(conn, owner_id), limit=2) if str(n.get("content") or "").strip()]
     except Exception:
         user_notes = []
     try:

@@ -2947,7 +2947,9 @@ class LifeEngineRuntime:
         companion loop and dreams draw on these."""
         from . import relationship as rel
         action_l = str(action or "list").strip().lower()
-        user_id = str(payload.get("user_id") or "anonymous-user")
+        # Single identity for record + list + due, so notes don't land under one
+        # user_id and get read back under another (the audit's user_id split).
+        user_id = rel.resolve_primary_user(self.conn, owner_id, explicit=payload.get("user_id"))
         if action_l in {"record", "remember", "note"}:
             with transaction(self.conn):
                 note = rel.record_relationship_note(
@@ -5126,7 +5128,7 @@ class LifeEngineRuntime:
             pass
         try:
             from . import relationship as _relationship
-            due = _relationship.notes_due_for_followup(self.conn, owner_id, None, limit=1)
+            due = _relationship.notes_due_for_followup(self.conn, owner_id, _relationship.resolve_primary_user(self.conn, owner_id), limit=1)
             if due:
                 cap["meant_to_ask_you_about"] = str(due[0].get("content") or "")[:160]
         except Exception:

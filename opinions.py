@@ -156,7 +156,7 @@ def _reflection_context(conn, agent_id: str) -> dict[str, Any]:
         "SELECT content FROM memories WHERE owner_kind='agent' AND owner_id=? "
         "AND COALESCE(memory_type,'') NOT IN ('system_log','debug_trace','audit','system','self_narrative') "
         "ORDER BY created_at DESC LIMIT 8", (agent_id,)).fetchall() if r[0]]
-    notes = [n.get("content") for n in rel.recent_salient_notes(conn, agent_id, limit=3) if n.get("content")]
+    notes = [n.get("content") for n in rel.recent_salient_notes(conn, agent_id, rel.resolve_primary_user(conn, agent_id), limit=3) if n.get("content")]
     band = emotion.mood_band(emotion.current_mood(conn, "agent", agent_id))
     return {
         "你最近做过/经历的事": events,

@@ -56,7 +56,7 @@ _DEFAULT_POLICY: dict[str, Any] = {
     "enabled": True,
     "idle_max_per_day": 3,
     "min_minutes_between": 180,
-    "default_user_id": "anonymous-user",
+    "default_user_id": None,
     "timezone": "Asia/Shanghai",
 }
 
@@ -196,14 +196,10 @@ def _policy(conn, agent_id: str) -> dict[str, Any]:
     data = loads(row["data_json"], {}) if row else {}
     companion_policy = (data.get("companion") or {}) if isinstance(data, dict) else {}
     merged = {**_DEFAULT_POLICY, **companion_policy}
-    # If the companion layer does not name its own target user, inherit the
-    # proactive delivery target. Otherwise idle messages can be authored for
-    # anonymous-user, missing real relationship follow-ups and creating a
-    # separate cooldown/pending queue from the actual QQ recipient.
-    if not companion_policy.get("default_user_id") and isinstance(data, dict):
-        proactive_target = (data.get("proactive") or {}).get("default_target_user_id")
-        if proactive_target:
-            merged["default_user_id"] = proactive_target
+    # The target user is resolved centrally by relationship.resolve_primary_user
+    # (canon proactive.default_target_user_id) at the point of use, so the whole
+    # loop — record / companion / dream / reflection — agrees on one id. A canon
+    # companion.default_user_id still overrides if explicitly set.
     if not companion_policy.get("timezone") and isinstance(data, dict):
         proactive_policy = data.get("proactive") or {}
         quiet = proactive_policy.get("quiet_hours") or {}
@@ -348,7 +344,7 @@ def _candidate(conn, agent_id: str, *, control: dict[str, Any] | None = None,
     pol = _policy(conn, agent_id)
     if not pol.get("enabled", True):
         return None
-    user_id = user_id or str(pol.get("default_user_id") or "anonymous-user")
+    user_id = user_id or pol.get("default_user_id") or rel.resolve_primary_user(conn, agent_id)
     if _recent_user_bedtime_signal(conn, agent_id, user_id):
         return None
     if _has_pending_idle(conn, agent_id, user_id):

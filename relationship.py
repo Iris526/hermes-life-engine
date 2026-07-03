@@ -22,6 +22,34 @@ from .trace import append_journal, new_id
 DEFAULT_USER_ID = "anonymous-user"
 
 
+def resolve_primary_user(conn, agent_id: str, explicit: str | None = None) -> str:
+    """The single canonical user_id for the relationship / companion / dream loop.
+
+    The producer (life_relationship) and every consumer — companion idle outreach,
+    dreams, reflection/opinions, and the tick follow-up scan — must agree on WHICH
+    user the notes belong to, or "你讲生活→她入梦/回访" silently reads empty (a note
+    recorded under one id, looked up under another). This was the audit's critical
+    user_id split: the producer defaulted to ``anonymous-user`` while companion
+    resolved to canon ``proactive.default_target_user_id`` — so once a real target
+    is configured in production the loop breaks. All four sides now resolve here.
+
+    The canonical id is canon ``proactive.default_target_user_id`` (the configured
+    recipient); an explicit id (a real multi-user sender) always wins; otherwise
+    ``DEFAULT_USER_ID``.
+    """
+    if explicit:
+        return str(explicit)
+    try:
+        from .canon import get_active_canon
+        canon = get_active_canon(conn, "agent", agent_id) or {}
+        target = (canon.get("proactive") or {}).get("default_target_user_id")
+        if target:
+            return str(target)
+    except Exception:
+        pass
+    return DEFAULT_USER_ID
+
+
 def _now_epoch(now: str | None = None) -> int:
     return int(to_epoch(now or now_iso()))
 
