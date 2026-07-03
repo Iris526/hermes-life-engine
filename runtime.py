@@ -81,7 +81,7 @@ from .dream import (
     list_dream_repair_runs,
     list_dream_runs,
     record_dream_repair_run,
-    run_dream_audit,
+    run_nightly_check,
     run_dream_cycle,
     set_dream_repair_policy,
 )
@@ -1170,7 +1170,7 @@ class LifeEngineRuntime:
                 return {"ok": True, "runs": list_dream_runs(self.conn, owner_kind, owner_id, status=payload.get("status"), limit=int(payload.get("limit", 20)))}
             if action in {"entries", "dreams"}:
                 return {"ok": True, "entries": list_dream_entries(self.conn, owner_kind, owner_id, dream_run_id=payload.get("dream_run_id"), limit=int(payload.get("limit", 20)))}
-            if action in {"findings", "audit_findings"}:
+            if action in {"findings", "nightly_check_findings", "audit_findings"}:
                 return {"ok": True, "findings": list_dream_findings(self.conn, owner_kind, owner_id, dream_run_id=payload.get("dream_run_id"), severity=payload.get("severity"), limit=int(payload.get("limit", 50)))}
             if action in {"get", "get_run"}:
                 return {"ok": True, "dream_run": get_dream_run(self.conn, payload["dream_run_id"])}
@@ -1186,16 +1186,16 @@ class LifeEngineRuntime:
                 op_payload = dict(payload)
                 op_payload.setdefault("source", "life_dream_tool")
                 return self._commit_ops_locked([{"type": "CREATE_DREAM_ENTRY", "payload": op_payload}], owner_kind, owner_id, "life_dream_tool", session_id, turn_id, trace=None, control=ensure_control(self.conn, owner_kind, owner_id))
-            if action == "audit":
+            if action in {"nightly_check", "audit"}:  # "audit" kept as a back-compat alias
                 dream_run_id = payload.get("dream_run_id")
                 if not dream_run_id:
-                    return run_dream_cycle(self.conn, owner_kind, owner_id, sleep_session_id=payload.get("sleep_session_id"), create_share_intent=False, source="life_dream_audit")
+                    return run_dream_cycle(self.conn, owner_kind, owner_id, sleep_session_id=payload.get("sleep_session_id"), create_share_intent=False, source="life_nightly_check")
                 run = get_dream_run(self.conn, dream_run_id)
                 session = None
                 if run.get("sleep_session_id"):
                     row = self.conn.execute("SELECT * FROM sleep_sessions WHERE id=?", (run.get("sleep_session_id"),)).fetchone()
                     session = dict(row) if row else None
-                return run_dream_audit(self.conn, owner_kind, owner_id, dream_run_id, sleep_session=session)
+                return run_nightly_check(self.conn, owner_kind, owner_id, dream_run_id, sleep_session=session)
             if action in {"repair_plan", "repair_preview"}:
                 return collect_open_dream_repair_ops(self.conn, owner_kind, owner_id, dream_run_id=payload.get("dream_run_id"), finding_ids=payload.get("finding_ids"), limit=int(payload.get("limit", 50)), policy_mode=payload.get("policy_mode"))
             if action in {"repair", "apply_repairs"}:

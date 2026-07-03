@@ -37,7 +37,7 @@ def test_v0113_schema_and_dream_tables(tmp_path):
         assert _SCHEMA_VERSION >= 29
         assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 29
         tables = {r[0] for r in rt.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        assert {"dream_runs", "dream_audit_findings", "dream_entries"}.issubset(tables)
+        assert {"dream_runs", "nightly_check_findings", "dream_entries"}.issubset(tables)
     finally:
         rt.close()
 

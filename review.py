@@ -125,7 +125,7 @@ def _recent_digests(conn, owner_kind: str, owner_id: str, limit: int = 3) -> lis
 
 def _open_dream_findings(conn, owner_kind: str, owner_id: str, limit: int = 5) -> list[dict[str, Any]]:
     rows = conn.execute(
-        """SELECT * FROM dream_audit_findings
+        """SELECT * FROM nightly_check_findings
              WHERE owner_kind=? AND owner_id=? AND status IN ('open','planned')
              ORDER BY created_at DESC LIMIT ?""",
         (owner_kind, owner_id, int(limit)),
@@ -751,7 +751,7 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
     findings = _open_dream_findings(conn, owner_kind, owner_id, limit)
     for f in findings:
         sev = "warning" if f.get("severity") in {"warning", "error"} else "info"
-        items.append(_item("dream_audit_finding", sev, "DreamAudit 发现待处理项", f.get("message") or f.get("finding_type") or "DreamAudit finding", source_table="dream_audit_findings", source_id=f.get("id"), section="dream", when=f.get("created_at"), action_hint={"tool": "life_dream", "action": "repair_plan/repair", "dream_run_id": f.get("dream_run_id")}))
+        items.append(_item("nightly_check_finding", sev, "夜间自检发现待处理项", f.get("message") or f.get("finding_type") or "nightly check finding", source_table="nightly_check_findings", source_id=f.get("id"), section="dream", when=f.get("created_at"), action_hint={"tool": "life_dream", "action": "repair_plan/repair", "dream_run_id": f.get("dream_run_id")}))
 
     dream_entries = _recent_dream_entries(conn, owner_kind, owner_id, limit=3)
     if dream_entries:
@@ -1372,8 +1372,8 @@ def plan_review_item_action(conn, owner_kind: str, owner_id: str, item_id: str, 
         plan.update({"application_type": "direct", "tool": "life_sleep", "action": "recovery_plan", "safe_auto": True, "message": "Create a recovery sleep plan if sleep pressure is high."})
     elif item_type == "delayed_reply":
         plan.update({"application_type": "lifeops", "tool": "life_reply", "action": "release", "safe_auto": True, "ops": [{"type": "RELEASE_DELAYED_REPLIES", "payload": {"reason": "released from /life review action", "source": "life_review_action", "limit": 1}}], "message": "Release pending delayed replies and create a digest."})
-    elif item_type == "dream_audit_finding":
-        plan.update({"application_type": "dream_repair", "tool": "life_dream", "action": "repair", "safe_auto": True, "dream_run_id": hint.get("dream_run_id"), "finding_id": item.get("source_id"), "message": "Apply DreamAudit safe repair LifeOps for this finding."})
+    elif item_type in ("nightly_check_finding", "dream_audit_finding"):  # old item_type accepted for back-compat
+        plan.update({"application_type": "dream_repair", "tool": "life_dream", "action": "repair", "safe_auto": True, "dream_run_id": hint.get("dream_run_id"), "finding_id": item.get("source_id"), "message": "Apply nightly-check safe repair LifeOps for this finding."})
     elif item_type == "proactive_intent":
         plan.update({"application_type": "lifeops", "tool": "life_proactive", "action": "evaluate", "safe_auto": True, "ops": [{"type": "EVALUATE_PROACTIVE_INTENT", "payload": {"intent_id": hint.get("intent_id") or item.get("source_id"), "manual": True, "source": "life_review_action"}}], "message": "Evaluate this proactive intent against delivery policy."})
     elif item_type == "proactive_outbox":
@@ -1498,7 +1498,8 @@ DEFAULT_REVIEW_ACTION_POLICY: dict[str, Any] = {
     "safe_item_types": [
         "sleep_state",
         "delayed_reply",
-        "dream_audit_finding",
+        "nightly_check_finding",
+        "dream_audit_finding",  # pre-轴二-4 name, still accepted
         "proactive_intent",
         "proactive_lifecycle_cleanup",
         "policy_warning",
@@ -1654,7 +1655,7 @@ def _item_is_batch_safe(item: dict[str, Any], plan: dict[str, Any], policy: dict
             return False, "section_mismatch"
         if item_type == "delayed_reply" and section != "reply":
             return False, "section_mismatch"
-        if item_type == "dream_audit_finding" and section != "dream":
+        if item_type in ("nightly_check_finding", "dream_audit_finding") and section != "dream":
             return False, "section_mismatch"
         if item_type in {"policy_conflict", "policy_warning"} and section != "policy":
             return False, "section_mismatch"

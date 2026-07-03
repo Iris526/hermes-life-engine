@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 69
+_SCHEMA_VERSION = 70
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -371,6 +371,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 69:
         _create_schema_v69(conn)
         _record_schema_migration(conn, 69, "rename_recurring_activities_to_ventures")
+    if current < 70:
+        _create_schema_v70(conn)
+        _record_schema_migration(conn, 70, "rename_dream_audit_findings_to_nightly_check_findings")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -4792,3 +4795,17 @@ def _create_schema_v69(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE recurring_activities RENAME TO ventures")
     if "recurring_activity_occurrences" in existing and "venture_occurrences" not in existing:
         conn.execute("ALTER TABLE recurring_activity_occurrences RENAME TO venture_occurrences")
+
+
+def _create_schema_v70(conn: sqlite3.Connection) -> None:
+    """Rename dream_audit_findings → nightly_check_findings (DreamAudit→nightly_check, 轴二-4).
+
+    "DreamAudit" was engine nightly housekeeping (stale schedule → missed, pending
+    delayed replies → release) misfiled under the dream name — the product goal is
+    "梦里禁止出现自检". The table now says what it is. Idempotent RENAME (carries its
+    indexes). The dream_runs.audit_status/audit_summary_json columns stay (internal
+    sub-status family on dream_runs); the finding table is the visible surface.
+    """
+    existing = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "dream_audit_findings" in existing and "nightly_check_findings" not in existing:
+        conn.execute("ALTER TABLE dream_audit_findings RENAME TO nightly_check_findings")

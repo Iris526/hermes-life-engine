@@ -25,7 +25,7 @@
 |---|---|---|---|
 | **LifeAuthor** | 唯一的模型调用缝（`life_author.py`）：只写内容、绝不碰资源；宿主模型不可用→降级模板。 | — | ✅ |
 | **dream（梦）** | 从生活域记忆/事件生成的象征性梦境；`truth_layer=dream_symbolic`，绝不是现实事实。 | — | ✅ |
-| **nightly_check（夜间自检）** | 引擎夜间**系统自检**：找过期日程块→missed、待发延迟回复→release，写 findings。是引擎家务，**不是**角色做梦，产品目标「梦里禁止出现自检」。 | `DreamAudit`、`run_dream_audit`、`dream_audit_finding`、`audit_status`、`dream_audit_findings`（表）。 | 🔒 规范名=nightly_check，迁出梦域；🟡 函数/action/item_type/journal 事件/列名/表名待轴二-5 原子改（含向后兼容读旧值）。 |
+| **nightly_check（夜间自检）** | 引擎夜间**系统自检**：找过期日程块→missed、待发延迟回复→release，写 findings。是引擎家务，**不是**角色做梦，产品目标「梦里禁止出现自检」。 | `DreamAudit`、`run_dream_audit`、`dream_audit_finding`、`audit_status`、`dream_audit_findings`（表）。 | ✅ 全量改名（轴二-4，migration v70）：表 `nightly_check_findings`、函数 `run_nightly_check`、journal `nightly_check_completed/_repair_run`、review item_type `nightly_check_finding`（旧 `dream_audit_finding` 仍接受）、工具/CLI action `nightly_check`（`audit` 别名）、docstring/标签诚实化。保留为内部实现：`dream_runs.audit_status/audit_summary_json` 列（dream_runs 上的并行子状态族）、finding 辅助函数名（`list_dream_findings` 等）、`dream_audit_repair` source 串。物理「迁出 dream.py 到独立模块」未做（函数仍由 dream cycle 调用），名义已诚实。 |
 | **companion** | 安静一段时间 + 好心情/该回访时，主动说一句（idle_share / ask_about_user）。 | — | ✅ |
 | **campaign（资料片）** | 跨周主题长弧（预兆→升温→高潮→收尾），心跳逐日物化themed事件。 | 「资料片」曾也指 world_chronicle 的 `expansion_key`（实为 campaign-expansion 版本键，合法同义，非误用）。 | ✅（审计过度标记，NO-OP） |
 | **reflection → opinion** | 每日回看形成/强化观点 + 一句自述（`memory_type='self_narrative'`）。 | goals.py 的 `life_reflections`（proposed_ops 从不应用）是**另一个** reflection，已决定不接线（见 [[hermes-lifeengine-recent-work]]）。 | ✅（v0.18 观点循环）｜ life_reflections 命名冲突待厘清 |

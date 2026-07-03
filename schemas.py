@@ -909,7 +909,7 @@ LIFE_DREAM = {
         "type": "object",
         "properties": {
             **OWNER_PROPS,
-            "action": {"type": "string", "enum": ["status", "state", "run", "cycle", "dream", "audit", "repair_plan", "repair_preview", "repair", "apply_repairs", "repairs", "repair_runs", "repair_policy", "policy", "set_repair_policy", "policy_set", "list", "runs", "get", "get_run", "entries", "dreams", "get_entry", "findings", "audit_findings", "create_entry"], "description": "Dream action."},
+            "action": {"type": "string", "enum": ["status", "state", "run", "cycle", "dream", "nightly_check", "audit", "repair_plan", "repair_preview", "repair", "apply_repairs", "repairs", "repair_runs", "repair_policy", "policy", "set_repair_policy", "policy_set", "list", "runs", "get", "get_run", "entries", "dreams", "get_entry", "findings", "nightly_check_findings", "audit_findings", "create_entry"], "description": "Dream action ('audit'/'audit_findings' are pre-轴二-4 aliases of 'nightly_check')."},
             "dream_run_id": {"type": "string"},
             "dream_entry_id": {"type": "string"},
             "sleep_session_id": {"type": "string", "description": "SleepSession to dream from. If omitted, LifeEngine picks the latest completed/interrupted sleep session without a dream."},

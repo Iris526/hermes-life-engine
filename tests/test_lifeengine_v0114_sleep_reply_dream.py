@@ -65,7 +65,7 @@ def test_dream_audit_repair_applies_proposed_ops_and_resolves_findings(tmp_path)
         assert repaired["commit"]["receipt"]["facts"]
         status = rt.conn.execute("SELECT status FROM schedule_blocks WHERE id=?", (block_id,)).fetchone()[0]
         assert status == "missed"
-        resolved = rt.conn.execute("SELECT status,resolved_by_tx_id FROM dream_audit_findings WHERE target_id=?", (block_id,)).fetchone()
+        resolved = rt.conn.execute("SELECT status,resolved_by_tx_id FROM nightly_check_findings WHERE target_id=?", (block_id,)).fetchone()
         assert resolved["status"] == "resolved"
         assert resolved["resolved_by_tx_id"] == repaired["commit"]["transaction_id"]
         repairs = rt.dream("repairs", dream_run_id=run_id)["repairs"]

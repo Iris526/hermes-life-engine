@@ -304,7 +304,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_sleep.add_argument("--limit", type=int, default=20)
 
     p_dream = sub.add_parser("dream", help="DreamRun, the nightly engine check (housekeeping), dream entries, and wake-share intents")
-    p_dream.add_argument("action", choices=["status", "run", "audit", "repair_plan", "repair", "repairs", "list", "runs", "entries", "findings", "get", "get_entry", "create_entry"])
+    p_dream.add_argument("action", choices=["status", "run", "nightly_check", "audit", "repair_plan", "repair", "repairs", "list", "runs", "entries", "findings", "get", "get_entry", "create_entry"])
     p_dream.add_argument("--dream-run-id")
     p_dream.add_argument("--dream-entry-id")
     p_dream.add_argument("--sleep-session-id")
@@ -1263,8 +1263,8 @@ def slash_life(raw_args: str, **kwargs) -> str:
                 return format_result(rt.dream("run", **payload))
             if rest[0] in {"entries", "dreams"}:
                 return format_result(rt.dream("entries"))
-            if rest[0] in {"findings", "audit"}:
-                return format_result(rt.dream("findings" if rest[0] == "findings" else "audit"))
+            if rest[0] in {"findings", "nightly_check", "audit"}:
+                return format_result(rt.dream("findings" if rest[0] == "findings" else "nightly_check"))
             if rest[0] in {"get", "explain"} and len(rest) >= 2:
                 return format_result(rt.dream("get", dream_run_id=rest[1]))
 

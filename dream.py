@@ -1,10 +1,12 @@
-"""DreamRun / DreamAudit / DreamEntry operations for LifeEngine v0.11.3.
+"""DreamRun / nightly_check / DreamEntry operations for LifeEngine.
 
 Dream is not a real-world fact layer.  Dream entries use ``truth_layer =
 'dream_symbolic'`` and may generate shareable proactive intents, but they do
 not mutate ordinary life state unless an explicit follow-up LifeOp is later
-committed.  DreamAudit is the nightly self-check pass: it looks for missing
-state-flow/resource/reply bookkeeping after sleep and records findings.
+committed.  nightly_check (formerly "DreamAudit") is the nightly ENGINE
+housekeeping pass — stale schedule blocks → missed, pending delayed replies →
+release — recorded as findings. It is engine bookkeeping, NOT the dream, and by
+design never surfaces in the dream (product rule: 梦里禁止出现自检).
 """
 
 from __future__ import annotations
@@ -105,7 +107,7 @@ def list_dream_findings(conn, owner_kind: str, owner_id: str, dream_run_id: str 
         clause += " AND severity=?"
         params.append(severity)
     params.append(int(limit))
-    rows = conn.execute(f"SELECT * FROM dream_audit_findings WHERE {clause} ORDER BY created_at DESC LIMIT ?", tuple(params)).fetchall()
+    rows = conn.execute(f"SELECT * FROM nightly_check_findings WHERE {clause} ORDER BY created_at DESC LIMIT ?", tuple(params)).fetchall()
     return [_decode_row(r) for r in rows]
 
 
@@ -168,17 +170,17 @@ def _insert_finding(conn, owner_kind: str, owner_id: str, dream_run_id: str, *, 
                     proposed_ops: list[dict[str, Any]] | None = None, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     fid = new_id("dreamfind")
     conn.execute(
-        """INSERT INTO dream_audit_findings(
+        """INSERT INTO nightly_check_findings(
              id, owner_kind, owner_id, dream_run_id, finding_type, severity, target_kind, target_id,
              message, proposed_ops_json, metadata_json, status
            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
         (fid, owner_kind, owner_id, dream_run_id, finding_type, severity, target_kind, target_id,
          message, dumps(proposed_ops or []), dumps(metadata or {}), "open"),
     )
-    return _decode_row(conn.execute("SELECT * FROM dream_audit_findings WHERE id=?", (fid,)).fetchone())
+    return _decode_row(conn.execute("SELECT * FROM nightly_check_findings WHERE id=?", (fid,)).fetchone())
 
 
-def run_dream_audit(conn, owner_kind: str, owner_id: str, dream_run_id: str, *, sleep_session: dict[str, Any] | None = None) -> dict[str, Any]:
+def run_nightly_check(conn, owner_kind: str, owner_id: str, dream_run_id: str, *, sleep_session: dict[str, Any] | None = None) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     wake_ts = None
     if sleep_session:
@@ -264,7 +266,7 @@ def run_dream_audit(conn, owner_kind: str, owner_id: str, dream_run_id: str, *, 
 
     summary = {"finding_count": len(findings), "errors": len([f for f in findings if f.get("severity") == "error"]), "warnings": len([f for f in findings if f.get("severity") == "warning"]), "infos": len([f for f in findings if f.get("severity") == "info"])}
     conn.execute("UPDATE dream_runs SET audit_status=?, findings_count=?, audit_summary_json=?, updated_at=datetime('now') WHERE id=?", ("ok" if not findings else "findings", len(findings), dumps(summary), dream_run_id))
-    append_journal(conn, owner_kind, owner_id, "dream_audit_completed", {"dream_run_id": dream_run_id, **summary}, "dream")
+    append_journal(conn, owner_kind, owner_id, "nightly_check_completed", {"dream_run_id": dream_run_id, **summary}, "dream")
     return {"ok": True, "summary": summary, "findings": findings}
 
 
@@ -506,7 +508,7 @@ def run_dream_cycle(conn, owner_kind: str, owner_id: str, *, sleep_session_id: s
         conn.execute("UPDATE dream_runs SET status='skipped', completed_at=datetime('now'), audit_status='skipped', narrative_status='skipped', memory_consolidation_status='skipped', share_status='skipped', findings_count=1, audit_summary_json=?, updated_at=datetime('now') WHERE id=?", (dumps({"skipped_reason": reason}), run_id))
         return {"ok": True, "dream_run": get_dream_run(conn, run_id), "skipped": True, "reason": reason, "finding": finding}
 
-    audit = run_dream_audit(conn, owner_kind, owner_id, run_id, sleep_session=session)
+    audit = run_nightly_check(conn, owner_kind, owner_id, run_id, sleep_session=session)
     findings = audit.get("findings") or []
     ctx = _recent_context(conn, owner_kind, owner_id, limit=int(policy.get("memory_window", 6)))
     # v0.18.0: the dream is AUTHORED from the agent's own lived life (life-domain
@@ -688,7 +690,7 @@ def collect_open_dream_repair_ops(conn, owner_kind: str, owner_id: str, *, dream
     if dream_run_id:
         clause += " AND dream_run_id=?"
         params.append(dream_run_id)
-    rows = conn.execute(f"SELECT * FROM dream_audit_findings WHERE {clause} ORDER BY created_at ASC LIMIT ?", tuple(params + [int(limit)])).fetchall()
+    rows = conn.execute(f"SELECT * FROM nightly_check_findings WHERE {clause} ORDER BY created_at ASC LIMIT ?", tuple(params + [int(limit)])).fetchall()
     wanted = set(finding_ids or [])
     findings: list[dict[str, Any]] = []
     ops: list[dict[str, Any]] = []
@@ -722,7 +724,7 @@ def record_dream_repair_run(conn, owner_kind: str, owner_id: str, *, dream_run_i
     )
     if transaction_id and finding_ids:
         for fid in finding_ids:
-            conn.execute("UPDATE dream_audit_findings SET status='resolved', resolved_by_tx_id=? WHERE id=? AND owner_kind=? AND owner_id=?", (transaction_id, fid, owner_kind, owner_id))
-    append_journal(conn, owner_kind, owner_id, "dream_audit_repair_run", {"dream_repair_run_id": repair_id, "dream_run_id": dream_run_id, "status": status, "transaction_id": transaction_id, "finding_ids": finding_ids}, "dream_repair")
+            conn.execute("UPDATE nightly_check_findings SET status='resolved', resolved_by_tx_id=? WHERE id=? AND owner_kind=? AND owner_id=?", (transaction_id, fid, owner_kind, owner_id))
+    append_journal(conn, owner_kind, owner_id, "nightly_check_repair_run", {"dream_repair_run_id": repair_id, "dream_run_id": dream_run_id, "status": status, "transaction_id": transaction_id, "finding_ids": finding_ids}, "dream_repair")
     row = conn.execute("SELECT * FROM dream_repair_runs WHERE id=?", (repair_id,)).fetchone()
     return list_dream_repair_runs(conn, owner_kind, owner_id, dream_run_id=None, limit=1)[0] if row else {"id": repair_id, "status": status}

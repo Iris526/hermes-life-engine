@@ -32,7 +32,7 @@ SCENARIOS: list[tuple[str, str]] = [
 _REQUIRED_TABLES = [
     "sleep_plans", "sleep_sessions", "sleep_interruptions", "sleep_day_states",
     "reply_gate_decisions", "delayed_replies", "delayed_reply_digests", "call_overrides",
-    "dream_runs", "dream_entries", "dream_audit_findings", "dream_repair_runs",
+    "dream_runs", "dream_entries", "nightly_check_findings", "dream_repair_runs",
     "execution_decisions", "execution_sleep_adjustments", "proactive_intents",
     "events", "schedule_blocks", "event_state_transitions", "schedule_block_state_transitions",
     "life_transactions", "commit_receipts", "life_journal",
