@@ -227,7 +227,7 @@ from .proactive import (
 )
 from .receipts import create_commit_receipt
 from .resources import apply_delta, define_resource, list_resources, reconcile_resources, release_reservation, reserve
-from .review import build_human_review, list_review_runs, get_review_run, dismiss_review_item, plan_review_item_action, record_review_action_run, mark_review_item_resolved, list_review_action_runs, get_review_action_run, get_review_action_policy, set_review_action_policy, validate_review_action_policy, select_review_items_for_batch, record_review_batch_run, list_review_batch_runs, get_review_batch_run, plan_review_action_undo, apply_review_action_undo, plan_review_batch_undo, apply_review_batch_undo, list_review_undo_runs, get_review_undo_run, decide_managed_review_loop, record_managed_review_loop_run, list_managed_review_loop_runs, get_managed_review_loop_run, get_managed_review_loop_state, begin_managed_review_acceptance_run, record_managed_review_acceptance_scenario, finish_managed_review_acceptance_run, list_managed_review_acceptance_runs, get_managed_review_acceptance_run, record_managed_review_stress_run, list_managed_review_stress_runs, get_managed_review_stress_run, build_managed_review_observability_report, list_managed_review_observability_reports, get_managed_review_observability_report, build_managed_review_release_readiness_report, list_managed_review_release_readiness_reports, get_managed_review_release_readiness_report
+from .review import build_human_review, list_review_runs, get_review_run, dismiss_review_item, plan_review_item_action, record_review_action_run, mark_review_item_resolved, list_review_action_runs, get_review_action_run, get_review_action_policy, set_review_action_policy, validate_review_action_policy, select_review_items_for_batch, record_review_batch_run, list_review_batch_runs, get_review_batch_run, plan_review_action_undo, apply_review_action_undo, plan_review_batch_undo, apply_review_batch_undo, list_review_undo_runs, get_review_undo_run, decide_managed_review_loop, record_managed_review_loop_run, list_managed_review_loop_runs, get_managed_review_loop_run, get_managed_review_loop_state
 from .reply_gate import (
     assess_reply_gate,
     call_override,
@@ -3678,42 +3678,6 @@ class LifeEngineRuntime:
                 if not run_id:
                     raise ValueError("managed_run_id is required")
                 return {"ok": True, "managed_run": get_managed_review_loop_run(self.conn, owner_kind, owner_id, run_id)}
-            if action in {"managed_observability", "managed_observe", "managed_status_report", "observability"}:
-                return build_managed_review_observability_report(self.conn, owner_kind, owner_id, persist=bool(payload.get("persist", True)), include_doctor=bool(payload.get("include_doctor", True)))
-            if action in {"managed_observability_reports", "observability_reports"}:
-                return {"ok": True, "reports": list_managed_review_observability_reports(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 20)))}
-            if action in {"get_managed_observability", "managed_observability_get", "get_observability"}:
-                report_id = payload.get("report_id") or payload.get("id")
-                if not report_id:
-                    raise ValueError("report_id is required")
-                return {"ok": True, "report": get_managed_review_observability_report(self.conn, owner_kind, owner_id, report_id)}
-            if action in {"managed_release_readiness", "release_readiness", "managed_readiness"}:
-                return build_managed_review_release_readiness_report(self.conn, owner_kind, owner_id, persist=bool(payload.get("persist", True)))
-            if action in {"managed_release_readiness_reports", "release_readiness_reports", "readiness_reports"}:
-                return {"ok": True, "reports": list_managed_review_release_readiness_reports(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 20)))}
-            if action in {"get_managed_release_readiness", "release_readiness_get", "get_readiness"}:
-                report_id = payload.get("report_id") or payload.get("id")
-                if not report_id:
-                    raise ValueError("report_id is required")
-                return {"ok": True, "report": get_managed_review_release_readiness_report(self.conn, owner_kind, owner_id, report_id)}
-            if action in {"managed_acceptance", "agent_managed_acceptance", "managed_loop_acceptance"}:
-                return self._run_managed_review_acceptance_locked(owner_kind, owner_id, stress_count=int(payload.get("stress_count", 12)))
-            if action in {"managed_acceptance_runs", "agent_managed_acceptance_runs"}:
-                return {"ok": True, "acceptance_runs": list_managed_review_acceptance_runs(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 20)))}
-            if action in {"get_managed_acceptance", "managed_acceptance_get"}:
-                run_id = payload.get("acceptance_run_id") or payload.get("run_id") or payload.get("id")
-                if not run_id:
-                    raise ValueError("acceptance_run_id is required")
-                return {"ok": True, "acceptance_run": get_managed_review_acceptance_run(self.conn, owner_kind, owner_id, run_id)}
-            if action in {"managed_stress", "agent_managed_stress"}:
-                return self._run_managed_review_stress_locked(owner_kind, owner_id, count=int(payload.get("count", 25)), limit=int(payload.get("limit", 10)))
-            if action in {"managed_stress_runs", "agent_managed_stress_runs"}:
-                return {"ok": True, "stress_runs": list_managed_review_stress_runs(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 20)))}
-            if action in {"get_managed_stress", "managed_stress_get"}:
-                run_id = payload.get("stress_run_id") or payload.get("run_id") or payload.get("id")
-                if not run_id:
-                    raise ValueError("stress_run_id is required")
-                return {"ok": True, "stress_run": get_managed_review_stress_run(self.conn, owner_kind, owner_id, run_id)}
             if action in {"managed_preview", "agent_preview", "agent_managed_preview"}:
                 return self._run_agent_managed_review_locked(owner_kind, owner_id, trigger_source=str(payload.get("trigger_source") or "manual"), tick_id=payload.get("tick_id"), dry_run=True, force=bool(payload.get("force", False)), session_id=session_id, turn_id=turn_id)
             if action in {"managed_run", "agent_run", "agent_managed_run"}:
@@ -3990,121 +3954,6 @@ class LifeEngineRuntime:
             output={"batch": batch, "review": {"review_run_id": review.get("review_run_id")}}, now=None,
         )
         return {"ok": True, "status": status, "applied": applied_count > 0, "decision": decision, "managed_run": run, "batch": batch, "review": review}
-
-
-    def _run_managed_review_acceptance_locked(self, owner_kind: str, owner_id: str, *, stress_count: int = 12) -> dict[str, Any]:
-        """Run synthetic acceptance scenarios for Agent Managed Review Loop.
-
-        Uses a synthetic owner so the acceptance suite does not mutate the real
-        agent's review queues, sleep state, or delayed replies.
-        """
-        synth_owner = f"{owner_id}-mgrev-{new_id('run')[:8]}"
-        begin = begin_managed_review_acceptance_run(self.conn, owner_kind, owner_id)
-        run_id = begin["id"]
-        scenarios: list[dict[str, Any]] = []
-        try:
-            ensure_control(self.conn, owner_kind, synth_owner)
-            # Scenario 1: default disabled should block and leave delayed reply pending.
-            create_delayed_reply(self.conn, owner_kind, synth_owner, message_text="acceptance disabled", reason="managed acceptance")
-            out1 = self._run_agent_managed_review_locked(owner_kind, synth_owner, trigger_source="manual", force=False)
-            pending1 = self.conn.execute("SELECT COUNT(*) FROM delayed_replies WHERE owner_kind=? AND owner_id=? AND status='pending'", (owner_kind, synth_owner)).fetchone()[0]
-            ok1 = out1.get("status") == "blocked" and int(pending1) >= 1
-            scenarios.append(record_managed_review_acceptance_scenario(self.conn, owner_kind, owner_id, run_id, "MGR01_DISABLED_BY_DEFAULT", "passed" if ok1 else "failed", "Managed review is disabled by default and does not mutate queues.", {"result": out1, "pending_count": pending1, "synthetic_owner_id": synth_owner}))
-
-            # Enable managed loop with strict limits.
-            set_review_action_policy(self.conn, owner_kind, synth_owner, policy_patch={
-                "allow_agent_managed_loop": True,
-                "agent_managed_trigger_sources": ["manual", "heartbeat"],
-                "agent_managed_daily_action_limit": 2,
-                "agent_managed_failure_budget": 1,
-                "agent_managed_sections": ["reply", "sleep", "dream", "proactive", "policy"],
-                "agent_managed_safe_only": True,
-            }, updated_by="managed_acceptance")
-
-            # Scenario 2: applies safe delayed reply once enabled.
-            create_delayed_reply(self.conn, owner_kind, synth_owner, message_text="acceptance release", reason="managed acceptance")
-            out2 = self._run_agent_managed_review_locked(owner_kind, synth_owner, trigger_source="manual", force=False)
-            released2 = self.conn.execute("SELECT COUNT(*) FROM delayed_replies WHERE owner_kind=? AND owner_id=? AND status='released'", (owner_kind, synth_owner)).fetchone()[0]
-            ok2 = out2.get("status") in {"applied", "partial"} and int(released2) >= 1
-            scenarios.append(record_managed_review_acceptance_scenario(self.conn, owner_kind, owner_id, run_id, "MGR02_SAFE_ITEM_APPLIED", "passed" if ok2 else "failed", "Managed review applies safe delayed-reply items when policy allows.", {"result": out2, "released_count": released2, "synthetic_owner_id": synth_owner}))
-
-            # Scenario 3: daily limit blocks after budget is exhausted.
-            create_delayed_reply(self.conn, owner_kind, synth_owner, message_text="limit one", reason="managed acceptance")
-            create_delayed_reply(self.conn, owner_kind, synth_owner, message_text="limit two", reason="managed acceptance")
-            out3 = self._run_agent_managed_review_locked(owner_kind, synth_owner, trigger_source="manual", force=False)
-            out3b = self._run_agent_managed_review_locked(owner_kind, synth_owner, trigger_source="manual", force=False)
-            reasons = " ".join((out3b.get("decision") or {}).get("reasons") or [])
-            ok3 = out3b.get("status") in {"blocked", "skipped"} and ("limit" in reasons or "budget" in reasons)
-            scenarios.append(record_managed_review_acceptance_scenario(self.conn, owner_kind, owner_id, run_id, "MGR03_DAILY_LIMIT", "passed" if ok3 else "failed", "Managed review respects daily action limit.", {"first": out3, "second": out3b, "synthetic_owner_id": synth_owner}))
-
-            # Scenario 4: duplicate tick id is idempotent.
-            synth2 = f"{owner_id}-mgrev-dup-{new_id('run')[:8]}"
-            ensure_control(self.conn, owner_kind, synth2)
-            set_review_action_policy(self.conn, owner_kind, synth2, policy_patch={
-                "allow_agent_managed_loop": True,
-                "agent_managed_trigger_sources": ["heartbeat"],
-                "agent_managed_daily_action_limit": 5,
-                "agent_managed_failure_budget": 2,
-            }, updated_by="managed_acceptance")
-            create_delayed_reply(self.conn, owner_kind, synth2, message_text="dup tick", reason="managed acceptance")
-            tick_id = f"tick-{new_id('dup')}"
-            out4a = self._run_agent_managed_review_locked(owner_kind, synth2, trigger_source="heartbeat", tick_id=tick_id, force=False)
-            out4b = self._run_agent_managed_review_locked(owner_kind, synth2, trigger_source="heartbeat", tick_id=tick_id, force=False)
-            runs4 = self.conn.execute("SELECT COUNT(*) FROM human_review_managed_loop_runs WHERE owner_kind=? AND owner_id=? AND tick_id=?", (owner_kind, synth2, tick_id)).fetchone()[0]
-            ok4 = out4a.get("status") in {"applied", "noop"} and out4b.get("status") == "duplicate_tick" and int(runs4) == 1
-            scenarios.append(record_managed_review_acceptance_scenario(self.conn, owner_kind, owner_id, run_id, "MGR04_DUPLICATE_TICK_IDEMPOTENCY", "passed" if ok4 else "failed", "Managed review heartbeat tick id is idempotent.", {"first": out4a, "second": out4b, "run_count_for_tick": runs4, "synthetic_owner_id": synth2}))
-
-            # Scenario 5: stress batch applies no more than limit and stays traceable.
-            stress = self._run_managed_review_stress_locked(owner_kind, owner_id, count=stress_count, limit=5, synthetic_suffix="acceptance")
-            ok5 = stress.get("ok") and (stress.get("stress_run") or {}).get("applied_count", 0) <= 5 and (stress.get("stress_run") or {}).get("created_count", 0) == stress_count
-            scenarios.append(record_managed_review_acceptance_scenario(self.conn, owner_kind, owner_id, run_id, "MGR05_STRESS_LIMITED_BATCH", "passed" if ok5 else "failed", "Managed review stress run respects batch limit and records stress trace.", {"stress": stress, "synthetic_owner_id": (stress.get("stress_run") or {}).get("output", {}).get("synthetic_owner_id")}))
-
-            final = finish_managed_review_acceptance_run(self.conn, owner_kind, owner_id, run_id, output={"synthetic_owner_id": synth_owner, "scenario_ids": [s.get("id") for s in scenarios]})
-            return {"ok": final.get("status") == "passed", "acceptance_run": final}
-        except Exception as exc:
-            final = finish_managed_review_acceptance_run(self.conn, owner_kind, owner_id, run_id, output={"synthetic_owner_id": synth_owner}, error=f"{type(exc).__name__}: {exc}")
-            return {"ok": False, "acceptance_run": final, "error": f"{type(exc).__name__}: {exc}"}
-
-    def _run_managed_review_stress_locked(self, owner_kind: str, owner_id: str, *, count: int = 25, limit: int = 10, synthetic_suffix: str | None = None) -> dict[str, Any]:
-        """Stress managed review with many delayed replies on a synthetic owner."""
-        import time
-        count = max(0, min(int(count), 500))
-        limit = max(1, min(int(limit), 100))
-        synth_owner = f"{owner_id}-mgrev-stress-{synthetic_suffix or new_id('stress')[:8]}"
-        start = time.time()
-        error = None
-        out: dict[str, Any] = {}
-        try:
-            ensure_control(self.conn, owner_kind, synth_owner)
-            set_review_action_policy(self.conn, owner_kind, synth_owner, policy_patch={
-                "allow_agent_managed_loop": True,
-                "agent_managed_trigger_sources": ["manual"],
-                "agent_managed_daily_action_limit": limit,
-                "agent_managed_failure_budget": 2,
-                "agent_managed_sections": ["reply"],
-                "agent_managed_safe_only": True,
-                "max_batch_items": limit,
-            }, updated_by="managed_stress")
-            for i in range(count):
-                create_delayed_reply(self.conn, owner_kind, synth_owner, message_text=f"managed stress delayed reply {i+1}", reason="managed review stress")
-            result = self._run_agent_managed_review_locked(owner_kind, synth_owner, trigger_source="manual", force=False)
-            batch = result.get("batch") or {}
-            run = result.get("managed_run") or {}
-            applied = int(run.get("applied_count") or 0)
-            selected = int(run.get("selected_count") or 0)
-            failed = int(run.get("failed_count") or 0)
-            released = self.conn.execute("SELECT COUNT(*) FROM delayed_replies WHERE owner_kind=? AND owner_id=? AND status='released'", (owner_kind, synth_owner)).fetchone()[0]
-            pending = self.conn.execute("SELECT COUNT(*) FROM delayed_replies WHERE owner_kind=? AND owner_id=? AND status='pending'", (owner_kind, synth_owner)).fetchone()[0]
-            out = {"managed_result": result, "batch_run_id": batch.get("batch_run", {}).get("id") if isinstance(batch, dict) else None, "synthetic_owner_id": synth_owner, "released_count": released, "pending_count": pending}
-            status = "passed" if result.get("ok") and applied <= limit and released == applied else "failed"
-            duration_ms = int((time.time() - start) * 1000)
-            stress_run = record_managed_review_stress_run(self.conn, owner_kind, owner_id, stress_kind="delayed_reply_batch", input_obj={"count": count, "limit": limit}, status=status, output=out, created_count=count, selected_count=selected, applied_count=applied, failed_count=failed, duration_ms=duration_ms, error=None if status == "passed" else "stress invariant failed")
-            return {"ok": status == "passed", "stress_run": stress_run, **out}
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-            duration_ms = int((time.time() - start) * 1000)
-            stress_run = record_managed_review_stress_run(self.conn, owner_kind, owner_id, stress_kind="delayed_reply_batch", input_obj={"count": count, "limit": limit}, status="failed", output=out, created_count=count, duration_ms=duration_ms, error=error)
-            return {"ok": False, "stress_run": stress_run, "error": error}
 
     def _run_managed_review_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
                                      tick_id: str, trace: Trace, now: str, manual: bool) -> dict[str, Any]:

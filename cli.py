@@ -97,7 +97,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_config.add_argument("--text")
 
     p_review = sub.add_parser("review", help="Show one-page human LifeEngine review")
-    p_review.add_argument("action", nargs="?", default="summary", choices=["summary", "run", "review", "runs", "history", "get", "dismiss", "preview", "apply", "actions", "get_action", "policy", "set_policy", "batch_preview", "apply_all", "batch_runs", "get_batch", "undo_preview", "undo", "undo_runs", "get_undo", "batch_undo_preview", "batch_undo", "managed_preview", "managed_run", "managed_runs", "get_managed_run", "managed_state", "managed_acceptance", "managed_acceptance_runs", "get_managed_acceptance", "managed_stress", "managed_stress_runs", "get_managed_stress", "managed_observability", "managed_observability_reports", "get_managed_observability", "managed_readiness", "managed_readiness_reports", "get_managed_readiness"] )
+    p_review.add_argument("action", nargs="?", default="summary", choices=["summary", "run", "review", "runs", "history", "get", "dismiss", "preview", "apply", "actions", "get_action", "policy", "set_policy", "batch_preview", "apply_all", "batch_runs", "get_batch", "undo_preview", "undo", "undo_runs", "get_undo", "batch_undo_preview", "batch_undo", "managed_preview", "managed_run", "managed_runs", "get_managed_run", "managed_state"] )
     p_review.add_argument("target", nargs="?", help="review_run_id for get, item_id for dismiss/apply/preview, action_run_id for get_action")
     p_review.add_argument("--choice", help="explicit choice for ambiguous actions: confirm/reject or send/suppress")
     p_review.add_argument("--dry-run", action="store_true")
@@ -522,30 +522,6 @@ def handle_cli(args) -> None:
                 print(format_result(rt.review("get_managed_run", managed_run_id=args.target)))
             elif args.action == "managed_state":
                 print(format_result(rt.review("managed_state")))
-            elif args.action == "managed_acceptance":
-                print(format_result(rt.review("managed_acceptance", stress_count=args.stress_count)))
-            elif args.action == "managed_acceptance_runs":
-                print(format_result(rt.review("managed_acceptance_runs", limit=args.limit)))
-            elif args.action == "get_managed_acceptance":
-                print(format_result(rt.review("get_managed_acceptance", acceptance_run_id=args.target)))
-            elif args.action == "managed_stress":
-                print(format_result(rt.review("managed_stress", count=args.count, limit=args.limit)))
-            elif args.action == "managed_stress_runs":
-                print(format_result(rt.review("managed_stress_runs", limit=args.limit)))
-            elif args.action == "get_managed_stress":
-                print(format_result(rt.review("get_managed_stress", stress_run_id=args.target)))
-            elif args.action == "managed_observability":
-                print(format_result(rt.review("managed_observability")))
-            elif args.action == "managed_observability_reports":
-                print(format_result(rt.review("managed_observability_reports", limit=args.limit)))
-            elif args.action == "get_managed_observability":
-                print(format_result(rt.review("get_managed_observability", report_id=args.target)))
-            elif args.action == "managed_readiness":
-                print(format_result(rt.review("managed_release_readiness")))
-            elif args.action == "managed_readiness_reports":
-                print(format_result(rt.review("managed_release_readiness_reports", limit=args.limit)))
-            elif args.action == "get_managed_readiness":
-                print(format_result(rt.review("get_managed_release_readiness", report_id=args.target)))
             else:
                 out = rt.review("summary", include_doctor=not args.no_doctor, limit=args.limit)
                 print(format_result(out) if args.as_json else out.get("rendered", format_result(out)))
@@ -1088,31 +1064,6 @@ def slash_life(raw_args: str, **kwargs) -> str:
                 return format_result(rt.review("get_managed_run", managed_run_id=rest[1]))
             if rest and rest[0] in {"managed_state", "agent_state"}:
                 return format_result(rt.review("managed_state"))
-            if rest and rest[0] in {"managed_acceptance", "acceptance"}:
-                return format_result(rt.review("managed_acceptance"))
-            if rest and rest[0] in {"managed_acceptance_runs", "acceptance_runs"}:
-                return format_result(rt.review("managed_acceptance_runs"))
-            if rest and rest[0] in {"get_managed_acceptance", "acceptance_get"} and len(rest) >= 2:
-                return format_result(rt.review("get_managed_acceptance", acceptance_run_id=rest[1]))
-            if rest and rest[0] in {"managed_stress", "stress"}:
-                count = int(rest[1]) if len(rest) >= 2 and rest[1].isdigit() else 25
-                return format_result(rt.review("managed_stress", count=count))
-            if rest and rest[0] in {"managed_stress_runs", "stress_runs"}:
-                return format_result(rt.review("managed_stress_runs"))
-            if rest and rest[0] in {"get_managed_stress", "stress_get"} and len(rest) >= 2:
-                return format_result(rt.review("get_managed_stress", stress_run_id=rest[1]))
-            if rest and rest[0] in {"managed_observability", "observability"}:
-                return format_result(rt.review("managed_observability"))
-            if rest and rest[0] in {"managed_observability_reports", "observability_reports"}:
-                return format_result(rt.review("managed_observability_reports"))
-            if rest and rest[0] in {"get_managed_observability", "get_observability"} and len(rest) >= 2:
-                return format_result(rt.review("get_managed_observability", report_id=rest[1]))
-            if rest and rest[0] in {"managed_readiness", "release_readiness", "readiness"}:
-                return format_result(rt.review("managed_release_readiness"))
-            if rest and rest[0] in {"managed_readiness_reports", "readiness_reports"}:
-                return format_result(rt.review("managed_release_readiness_reports"))
-            if rest and rest[0] in {"get_managed_readiness", "get_readiness"} and len(rest) >= 2:
-                return format_result(rt.review("get_managed_release_readiness", report_id=rest[1]))
             out = rt.review("summary")
             return out.get("rendered") or format_result(out)
         if cmd in {"policy", "策略", "规则"}:
