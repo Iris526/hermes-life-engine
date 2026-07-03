@@ -635,6 +635,108 @@ def author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any]
     return _author_outbox_text(conn, agent_id, user_id, intent, trace_id=trace_id)
 
 
+def _auto_send_authoring_candidates(conn, agent_id: str, control: dict[str, Any] | None, *,
+                                    limit: int = 10) -> list[dict[str, Any]]:
+    """列出 heartbeat auto_send 可能写出 outbox 的主动意图。
+
+    输入是当前 agent、控制门控和候选上限；输出是只含 intent 与目标 user id 的
+    内存列表。调用方是 heartbeat 的事务外预生成层，用来提前准备 LifeAuthor
+    文案。副作用仅限读取 SQLite，不创建 state/outbox/evaluation，也不访问模型；
+    后续事务内仍由 `evaluate_proactive_intent` 重新执行真实门控、评分和节奏判断。
+    """
+    try:
+        policy = _gate_policy(control, _get_canon_policy(conn, agent_id))
+        if policy.get("mode") != "auto_send":
+            return []
+        rows = conn.execute(
+            """SELECT * FROM proactive_intents
+                 WHERE agent_id=? AND status IN ('generated','queued')
+                 ORDER BY CASE status WHEN 'queued' THEN 0 ELSE 1 END,
+                          COALESCE(queued_at, created_at) ASC, updated_at ASC
+                 LIMIT ?""",
+            (agent_id, max(1, int(limit) * 4)),
+        ).fetchall()
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            intent = _as_dict(row) or {}
+            if not intent or _is_expired(intent):
+                continue
+            intent_id = str(intent.get("id") or "")
+            if not intent_id or _has_active_outbox(conn, intent_id):
+                continue
+            status = str(intent.get("status") or "")
+            if status == "queued":
+                if not _temporary_wait_has_cleared_readonly(conn, agent_id, intent, policy):
+                    continue
+            out.append({"intent": intent, "target_user_id": _target_user(intent, policy)})
+            if len(out) >= int(limit):
+                break
+        except Exception:
+            continue
+    return out
+
+
+def _temporary_wait_has_cleared_readonly(conn, agent_id: str, intent: dict[str, Any],
+                                         policy: dict[str, Any]) -> bool:
+    """只读判断 queued intent 的临时等待是否可能已经解除。
+
+    输入是候选 intent 与当前 proactive policy；输出仅用于 heartbeat 事务外 authoring
+    的预筛选。调用方是 `_auto_send_authoring_candidates`。副作用限定为读取已有
+    proactive state，不创建缺失 state、不写 evaluation/outbox，也不访问模型；真正
+    的等待判断仍由事务内 `_temporary_wait_has_cleared` 再执行一次。
+    """
+    decision = intent.get("decision") or {}
+    wait = str(decision.get("decision") or "").strip()
+    if wait not in TEMPORARY_WAIT_DECISIONS:
+        return False
+    if wait == "quiet_hours":
+        return not _quiet_hours_active(policy)
+    user_id = _target_user(intent, policy)
+    row = conn.execute(
+        "SELECT * FROM agent_user_proactive_state WHERE agent_id=? AND user_id=?",
+        (agent_id, user_id),
+    ).fetchone()
+    state = _as_dict(row) or {}
+    if wait == "cooldown":
+        return not _within_cooldown(state)
+    if wait == "daily_limit":
+        return int(state.get("daily_sent_count") or 0) < int(policy.get("max_per_day") or 1)
+    return False
+
+
+def prepare_auto_send_outbox_authoring(conn, agent_id: str, control: dict[str, Any] | None, *,
+                                       trace_id: str | None = None,
+                                       limit: int = 10) -> dict[str, str]:
+    """在 heartbeat 写事务外预生成 auto_send outbox 文案。
+
+    输入来自 `prepare_heartbeat_authoring` 的 agent/control/trace；输出是
+    `{intent_id: draft_text}`，仅在当前 tick 内作为内存包使用。调用方式是同步
+    best-effort：每条候选只调用既有 `author_outbox_text`，不创建 outbox、不修改
+    intent、不触碰资源账本。无 host、LifeAuthor 门控关闭、模型返回空/无效或任意
+    异常时跳过该 intent，让事务内 evaluate 继续使用原有 `_fallback_outbox_text`
+    路径，保证离线/CI 行为不变。
+    """
+    drafts: dict[str, str] = {}
+    for item in _auto_send_authoring_candidates(conn, agent_id, control, limit=limit):
+        intent = item.get("intent") if isinstance(item, dict) else None
+        if not isinstance(intent, dict):
+            continue
+        intent_id = str(intent.get("id") or "")
+        user_id = str(item.get("target_user_id") or _target_user(intent))
+        if not intent_id or not user_id:
+            continue
+        try:
+            draft = author_outbox_text(conn, agent_id, user_id, intent, trace_id=trace_id)
+        except Exception:
+            draft = None
+        if draft:
+            drafts[intent_id] = draft
+    return drafts
+
+
 def evaluate_proactive_intent(
     conn,
     agent_id: str,
@@ -645,13 +747,15 @@ def evaluate_proactive_intent(
     manual: bool = False,
     trace_id: str | None = None,
     draft_text: str | None = None,
+    draft_texts_by_intent_id: dict[str, str] | None = None,
     allow_authoring: bool = True,
 ) -> dict[str, Any]:
     """评估 proactive intent 并按策略排队或生成 outbox。
 
     输入来自 LifeOps `EVALUATE_PROACTIVE_INTENT`、工具或 heartbeat；`draft_text`
     是事务外预生成的最终消息，`allow_authoring=False` 表示本函数不得在写事务内调用
-    LifeAuthor。输出是逐 intent 的评估决策和可选 outbox。副作用是更新 intent/state、
+    LifeAuthor，`draft_texts_by_intent_id` 是 heartbeat 事务外预生成的 per-intent
+    文案映射。输出是逐 intent 的评估决策和可选 outbox。副作用是更新 intent/state、
     写 proactive_evaluations/journal/outbox；失败由外层事务回滚。该函数保留旧的
     `allow_authoring=True` 兼容直接模块调用，但 runtime 的 LifeOps 路径会传 false。
     """
@@ -714,8 +818,12 @@ def evaluate_proactive_intent(
                 _update_state_pending(conn, agent_id, user_id, intent["id"], "has_something_to_share")
                 decision, reason = "queue_pending", "score below auto-send threshold"
             else:
+                mapped_draft = None
+                if isinstance(draft_texts_by_intent_id, dict):
+                    mapped_draft = draft_texts_by_intent_id.get(str(intent.get("id") or ""))
+                candidate_draft = draft_text if draft_text is not None else mapped_draft
                 msg = (
-                    _usable_outbox_text(conn, agent_id, user_id, intent, draft_text, source="provided_draft", trace_id=trace_id)
+                    _usable_outbox_text(conn, agent_id, user_id, intent, candidate_draft, source="provided_draft", trace_id=trace_id)
                     or (_author_outbox_text(conn, agent_id, user_id, intent, trace_id=trace_id) if allow_authoring else None)
                 )
                 if not msg:
@@ -779,13 +887,16 @@ def reconsider_waiting_proactive_intents(
     trace_id: str | None = None,
     limit: int = 10,
     allow_authoring: bool = False,
+    draft_texts_by_intent_id: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Re-evaluate queued proactive intents whose temporary wait has cleared.
+    """重评已经越过临时等待条件的 queued 主动意图。
 
-    Quiet hours, cooldown, and daily-budget gates are pacing constraints, not
-    final decisions. Heartbeat uses this pass before evaluating new generated
-    intents so a warm line held at bedtime can naturally move to outbox after
-    the block clears without requiring a manual review action.
+    输入来自 heartbeat 的 proactive pass；输出是本轮重新评估的 intent 列表。
+    quiet hours、cooldown、daily limit 都是节奏阻塞，不是终局决策，所以 heartbeat
+    会先运行这里，再评估新的 generated intent。`draft_texts_by_intent_id` 是事务外
+    LifeAuthor 预生成的内存映射；命中时传给普通 evaluate 路径，缺失时保留原有
+    `_fallback_outbox_text` 降级。副作用是通过 evaluate 写 evaluation/outbox/state，
+    本函数自身不访问模型，也不绕过 auto_send gate。
     """
     canon_policy = _get_canon_policy(conn, agent_id)
     policy = _gate_policy(control, canon_policy)
@@ -798,6 +909,7 @@ def reconsider_waiting_proactive_intents(
              LIMIT ?""",
         (agent_id, max(1, int(limit) * 4)),
     ).fetchall()
+    drafts = draft_texts_by_intent_id if isinstance(draft_texts_by_intent_id, dict) else {}
     reconsidered: list[dict[str, Any]] = []
     for row in rows:
         intent = _as_dict(row) or {}
@@ -815,6 +927,7 @@ def reconsider_waiting_proactive_intents(
             str(intent["id"]),
             control=control,
             trace_id=trace_id,
+            draft_text=drafts.get(str(intent.get("id") or "")),
             allow_authoring=allow_authoring,
         )
         item = (out.get("evaluated") or [{}])[0]

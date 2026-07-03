@@ -412,7 +412,7 @@ _HEARTBEAT_MODULES: list[tuple[str, str, tuple[str, ...]]] = [
     ("venture_opportunities", "_roll_opportunities_for_tick", ()),
     ("realtime_sync", "_sync_realtime_to_schedule_for_tick", ()),
     ("companion", "_run_companion_for_tick", ("authoring",)),
-    ("proactive", "_run_proactive_for_tick", ()),
+    ("proactive", "_run_proactive_for_tick", ("authoring",)),
     ("managed_review", "_run_managed_review_for_tick", ("manual",)),
 ]
 
@@ -793,7 +793,7 @@ class LifeEngineRuntime:
         elif op_type == "CREATE_PROACTIVE_INTENT":
             return create_proactive_intent(self.conn, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
         elif op_type == "EVALUATE_PROACTIVE_INTENT":
-            return evaluate_proactive_intent(self.conn, owner_id, payload.get("intent_id"), control=ensure_control(self.conn, "agent", owner_id), target_user_id=payload.get("target_user_id"), manual=bool(payload.get("manual", False)), trace_id=payload.get("trace_id"), draft_text=payload.get("draft_text"), allow_authoring=bool(payload.get("allow_authoring", False)))
+            return evaluate_proactive_intent(self.conn, owner_id, payload.get("intent_id"), control=ensure_control(self.conn, "agent", owner_id), target_user_id=payload.get("target_user_id"), manual=bool(payload.get("manual", False)), trace_id=payload.get("trace_id"), draft_text=payload.get("draft_text"), draft_texts_by_intent_id=payload.get("draft_texts_by_intent_id"), allow_authoring=bool(payload.get("allow_authoring", False)))
         elif op_type == "RECONSIDER_WAITING_PROACTIVE_INTENTS":
             return reconsider_waiting_proactive_intents(
                 self.conn,
@@ -802,6 +802,7 @@ class LifeEngineRuntime:
                 trace_id=payload.get("trace_id"),
                 limit=int(payload.get("limit", 10)),
                 allow_authoring=bool(payload.get("allow_authoring", False)),
+                draft_texts_by_intent_id=payload.get("draft_texts_by_intent_id"),
             )
         elif op_type == "MARK_PROACTIVE_SENT":
             return mark_outbox_sent(self.conn, owner_id, payload["outbox_id"], result=payload.get("result") or {}, manual=bool(payload.get("manual", True)))
@@ -2632,19 +2633,31 @@ class LifeEngineRuntime:
             return {"decision": None, "commit": None, "error": f"{type(exc).__name__}: {exc}"}
 
     def _run_proactive_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
-                                tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
+                                tick_id: str, trace: Trace, now: str,
+                                authoring: dict[str, Any] | None = None) -> dict[str, Any]:
+        """运行 heartbeat 的 proactive 自动评估。
+
+        输入来自 `tick()` 的控制状态、trace、逻辑时间和事务外 authoring 包；输出是
+        proactive LifeOps commit 或降级错误。副作用只发生在后续 LifeOps 事务内：
+        过期 intent、重评等待 intent、按策略创建 outbox。生成式文案只能来自
+        `authoring["proactive_outbox_drafts"]`，本函数在事务内始终传
+        `allow_authoring=False`，无预生成稿时保留原有 fallback。
+        """
         if owner_kind != "agent":
             return {"evaluated": [], "reason": "not agent"}
         gates = control.get("module_gates") or {}
         mode = str(gates.get("proactive", "pending_only") or "pending_only")
         if mode == "off":
             return {"evaluated": [], "reason": "proactive off"}
+        drafts = (authoring or {}).get("proactive_outbox_drafts") or {}
+        if not isinstance(drafts, dict):
+            drafts = {}
         try:
             with trace.span("proactive_evaluate", {"mode": mode}):
                 commit = self._commit_ops_locked([
                     {"type": "EXPIRE_PROACTIVE_INTENTS", "payload": {}},
-                    {"type": "RECONSIDER_WAITING_PROACTIVE_INTENTS", "payload": {"trace_id": trace.id, "allow_authoring": False}},
-                    {"type": "EVALUATE_PROACTIVE_INTENT", "payload": {"manual": False, "trace_id": trace.id, "allow_authoring": False}},
+                    {"type": "RECONSIDER_WAITING_PROACTIVE_INTENTS", "payload": {"trace_id": trace.id, "allow_authoring": False, "draft_texts_by_intent_id": drafts}},
+                    {"type": "EVALUATE_PROACTIVE_INTENT", "payload": {"manual": False, "trace_id": trace.id, "allow_authoring": False, "draft_texts_by_intent_id": drafts}},
                 ], owner_kind, owner_id, "proactive_heartbeat", session_id=None, turn_id=tick_id, trace=trace, control=control)
             return {"commit": commit}
         except Exception as exc:
