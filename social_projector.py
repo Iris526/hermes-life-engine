@@ -707,7 +707,7 @@ def _reason(event: dict[str, Any], summary: str | None, *, default: str) -> str:
 
 def _occurrence_for_event(conn, owner_kind: str, owner_id: str, event_id: str) -> dict[str, Any] | None:
     row = conn.execute(
-        """SELECT * FROM recurring_activity_occurrences
+        """SELECT * FROM venture_occurrences
            WHERE owner_kind=? AND owner_id=? AND event_id=?
            ORDER BY created_at DESC LIMIT 1""",
         (owner_kind, owner_id, event_id),
@@ -717,7 +717,7 @@ def _occurrence_for_event(conn, owner_kind: str, owner_id: str, event_id: str) -
 
 def _get_occurrence(conn, owner_kind: str, owner_id: str, occurrence_id: str) -> dict[str, Any] | None:
     row = conn.execute(
-        "SELECT * FROM recurring_activity_occurrences WHERE owner_kind=? AND owner_id=? AND id=?",
+        "SELECT * FROM venture_occurrences WHERE owner_kind=? AND owner_id=? AND id=?",
         (owner_kind, owner_id, occurrence_id),
     ).fetchone()
     return dict(row) if row else None
@@ -727,8 +727,8 @@ def _activity_for_occurrence(conn, owner_kind: str, owner_id: str,
                              occurrence: dict[str, Any] | None) -> dict[str, Any] | None:
     if not occurrence or not occurrence.get("activity_id"):
         return None
-    from . import recurring
-    return recurring.get_recurring_activity(conn, owner_kind, owner_id, occurrence["activity_id"])
+    from . import venture
+    return venture.get_venture(conn, owner_kind, owner_id, occurrence["activity_id"])
 
 
 def _activity_has_supply(activity: dict[str, Any] | None) -> bool:

@@ -42,7 +42,7 @@ def test_v016_schema_and_version(tmp_path):
         assert _SCHEMA_VERSION >= 52
         assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 52
         tables = {r[0] for r in rt.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        assert {"recurring_activities", "recurring_activity_occurrences"}.issubset(tables)
+        assert {"ventures", "venture_occurrences"}.issubset(tables)
     finally:
         rt.close()
 
@@ -56,18 +56,18 @@ def test_daily_activity_materializes_once_per_day(tmp_path):
                     start_time="10:00", end_time="14:00", timezone="UTC",
                     resource_costs={"money.lingzhu": 30, "energy": -14})
         t1 = rt.tick(now="2026-06-15T15:00:00+00:00", manual=False)
-        assert t1["recurring_activities"]["status"] == "ok"
-        assert t1["recurring_activities"]["count"] == 1
+        assert t1["venture"]["status"] == "ok"
+        assert t1["venture"]["count"] == 1
         stalls = _titles(rt, "在东市摆摊")
         assert len(stalls) == 1
         assert stalls[0]["resource_costs"].get("money.lingzhu") == 30
         # idempotent: a second tick the same day does not duplicate
         t2 = rt.tick(now="2026-06-15T15:30:00+00:00", manual=False)
-        assert t2["recurring_activities"]["count"] == 0
+        assert t2["venture"]["count"] == 0
         assert len(_titles(rt, "在东市摆摊")) == 1
         # next day: a fresh occurrence is materialized
         t3 = rt.tick(now="2026-06-16T15:00:00+00:00", manual=False)
-        assert t3["recurring_activities"]["count"] == 1
+        assert t3["venture"]["count"] == 1
         assert len(_titles(rt, "在东市摆摊")) == 2
     finally:
         rt.close()
@@ -85,7 +85,7 @@ def test_cancel_stops_materialization(tmp_path):
         acts = rt.activity("list")["activities"]
         assert any(a["id"] == aid and a["status"] == "cancelled" for a in acts)
         t = rt.tick(now="2026-06-15T23:00:00+00:00", manual=False)
-        assert t["recurring_activities"]["count"] == 0
+        assert t["venture"]["count"] == 0
         assert _titles(rt, "夜市摆摊") == []
     finally:
         rt.close()
@@ -102,14 +102,14 @@ def test_weekly_cadence_respects_weekday(tmp_path):
         rt.activity("register", title="赶集日摆摊", cadence_kind="weekly", weekdays=[other],
                     start_time="09:00", end_time="12:00", resource_costs={"money.lingzhu": 40})
         t_off = rt.tick(now="2026-06-15T13:00:00+00:00", manual=False)
-        assert t_off["recurring_activities"]["count"] == 0
+        assert t_off["venture"]["count"] == 0
         assert _titles(rt, "赶集日摆摊") == []
         # update to today's weekday → materializes today
         acts = rt.activity("list")["activities"]
         aid = acts[0]["id"]
         rt.activity("update", activity_id=aid, weekdays=[wd])
         t_on = rt.tick(now="2026-06-15T13:30:00+00:00", manual=False)
-        assert t_on["recurring_activities"]["count"] == 1
+        assert t_on["venture"]["count"] == 1
         assert len(_titles(rt, "赶集日摆摊")) == 1
     finally:
         rt.close()

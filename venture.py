@@ -1,4 +1,4 @@
-"""Recurring activities (营生) — an engine-level, registerable and cancellable
+"""Venture (营生) — an engine-level, registerable and cancellable
 occupation that the heartbeat materializes into concrete events on a cadence.
 
 This is the durable, engine-enforced answer to "let her run a stall to earn
@@ -28,7 +28,7 @@ VALID_LOCATION_KINDS = {"fixed", "flexible"}
 
 def _row(conn, owner_kind: str, owner_id: str, activity_id: str) -> dict[str, Any] | None:
     r = conn.execute(
-        "SELECT * FROM recurring_activities WHERE id=? AND owner_kind=? AND owner_id=?",
+        "SELECT * FROM ventures WHERE id=? AND owner_kind=? AND owner_id=?",
         (activity_id, owner_kind, owner_id),
     ).fetchone()
     return _decode(r) if r else None
@@ -44,7 +44,7 @@ def _decode(row) -> dict[str, Any]:
     return d
 
 
-def create_recurring_activity(
+def create_venture(
     conn, owner_kind: str, owner_id: str, *, title: str,
     description: str | None = None, activity_type: str = "work",
     event_category: str | None = None, activity_domain: str | None = None,
@@ -61,14 +61,14 @@ def create_recurring_activity(
     canon_version: int | None = None, **_ignored: Any,
 ) -> dict[str, Any]:
     if not title or not title.strip():
-        raise ValueError("recurring activity title is required")
+        raise ValueError("venture title is required")
     cadence_kind = cadence_kind if cadence_kind in VALID_CADENCES else "daily"
     operation_model = operation_model if operation_model in VALID_OPERATION_MODELS else "active"
     trigger_kind = trigger_kind if trigger_kind in VALID_TRIGGERS else "scheduled"
     location_kind = location_kind if location_kind in VALID_LOCATION_KINDS else "fixed"
     aid = new_id("recact")
     conn.execute(
-        """INSERT INTO recurring_activities(
+        """INSERT INTO ventures(
              id, owner_kind, owner_id, title, description, activity_type, event_category,
              activity_domain, cadence_kind, weekdays_json, start_time, end_time, timezone,
              resource_costs_json, importance, priority, status, start_date, end_date,
@@ -81,19 +81,19 @@ def create_recurring_activity(
          dumps(supply_chain) if supply_chain else None, dumps(arrival) if arrival else None,
          float(wage_per_occurrence or 0), dumps(tags or []), source),
     )
-    append_journal(conn, owner_kind, owner_id, "recurring_activity_created",
+    append_journal(conn, owner_kind, owner_id, "venture_created",
                    {"activity_id": aid, "title": title, "cadence": cadence_kind}, source, canon_version=canon_version)
     return _row(conn, owner_kind, owner_id, aid)
 
 
-def update_recurring_activity(
+def update_venture(
     conn, owner_kind: str, owner_id: str, activity_id: str, *,
     status: str | None = None, source: str = "life_activity",
     canon_version: int | None = None, **fields: Any,
 ) -> dict[str, Any]:
     existing = _row(conn, owner_kind, owner_id, activity_id)
     if not existing:
-        raise ValueError(f"recurring activity not found: {activity_id}")
+        raise ValueError(f"venture not found: {activity_id}")
     sets: list[str] = []
     params: list[Any] = []
     if status is not None:
@@ -128,29 +128,29 @@ def update_recurring_activity(
     sets.append("updated_at=datetime('now')")
     params.extend([activity_id, owner_kind, owner_id])
     conn.execute(
-        f"UPDATE recurring_activities SET {', '.join(sets)} WHERE id=? AND owner_kind=? AND owner_id=?",
+        f"UPDATE ventures SET {', '.join(sets)} WHERE id=? AND owner_kind=? AND owner_id=?",
         tuple(params),
     )
-    append_journal(conn, owner_kind, owner_id, "recurring_activity_updated",
+    append_journal(conn, owner_kind, owner_id, "venture_updated",
                    {"activity_id": activity_id, "status": status, "fields": list(fields.keys())}, source, canon_version=canon_version)
     return _row(conn, owner_kind, owner_id, activity_id)
 
 
-def list_recurring_activities(conn, owner_kind: str, owner_id: str, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+def list_ventures(conn, owner_kind: str, owner_id: str, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     if status:
         rows = conn.execute(
-            "SELECT * FROM recurring_activities WHERE owner_kind=? AND owner_id=? AND status=? ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM ventures WHERE owner_kind=? AND owner_id=? AND status=? ORDER BY created_at DESC LIMIT ?",
             (owner_kind, owner_id, status, int(limit)),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM recurring_activities WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM ventures WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT ?",
             (owner_kind, owner_id, int(limit)),
         ).fetchall()
     return [_decode(r) for r in rows]
 
 
-def get_recurring_activity(conn, owner_kind: str, owner_id: str, activity_id: str) -> dict[str, Any] | None:
+def get_venture(conn, owner_kind: str, owner_id: str, activity_id: str) -> dict[str, Any] | None:
     return _row(conn, owner_kind, owner_id, activity_id)
 
 
@@ -170,11 +170,11 @@ def _matches_cadence(activity: dict[str, Any], date_key: str, weekday: int) -> b
 def due_activities(conn, owner_kind: str, owner_id: str, date_key: str, weekday: int) -> list[dict[str, Any]]:
     """Active activities due on date_key that have NOT yet been materialized that day."""
     out: list[dict[str, Any]] = []
-    for act in list_recurring_activities(conn, owner_kind, owner_id, status="active"):
+    for act in list_ventures(conn, owner_kind, owner_id, status="active"):
         if not _matches_cadence(act, date_key, weekday):
             continue
         seen = conn.execute(
-            "SELECT 1 FROM recurring_activity_occurrences WHERE activity_id=? AND date_key=?",
+            "SELECT 1 FROM venture_occurrences WHERE activity_id=? AND date_key=?",
             (act["id"], date_key),
         ).fetchone()
         if seen:
@@ -225,12 +225,12 @@ def record_arrival(conn, owner_kind: str, owner_id: str, activity_id: str, date_
 def record_occurrence(conn, owner_kind: str, owner_id: str, activity_id: str, date_key: str,
                       event_id: str | None, schedule_block_id: str | None) -> None:
     conn.execute(
-        """INSERT OR IGNORE INTO recurring_activity_occurrences(
+        """INSERT OR IGNORE INTO venture_occurrences(
              id, activity_id, owner_kind, owner_id, date_key, event_id, schedule_block_id)
            VALUES(?,?,?,?,?,?,?)""",
         (new_id("recocc"), activity_id, owner_kind, owner_id, date_key, event_id, schedule_block_id),
     )
     conn.execute(
-        "UPDATE recurring_activities SET last_materialized_date=?, updated_at=datetime('now') WHERE id=? AND owner_kind=? AND owner_id=?",
+        "UPDATE ventures SET last_materialized_date=?, updated_at=datetime('now') WHERE id=? AND owner_kind=? AND owner_id=?",
         (date_key, activity_id, owner_kind, owner_id),
     )

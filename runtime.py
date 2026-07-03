@@ -44,7 +44,7 @@ from .time_utils import to_epoch as _to_epoch
 from . import persona
 from . import emotion
 from . import event_costs
-from . import recurring
+from . import venture
 from .impromptu import record_impromptu_activity
 from .behavior_mapping import (
     DEFAULT_BEHAVIOR_MAPPINGS,
@@ -405,7 +405,7 @@ _HEARTBEAT_MODULES: list[tuple[str, str, tuple[str, ...]]] = [
     ("persona_drift", "_run_persona_drift_for_tick", ("minutes_elapsed",)),
     ("reflection", "_run_reflection_for_tick", ("authoring",)),
     ("meals", "_settle_meals_for_tick", ()),
-    ("recurring_activities", "_materialize_recurring_for_tick", ()),
+    ("venture", "_materialize_recurring_for_tick", ()),
     ("campaigns", "_run_campaigns_for_tick", ()),
     ("daily_rhythm", "_ensure_daily_rhythm_for_tick", ()),
     ("venture_supply", "_settle_supply_chain_for_tick", ()),
@@ -830,13 +830,13 @@ class LifeEngineRuntime:
                 self.conn, owner_kind, owner_id, canon_version=canon_version,
                 source=payload.get("source") or source,
                 **{k: v for k, v in payload.items() if k != "source"})
-        elif op_type == "CREATE_RECURRING_ACTIVITY":
-            return recurring.create_recurring_activity(
+        elif op_type in ("CREATE_VENTURE", "CREATE_RECURRING_ACTIVITY"):  # old op-type accepted for back-compat
+            return venture.create_venture(
                 self.conn, owner_kind, owner_id, canon_version=canon_version,
                 source=payload.get("source") or source,
                 **{k: v for k, v in payload.items() if k != "source"})
-        elif op_type == "UPDATE_RECURRING_ACTIVITY":
-            return recurring.update_recurring_activity(
+        elif op_type in ("UPDATE_VENTURE", "UPDATE_RECURRING_ACTIVITY"):  # old op-type accepted for back-compat
+            return venture.update_venture(
                 self.conn, owner_kind, owner_id, payload["activity_id"], canon_version=canon_version,
                 source=payload.get("source") or source,
                 **{k: v for k, v in payload.items() if k not in {"source", "activity_id"}})
@@ -2016,11 +2016,11 @@ class LifeEngineRuntime:
                                         tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
         """Materialize each active recurring activity (营生) due today into a
         concrete scheduled event, once per day (idempotent). Income/cost settles
-        through normal event completion. Gated by `recurring_activities`."""
+        through normal event completion. Gated by `venture`."""
         if owner_kind != "agent":
             return {"status": "skipped", "reason": "non-agent owner"}
         gates = control.get("module_gates") or {}
-        mode = str(gates.get("recurring_activities", "auto") or "auto").lower()
+        mode = str(gates.get("venture", gates.get("recurring_activities", "auto")) or "auto").lower()
         if mode in {"off", "disabled", "false"}:
             return {"status": "skipped", "reason": f"gate={mode}"}
         try:
@@ -2039,7 +2039,7 @@ class LifeEngineRuntime:
                 return {"status": "skipped", "reason": "unparseable now"}
             date_key = local.date().isoformat()
             weekday = local.weekday()
-            due = recurring.due_activities(self.conn, owner_kind, owner_id, date_key, weekday)
+            due = venture.due_activities(self.conn, owner_kind, owner_id, date_key, weekday)
             materialized = []
             for act in due:
                 # opportunity-triggered ventures don't run on a fixed cadence —
@@ -2108,7 +2108,7 @@ class LifeEngineRuntime:
                     if ev_id and start_iso and end_iso and not passive:
                         c2 = self._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": ev_id, "start": start_iso, "end": end_iso, "block_type": "recurring_activity", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 30}}}], owner_kind, owner_id, "recurring_activity", session_id=None, turn_id=tick_id, trace=trace, control=control)
                         bid = (((c2.get("results") or [{}])[0].get("result") or {}).get("id"))
-                    recurring.record_occurrence(self.conn, owner_kind, owner_id, act["id"], date_key, ev_id, bid)
+                    venture.record_occurrence(self.conn, owner_kind, owner_id, act["id"], date_key, ev_id, bid)
                 materialized.append({"activity_id": act["id"], "title": act["title"], "event_id": ev_id, "schedule_block_id": bid})
             return {"status": "ok", "date_key": date_key, "count": len(materialized), "materialized": materialized}
         except Exception as exc:
@@ -2121,7 +2121,7 @@ class LifeEngineRuntime:
         the current phase's themed events (one-time beats on first entry +
         per-day spawns), auto-advance phases by elapsed time, escalate via the
         per-phase data, and resolve at the arc's end. Idempotent per
-        (campaign, phase, day); conflict-arbitrated like recurring. Gated by
+        (campaign, phase, day); conflict-arbitrated like venture. Gated by
         `campaigns`."""
         if owner_kind != "agent":
             return {"status": "skipped", "reason": "non-agent owner"}
@@ -2264,7 +2264,7 @@ class LifeEngineRuntime:
         """进销存: settle sales for completed venture occurrences (sold =
         min(demand, stock) → stock down, money up), mark arrived restock orders,
         and auto-create a 进货 (procurement) event when stock runs low — so goods
-        never appear from nowhere. Gated by `recurring_activities`.
+        never appear from nowhere. Gated by `venture`.
 
         社交投影是结算后的派生事实：失败时只让本段 heartbeat partial，并通过
         补偿扫描重试已 sale_settled 但缺少 applied projection 的 occurrence，
@@ -2273,7 +2273,7 @@ class LifeEngineRuntime:
         if owner_kind != "agent":
             return {"status": "skipped", "reason": "non-agent owner"}
         gates = control.get("module_gates") or {}
-        if str(gates.get("recurring_activities", "auto") or "auto").lower() in {"off", "disabled", "false"}:
+        if str(gates.get("venture", gates.get("recurring_activities", "auto")) or "auto").lower() in {"off", "disabled", "false"}:
             return {"status": "skipped", "reason": "gate off"}
         try:
             from .time_utils import parse_datetime, to_epoch as _to_epoch
@@ -2288,7 +2288,7 @@ class LifeEngineRuntime:
             social_projections = 0
             social_projection_errors: list[dict[str, Any]] = []
             attempted_social_occurrences: set[str] = set()
-            for act in recurring.list_recurring_activities(self.conn, owner_kind, owner_id, status="active"):
+            for act in venture.list_ventures(self.conn, owner_kind, owner_id, status="active"):
                 op = act.get("operation_model") or "active"
                 passive = op in {"self_service", "staffed"}
                 sc = act.get("supply_chain") if isinstance(act.get("supply_chain"), dict) else None
@@ -2305,7 +2305,7 @@ class LifeEngineRuntime:
                 wage = float(act.get("wage_per_occurrence") or 0)
                 # 1) settle each unsettled occurrence
                 occs = self.conn.execute(
-                    "SELECT id, event_id, date_key FROM recurring_activity_occurrences WHERE owner_kind=? AND owner_id=? AND activity_id=? AND sale_settled=0",
+                    "SELECT id, event_id, date_key FROM venture_occurrences WHERE owner_kind=? AND owner_id=? AND activity_id=? AND sale_settled=0",
                     (owner_kind, owner_id, act["id"]),
                 ).fetchall()
                 for occ in occs:
@@ -2341,7 +2341,7 @@ class LifeEngineRuntime:
                         with trace.span("venture_settle", {"activity_id": act["id"], "sold": sold}):
                             self._commit_ops_locked(settle_ops, owner_kind, owner_id, "venture_sale", session_id=None, turn_id=tick_id, trace=trace, control=control)
                     self.conn.execute(
-                        "UPDATE recurring_activity_occurrences SET sale_settled=1, sold_quantity=?, income=? WHERE id=?",
+                        "UPDATE venture_occurrences SET sale_settled=1, sold_quantity=?, income=? WHERE id=?",
                         (sold, income, occ["id"]),
                     )
                     attempted_social_occurrences.add(occ["id"])
@@ -2358,7 +2358,7 @@ class LifeEngineRuntime:
                     income_total += income
                 for settled in self.conn.execute(
                     """SELECT occ.id
-                       FROM recurring_activity_occurrences occ
+                       FROM venture_occurrences occ
                        WHERE occ.owner_kind=? AND occ.owner_id=? AND occ.activity_id=?
                          AND occ.sale_settled=1
                          AND NOT EXISTS (
@@ -2464,11 +2464,11 @@ class LifeEngineRuntime:
         """接委托/客人找上门: for opportunity-triggered ventures, roll the day's
         arrivals (deterministic per venture+day) and land any not-yet-arrived
         ones as conflict-arbitrated events from now — so work shows up on its own
-        instead of being improvised when asked. Gated by `recurring_activities`."""
+        instead of being improvised when asked. Gated by `venture`."""
         if owner_kind != "agent":
             return {"status": "skipped", "reason": "non-agent owner"}
         gates = control.get("module_gates") or {}
-        if str(gates.get("recurring_activities", "auto") or "auto").lower() in {"off", "disabled", "false"}:
+        if str(gates.get("venture", gates.get("recurring_activities", "auto")) or "auto").lower() in {"off", "disabled", "false"}:
             return {"status": "skipped", "reason": "gate off"}
         try:
             from .time_utils import parse_datetime, to_epoch as _to_epoch
@@ -2487,11 +2487,11 @@ class LifeEngineRuntime:
                 return {"status": "skipped", "reason": "unparseable now"}
             date_key = local.date().isoformat()
             landed = []
-            for act in recurring.list_recurring_activities(self.conn, owner_kind, owner_id, status="active"):
+            for act in venture.list_ventures(self.conn, owner_kind, owner_id, status="active"):
                 if (act.get("trigger_kind") or "scheduled") != "opportunity":
                     continue
-                target = recurring.opportunity_target(act, date_key)
-                have = recurring.count_arrivals(self.conn, owner_kind, owner_id, act["id"], date_key)
+                target = venture.opportunity_target(act, date_key)
+                have = venture.count_arrivals(self.conn, owner_kind, owner_id, act["id"], date_key)
                 if have >= target:
                     continue
                 arrival = act.get("arrival") if isinstance(act.get("arrival"), dict) else {}
@@ -2527,7 +2527,7 @@ class LifeEngineRuntime:
                             self._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": ev_id, "start": s_iso, "end": e_iso, "block_type": "venture_opportunity", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 30}}}], owner_kind, owner_id, "venture_opportunity", session_id=None, turn_id=tick_id, trace=trace, control=control)
                         except Exception:
                             pass
-                    recurring.record_arrival(self.conn, owner_kind, owner_id, act["id"], date_key, ev_id)
+                    venture.record_arrival(self.conn, owner_kind, owner_id, act["id"], date_key, ev_id)
                     landed.append({"activity_id": act["id"], "title": act["title"], "event_id": ev_id, "start": s_iso})
             return {"status": "ok", "date_key": date_key, "count": len(landed), "landed": landed}
         except Exception as exc:
@@ -3356,10 +3356,10 @@ class LifeEngineRuntime:
                 )
         raise ValueError(f"Unknown opinion action: {action}")
 
-    # ----- recurring activities (营生) -------------------------------------
+    # ----- venture (营生) --------------------------------------------------
     def activity(self, action: str = "list", owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID,
                  session_id: str | None = None, turn_id: str | None = None, **payload: Any) -> dict[str, Any]:
-        """Register / list / pause / resume / cancel a recurring activity (营生).
+        """Register / list / pause / resume / cancel a venture (营生).
 
         A registered activity is materialized by the heartbeat into one scheduled
         event per due day (engine-enforced, not prompt/memory); income and cost
@@ -3367,7 +3367,7 @@ class LifeEngineRuntime:
         """
         action_l = str(action or "list").strip().lower()
         if action_l in {"register", "create", "add", "注册", "开张"}:
-            ops: list[dict[str, Any]] = [{"type": "CREATE_RECURRING_ACTIVITY", "payload": payload}]
+            ops: list[dict[str, Any]] = [{"type": "CREATE_VENTURE", "payload": payload}]
             # A supply-chain venture sells a goods resource — make sure it's
             # defined (as a non-vital 'goods' stock account) so restock/sale
             # deltas have somewhere to land. Income comes from sales, not the
@@ -3398,19 +3398,19 @@ class LifeEngineRuntime:
                     for tkey, tspec in recipe["tools"].items():
                         tspec = tspec if isinstance(tspec, dict) else {}
                         _ensure_resource(tkey, tspec.get("name") or tkey, "tool", "把", tspec.get("initial", 0))
-            return self.commit_ops(ops, owner_kind, owner_id, "life_activity_tool", session_id, turn_id)
+            return self.commit_ops(ops, owner_kind, owner_id, "life_venture_tool", session_id, turn_id)
         if action_l in {"list", "ls", "列表"}:
             with transaction(self.conn):
-                return {"ok": True, "activities": recurring.list_recurring_activities(self.conn, owner_kind, owner_id, status=payload.get("status"), limit=int(payload.get("limit", 50)))}
+                return {"ok": True, "activities": venture.list_ventures(self.conn, owner_kind, owner_id, status=payload.get("status"), limit=int(payload.get("limit", 50)))}
         if action_l in {"get", "show"}:
             with transaction(self.conn):
-                return {"ok": True, "activity": recurring.get_recurring_activity(self.conn, owner_kind, owner_id, payload["activity_id"])}
+                return {"ok": True, "activity": venture.get_venture(self.conn, owner_kind, owner_id, payload["activity_id"])}
         if action_l in {"pause", "暂停", "resume", "恢复", "cancel", "取消", "update", "更新"}:
             status_map = {"pause": "paused", "暂停": "paused", "resume": "active", "恢复": "active", "cancel": "cancelled", "取消": "cancelled"}
             op_payload = dict(payload)
             if action_l in status_map:
                 op_payload["status"] = status_map[action_l]
-            return self.commit_ops([{"type": "UPDATE_RECURRING_ACTIVITY", "payload": op_payload}], owner_kind, owner_id, "life_activity_tool", session_id, turn_id)
+            return self.commit_ops([{"type": "UPDATE_VENTURE", "payload": op_payload}], owner_kind, owner_id, "life_venture_tool", session_id, turn_id)
         raise ValueError(f"Unknown activity action: {action}")
 
     # ----- goals / life arcs / decomposition -------------------------------

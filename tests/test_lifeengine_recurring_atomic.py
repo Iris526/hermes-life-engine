@@ -1,6 +1,6 @@
 """Regression: recurring materialization must be atomic with its idempotency guard.
 
-due_activities skips an activity once it has a recurring_activity_occurrences row
+due_activities skips an activity once it has a venture_occurrences row
 for the day. If the event were created but record_occurrence then failed, the
 event would persist un-guarded and the next tick would re-materialize a duplicate
 (polluting the schedule and, via completion, the ledger). The event + block +
@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import shutil
 
-from lifeengine import recurring
+from lifeengine import venture
 from lifeengine.constants import DEFAULT_AGENT_ID
 from lifeengine.runtime import LifeEngineRuntime
 
@@ -41,7 +41,7 @@ def _event_count(rt, aid):
 
 def _occ_count(rt, aid):
     return rt.conn.execute(
-        "SELECT COUNT(*) FROM recurring_activity_occurrences WHERE activity_id=?",
+        "SELECT COUNT(*) FROM venture_occurrences WHERE activity_id=?",
         (aid,),
     ).fetchone()[0]
 
@@ -60,7 +60,7 @@ def test_failed_record_occurrence_rolls_back_the_event(tmp_path, monkeypatch):
         def _boom(*a, **k):
             raise RuntimeError("occurrence write failed")
 
-        monkeypatch.setattr(recurring, "record_occurrence", _boom)
+        monkeypatch.setattr(venture, "record_occurrence", _boom)
         rt.tick(now="2026-06-15T09:00:00+00:00", manual=False)
 
         # The event must NOT have leaked past the failed guard.

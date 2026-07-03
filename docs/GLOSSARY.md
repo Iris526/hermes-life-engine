@@ -15,7 +15,7 @@
 | **Event / ScheduleBlock** | 事件与其排期块状态机。 | — | ✅ |
 | **heartbeat tick** | 每 5 分钟（或离线补算）的后台推进；由 `_HEARTBEAT_MODULES` 注册表驱动（轴二-1）。 | — | ✅ |
 | **module gate** | 每个心跳/行为模块的开关档位，单一真值源 `constants.GATE_SPECS`（轴二-2），写入经 `validate_gate_value`。 | 旧称杂物抽屉里的 37 键；已收敛为 20 键。 | ✅ |
-| **venture（营生 / 经营体）** | 引擎级可注册/取消的**营生**：按 cadence 物化成日程事件的 occupation（摆摊赚钱等），含进销存/机会到达/经营模式。 | `recurring_activities`（表）、`life_activity`（工具）、occupation、经营体 —— **一物多名**。 | 🔒 规范名=venture；🟡 工具名 `life_activity`→`life_venture`(带别名)、gate `recurring_activities`→`venture`、表 `recurring_activities`、op `UPDATE_RECURRING_ACTIVITY` 待轴二-5 原子改。 |
+| **venture（营生 / 经营体）** | 引擎级可注册/取消的**营生**：按 cadence 物化成日程事件的 occupation（摆摊赚钱等），含进销存/机会到达/经营模式。 | `recurring_activities`（表）、`life_activity`（工具）、occupation、经营体 —— **一物多名**。 | ✅ 全量改名完成（轴二-4/5，migration v69）：表 `ventures`/`venture_occurrences`、op `CREATE/UPDATE_VENTURE`（旧名向后兼容接受）、gate `venture`（旧 `recurring_activities` 回退读）、工具 `life_venture`（`life_activity` 别名）、模块 `venture.py`。保留为内部实现：私有方法 `_materialize_recurring_for_tick` 等、事件属性 `recurring_activity_id`（历史事件读取兼容）。 |
 | **daily_rhythm** | 每日节律模板物化（晨巡等）。 | `living_rhythm`（legacy 读别名）。 | ✅（gate 已首类化，轴二-2） |
 | **serendipity** | 偶遇/小意外的确定性映射（当前硬编码，待生成层接管=轴三）。 | — | ✅ |
 

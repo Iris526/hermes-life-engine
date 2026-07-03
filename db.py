@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 68
+_SCHEMA_VERSION = 69
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -368,6 +368,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 68:
         _create_schema_v68(conn)
         _record_schema_migration(conn, 68, "drop_acceptance_and_qa_theater_tables")
+    if current < 69:
+        _create_schema_v69(conn)
+        _record_schema_migration(conn, 69, "rename_recurring_activities_to_ventures")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -4773,3 +4776,19 @@ def _create_schema_v68(conn: sqlite3.Connection) -> None:
         "human_review_managed_release_readiness_reports",
     ):
         conn.execute(f"DROP TABLE IF EXISTS {table}")
+
+
+def _create_schema_v69(conn: sqlite3.Connection) -> None:
+    """Rename the recurring-activities tables to the venture concept (营生→venture, 轴二-4).
+
+    The 营生 feature was "one thing, four names" (recurring_activities table /
+    Venture concept / life_activity tool / occupation). The code, tool, op-types,
+    and gate now all say `venture`; these table renames make the storage match.
+    Idempotent — only renames when the old table is present and the new one isn't
+    (SQLite carries the table's indexes across a RENAME automatically).
+    """
+    existing = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "recurring_activities" in existing and "ventures" not in existing:
+        conn.execute("ALTER TABLE recurring_activities RENAME TO ventures")
+    if "recurring_activity_occurrences" in existing and "venture_occurrences" not in existing:
+        conn.execute("ALTER TABLE recurring_activity_occurrences RENAME TO venture_occurrences")

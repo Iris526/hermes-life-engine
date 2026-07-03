@@ -12,7 +12,7 @@ pytest.importorskip("sqlite_vec")
 
 from lifeengine.runtime import LifeEngineRuntime
 from lifeengine.constants import DEFAULT_AGENT_ID
-from lifeengine import recurring
+from lifeengine import venture
 
 
 def fresh_home(tmp_path):
@@ -41,11 +41,11 @@ def _block(rt, event_id):
 
 def test_opportunity_target_is_deterministic():
     act = {"id": "recact_x", "arrival": {"per_day": 2}}
-    assert recurring.opportunity_target(act, "2026-06-15") == 2
-    assert recurring.opportunity_target({"id": "recact_x", "arrival": {"per_day": 0}}, "2026-06-15") == 0
+    assert venture.opportunity_target(act, "2026-06-15") == 2
+    assert venture.opportunity_target({"id": "recact_x", "arrival": {"per_day": 0}}, "2026-06-15") == 0
     # fractional per_day averages out but is reproducible for a given day
     a = {"id": "recact_y", "arrival": {"per_day": 1.5}}
-    assert recurring.opportunity_target(a, "2026-06-15") == recurring.opportunity_target(a, "2026-06-15")
+    assert venture.opportunity_target(a, "2026-06-15") == venture.opportunity_target(a, "2026-06-15")
 
 
 def test_opportunities_arrive_on_their_own(tmp_path):
@@ -66,7 +66,7 @@ def test_opportunities_arrive_on_their_own(tmp_path):
         # each委托 carries the pay
         assert evs[0]["resource_costs"].get("money.lingzhu") == 50
         # an opportunity venture is NOT materialized on a cadence
-        occ = rt.conn.execute("SELECT COUNT(*) c FROM recurring_activity_occurrences WHERE activity_id=?", (aid,)).fetchone()
+        occ = rt.conn.execute("SELECT COUNT(*) c FROM venture_occurrences WHERE activity_id=?", (aid,)).fetchone()
         assert occ["c"] == 0
         # the two arrivals are conflict-arbitrated → non-overlapping
         b = sorted([_block(rt, e["id"]) for e in evs])

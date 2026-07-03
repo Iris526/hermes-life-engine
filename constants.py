@@ -88,7 +88,9 @@ GATE_SPECS: dict[str, GateSpec] = {
     "passive_metabolism": GateSpec("mode", "auto", "runtime.py _settle_resources", _GATE_ONOFF),
     "personality_drift": GateSpec("mode", "auto", "runtime.py _run_persona_drift_for_tick / dream.py", _GATE_ONOFF),
     "meals": GateSpec("mode", "auto", "runtime.py _settle_meals_for_tick", _GATE_ONOFF),
-    "recurring_activities": GateSpec("mode", "auto", "runtime.py _materialize_recurring / _settle_supply_chain / _roll_opportunities", _GATE_ONOFF),
+    # venture (营生) heartbeat materialization. Old agents stored this gate as
+    # "recurring_activities"; the runtime read falls back to that key.
+    "venture": GateSpec("mode", "auto", "runtime.py _materialize_recurring / _settle_supply_chain / _roll_opportunities", _GATE_ONOFF),
     "campaigns": GateSpec("mode", "auto", "runtime.py _run_campaigns_for_tick", _GATE_ONOFF),
     # --- reply / autonomy / proactive -------------------------------------
     "reply_gate": GateSpec("mode", "advisory", "reply_gate.py / runtime.py assess_incoming_message", _GATE_ONOFF + ("advisory", "strict")),

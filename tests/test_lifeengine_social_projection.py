@@ -6,7 +6,7 @@ import os
 import shutil
 from pathlib import Path
 
-from lifeengine import recurring, social_projector
+from lifeengine import venture, social_projector
 from lifeengine.canon import ensure_control
 from lifeengine.db import _SCHEMA_VERSION, transaction
 from lifeengine.jsonutil import loads
@@ -199,13 +199,13 @@ def test_sale_settled_occurrence_projects_once(tmp_path):
         activity_id = reg["receipt"]["facts"][0]["evidence"]["activity_id"]
         ev = _result(rt.event_tool("create", title="净符摊", event_type="work",
                                    activity_domain="venture", tags=["摆摊", "净符"], resource_costs={}))
-        recurring.record_occurrence(rt.conn, "agent", "default-agent", activity_id, "2026-06-22", ev["id"], None)
+        venture.record_occurrence(rt.conn, "agent", "default-agent", activity_id, "2026-06-22", ev["id"], None)
         rt.event_tool("complete", event_id=ev["id"], summary="当日摆摊结束，待结算销售。")
         skipped = rt.conn.execute("SELECT status FROM social_projection_runs WHERE event_id=?", (ev["id"],)).fetchall()
         assert skipped == []
 
-        occ = rt.conn.execute("SELECT * FROM recurring_activity_occurrences WHERE event_id=?", (ev["id"],)).fetchone()
-        rt.conn.execute("UPDATE recurring_activity_occurrences SET sale_settled=1, sold_quantity=3, income=24 WHERE id=?", (occ["id"],))
+        occ = rt.conn.execute("SELECT * FROM venture_occurrences WHERE event_id=?", (ev["id"],)).fetchone()
+        rt.conn.execute("UPDATE venture_occurrences SET sale_settled=1, sold_quantity=3, income=24 WHERE id=?", (occ["id"],))
         first = project_venture_sale_settlement(rt.conn, "agent", "default-agent", occ["id"])
         second = project_venture_sale_settlement(rt.conn, "agent", "default-agent", occ["id"])
         assert first["projected"] is True
@@ -392,7 +392,7 @@ def test_venture_projection_failure_rolls_back_and_heartbeat_retries(tmp_path):
         activity_id = reg["receipt"]["facts"][0]["evidence"]["activity_id"]
         ev = _result(rt.event_tool("create", title="净符摊", event_type="work",
                                    activity_domain="venture", tags=["摆摊", "净符"], resource_costs={}))
-        recurring.record_occurrence(rt.conn, "agent", "default-agent", activity_id, "2026-06-22", ev["id"], None)
+        venture.record_occurrence(rt.conn, "agent", "default-agent", activity_id, "2026-06-22", ev["id"], None)
         rt.event_tool("complete", event_id=ev["id"], summary="当日摆摊结束，待结算销售。")
 
         old_record_rumor = social_projector.record_rumor
@@ -406,7 +406,7 @@ def test_venture_projection_failure_rolls_back_and_heartbeat_retries(tmp_path):
         finally:
             social_projector.record_rumor = old_record_rumor
 
-        occ = rt.conn.execute("SELECT * FROM recurring_activity_occurrences WHERE event_id=?", (ev["id"],)).fetchone()
+        occ = rt.conn.execute("SELECT * FROM venture_occurrences WHERE event_id=?", (ev["id"],)).fetchone()
         assert first["status"] == "partial"
         assert first["ok"] is False
         assert occ["sale_settled"] == 1

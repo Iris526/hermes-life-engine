@@ -38,7 +38,7 @@ def _stock(rt, key):
 
 def _occ(rt, activity_id):
     return rt.conn.execute(
-        "SELECT * FROM recurring_activity_occurrences WHERE activity_id=? ORDER BY created_at LIMIT 1",
+        "SELECT * FROM venture_occurrences WHERE activity_id=? ORDER BY created_at LIMIT 1",
         (activity_id,),
     ).fetchone()
 

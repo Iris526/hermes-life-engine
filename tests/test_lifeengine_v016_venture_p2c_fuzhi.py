@@ -103,7 +103,7 @@ def test_full_chain_buy_tool_buy_materials_make_then_have_stock(tmp_path):
         assert _stock(rt, "stock.fuzhi") >= 20       # 30 made (some may already be sold)
         # by now at least one 摆摊 day has sold 符纸 for money
         sold = rt.conn.execute(
-            "SELECT COALESCE(SUM(sold_quantity),0) s FROM recurring_activity_occurrences WHERE owner_kind='agent' AND owner_id=?",
+            "SELECT COALESCE(SUM(sold_quantity),0) s FROM venture_occurrences WHERE owner_kind='agent' AND owner_id=?",
             (DEFAULT_AGENT_ID,),
         ).fetchone()["s"]
         assert sold >= 0  # selling occurs once stock exists (see P2 for the income assertion)

@@ -364,8 +364,8 @@ LIFE_MEALS = {
     },
 }
 
-LIFE_ACTIVITY = {
-    "name": "life_activity",
+LIFE_VENTURE = {
+    "name": "life_venture",
     "description": "Register / list / pause / resume / cancel a venture (营生) — an engine-enforced occupation like running a stall to earn money. Once registered, the heartbeat materializes one scheduled event per due day automatically (not via prompt or memory), and income/cost settles when that event completes. register: give title, cadence_kind (daily|weekly, with weekdays for weekly), start_time/end_time (HH:MM local) + timezone, and resource_costs you judge for each occurrence (e.g. {\"money.lingzhu\": 30, \"energy\": -14}). cancel/pause stop future occurrences; past records are kept.",
     "parameters": {
         "type": "object",
@@ -401,6 +401,9 @@ LIFE_ACTIVITY = {
         "required": ["action"],
     },
 }
+
+# Back-compat alias: the tool was `life_activity` before 轴二-4.
+LIFE_ACTIVITY = {**LIFE_VENTURE, "name": "life_activity"}
 
 LIFE_MOOD = {
     "name": "life_mood",
