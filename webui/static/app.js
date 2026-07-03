@@ -358,6 +358,7 @@ function render() {
   renderTopBar();
   renderSidebar();
   renderStage();
+  renderColdStart();
   renderSchedule();
   renderProactive();
   renderRecentEvents();
@@ -373,6 +374,16 @@ function render() {
   renderReview();
   renderTrace();
   renderSettings();
+}
+
+// 冷启动第一课:没有已提交 Canon 时,舞台给出「立一个 Canon」的引导,而不是空场景
+function renderColdStart() {
+  const control = snapshotData.control || {};
+  const el = document.getElementById("cold-start");
+  if (!el) return;
+  const noCanon = !control.active_canon_version;
+  el.classList.toggle("hidden", !noCanon);
+  document.getElementById("stage-scene")?.classList.toggle("cold", noCanon);
 }
 
 // ── 顶栏 ──────────────────────────────────────
@@ -459,7 +470,7 @@ function renderSidebar() {
   const currencies = resources.filter(r => !["energy", "mood", "fatigue"].includes(r.resource_key));
   document.getElementById("currency-stats").innerHTML = currencies.map(r =>
     `<div class="currency-item"><span class="ckey">${escapeHtml(r.display_name || r.resource_key)}</span><span class="cval">${formatNum(r.current_value)}${r.unit ? " " + escapeHtml(r.unit) : ""}</span></div>`
-  ).join("") || '<div class="empty-state">无财物</div>';
+  ).join("") || '<div class="empty-state">还没有财物 · 她开始营生后这里会记账</div>';
 
   // 睡眠指标
   const sleep = snapshotData.sleep_day_state || {};
@@ -472,7 +483,7 @@ function renderSidebar() {
   ].filter(([, v]) => v != null);
   sleepEl.innerHTML = sleepItems.map(([l, v]) =>
     `<div class="sleep-item"><span class="label">${l}</span><span class="val">${v}</span></div>`
-  ).join("") || '<div class="empty-state">无睡眠数据</div>';
+  ).join("") || '<div class="empty-state">还没有睡眠记录 · 她睡过一觉后会出现</div>';
 
   // 一日三餐
   const mealsRow = document.getElementById("meals-row");
@@ -751,7 +762,7 @@ function renderSchedule() {
   const items = schedule.items || [];
   const el = document.getElementById("schedule-list");
   if (!items.length) {
-    el.innerHTML = '<div class="empty-state">无日程</div>';
+    el.innerHTML = '<div class="empty-state">今天还没有安排 · 醒着心跳几次她会自己排日程</div>';
     return;
   }
   const nowMs = (snapshotData.clock && snapshotData.clock.iso) ? Date.parse(snapshotData.clock.iso) : Date.now();
@@ -797,7 +808,7 @@ function renderProactive() {
   ];
   const el = document.getElementById("proactive-list");
   if (!all.length) {
-    el.innerHTML = '<div class="empty-state">无待发讯息</div>';
+    el.innerHTML = '<div class="empty-state">她暂时没有话要带给你</div>';
     return;
   }
   el.innerHTML = all.slice(0, 10).map(item => {
@@ -817,7 +828,7 @@ function renderRecentEvents() {
   const events = snapshotData.recent_events || [];
   const el = document.getElementById("recent-events");
   if (!events.length) {
-    el.innerHTML = '<div class="empty-state">无近期事件</div>';
+    el.innerHTML = '<div class="empty-state">还没有近期事项 · 她行动起来这里就会记</div>';
     return;
   }
   // 合并重复事项(同标题+状态+类别),用 ×N 角标代替重复刷屏
@@ -940,7 +951,7 @@ function renderDreams() {
   const dreams = snapshotData.dreams || [];
   const el = document.getElementById("dreams-list");
   if (!dreams.length) {
-    el.innerHTML = '<div class="empty-state">尚无梦境记录</div>';
+    el.innerHTML = '<div class="empty-state">她还没有做过梦 · 睡下并进入梦域后会留下</div>';
     return;
   }
   el.innerHTML = dreams.slice(0, 20).map(d => {
@@ -960,7 +971,7 @@ function renderCampaigns() {
   const el = document.getElementById("campaigns-list");
   if (!el) return;
   if (!camps.length) {
-    el.innerHTML = '<div class="empty-state">还没有在张罗的大事</div>';
+    el.innerHTML = '<div class="empty-state">她眼下没有在张罗的大事 · 生活里自会长出来</div>';
     return;
   }
   el.innerHTML = camps.map(c => {
