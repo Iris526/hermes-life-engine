@@ -15,6 +15,7 @@ from . import dream
 from . import execution
 from . import opinions
 from . import proactive
+from . import social_projector
 from .canon import get_active_canon
 from .context_policy import _compact_time
 from .conversation import temporal_grounding
@@ -64,6 +65,7 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
     输入来自 `LifeEngineRuntime.tick()` 已创建的 tick/trace/control；输出是一个只在
     本次 tick 内有效的内存包，键包括 `autonomy_goal_step`、`reflection`、
     `companion`、`execution_narratives_by_block_id`、`serendipity_texts_by_block_id`、
+    `social_projection_rumors_by_block_id`、`venture_sale_projection_rumors_by_occurrence_id`、
     `proactive_outbox_drafts` 和 `dreams_by_sleep_plan_id`。调用方会把这些结构化结果
     传入事务内子流程消费。副作用仅限各 LifeAuthor 调用自己的审计记录；本函数不写
     生活事实、不 claim wake job、不创建 event/outbox/opinion/dream/serendipity。
@@ -75,6 +77,8 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
         "companion": None,
         "execution_narratives_by_block_id": {},
         "serendipity_texts_by_block_id": {},
+        "social_projection_rumors_by_block_id": {},
+        "venture_sale_projection_rumors_by_occurrence_id": {},
         "dreams_by_sleep_plan_id": {},
         "proactive_outbox_drafts": {},
         "authoring_now": {},
@@ -127,6 +131,25 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
         )
     except Exception:
         package["serendipity_texts_by_block_id"] = {}
+
+    try:
+        package["social_projection_rumors_by_block_id"] = social_projector.prepare_completed_event_projection_authoring_for_tick(
+            conn, owner_kind, owner_id, now=now,
+            completion_authoring_by_block_id=package.get("execution_narratives_by_block_id"),
+            trace_id=trace_id,
+            authoring_now=authoring_now,
+        )
+    except Exception:
+        package["social_projection_rumors_by_block_id"] = {}
+
+    try:
+        package["venture_sale_projection_rumors_by_occurrence_id"] = social_projector.prepare_venture_sale_settlement_authoring_for_tick(
+            conn, owner_kind, owner_id, now=now, control=control,
+            trace_id=trace_id,
+            authoring_now=authoring_now,
+        )
+    except Exception:
+        package["venture_sale_projection_rumors_by_occurrence_id"] = {}
 
     try:
         package["proactive_outbox_drafts"] = proactive.prepare_auto_send_outbox_authoring(

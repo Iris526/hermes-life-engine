@@ -410,7 +410,7 @@ _HEARTBEAT_MODULES: list[tuple[str, str, tuple[str, ...]]] = [
     ("venture", "_materialize_recurring_for_tick", ()),
     ("campaigns", "_run_campaigns_for_tick", ()),
     ("daily_rhythm", "_ensure_daily_rhythm_for_tick", ()),
-    ("venture_supply", "_settle_supply_chain_for_tick", ()),
+    ("venture_supply", "_settle_supply_chain_for_tick", ("authoring",)),
     ("venture_opportunities", "_roll_opportunities_for_tick", ()),
     ("realtime_sync", "_sync_realtime_to_schedule_for_tick", ()),
     ("companion", "_run_companion_for_tick", ("authoring",)),
@@ -593,7 +593,8 @@ class LifeEngineRuntime:
 
     def _project_completed_event_safe(self, owner_kind: str, owner_id: str, event_id: str, *,
                                       summary: str | None, source: str,
-                                      trace_id: str | None = None) -> dict[str, Any]:
+                                      trace_id: str | None = None,
+                                      rumor_authoring: dict[str, Any] | None = None) -> dict[str, Any]:
         """降级执行已完成事件的社会投影。
 
         输入来自 COMPLETE_EVENT 的 LifeOps 写路径；输出始终是可序列化的投影结果。
@@ -607,6 +608,7 @@ class LifeEngineRuntime:
                 self.conn, owner_kind, owner_id, event_id,
                 summary=summary,
                 source=source,
+                rumor_authoring=rumor_authoring,
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -619,7 +621,8 @@ class LifeEngineRuntime:
             return {"projected": False, "reason": "projection_failed", "event_id": event_id, "error": error}
 
     def _project_venture_sale_settlement_safe(self, owner_kind: str, owner_id: str, occurrence_id: str, *,
-                                              source: str, trace_id: str | None = None) -> dict[str, Any]:
+                                              source: str, trace_id: str | None = None,
+                                              rumor_authoring: dict[str, Any] | None = None) -> dict[str, Any]:
         """降级执行经营结算 occurrence 的社会投影。
 
         输入来自 heartbeat 进销存结算或补偿扫描；输出始终是可序列化的投影结果。
@@ -632,6 +635,7 @@ class LifeEngineRuntime:
             return project_venture_sale_settlement(
                 self.conn, owner_kind, owner_id, occurrence_id,
                 source=source,
+                rumor_authoring=rumor_authoring,
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -732,6 +736,7 @@ class LifeEngineRuntime:
                 summary=payload.get("summary", "completed"),
                 source=f"social_projector:{source}",
                 trace_id=trace_id,
+                rumor_authoring=payload.get("social_projection_authoring") if isinstance(payload.get("social_projection_authoring"), dict) else None,
             )
             return result
         elif op_type == "CREATE_SLEEP_PLAN":
@@ -1440,6 +1445,9 @@ class LifeEngineRuntime:
                 serendipity_texts = (authoring or {}).get("serendipity_texts_by_block_id") or {}
                 if not isinstance(serendipity_texts, dict):
                     serendipity_texts = {}
+                social_projection_rumors = (authoring or {}).get("social_projection_rumors_by_block_id") or {}
+                if not isinstance(social_projection_rumors, dict):
+                    social_projection_rumors = {}
                 jobs = due_wake_jobs(self.conn, owner_kind, owner_id, now)
                 processed: list[dict[str, Any]] = []
                 with trace.span("due_wake_jobs", {"count": len(jobs)}):
@@ -1488,6 +1496,7 @@ class LifeEngineRuntime:
                                             wake_job_id=job["id"], block=block, now=now, manual=manual,
                                             completion_authoring=execution_narratives.get(str(block.get("id") or "")),
                                             serendipity_authoring=serendipity_texts.get(str(block.get("id") or "")),
+                                            social_projection_authoring=social_projection_rumors.get(str(block.get("id") or "")),
                                             allow_authoring=False,
                                         )
                                     ops = decision.get("proposed_ops") or []
@@ -1536,6 +1545,7 @@ class LifeEngineRuntime:
                                 wake_job_id=None, block=block, now=now, manual=manual,
                                 completion_authoring=execution_narratives.get(str(block.get("id") or "")),
                                 serendipity_authoring=serendipity_texts.get(str(block.get("id") or "")),
+                                social_projection_authoring=social_projection_rumors.get(str(block.get("id") or "")),
                                 allow_authoring=False,
                             )
                         ops = decision.get("proposed_ops") or []
@@ -2275,7 +2285,8 @@ class LifeEngineRuntime:
         return True
 
     def _settle_supply_chain_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
-                                      tick_id: str, trace: Trace, now: str) -> dict[str, Any]:
+                                      tick_id: str, trace: Trace, now: str,
+                                      authoring: dict[str, Any] | None = None) -> dict[str, Any]:
         """进销存: settle sales for completed venture occurrences (sold =
         min(demand, stock) → stock down, money up), mark arrived restock orders,
         and auto-create a 进货 (procurement) event when stock runs low — so goods
@@ -2303,6 +2314,9 @@ class LifeEngineRuntime:
             social_projections = 0
             social_projection_errors: list[dict[str, Any]] = []
             attempted_social_occurrences: set[str] = set()
+            venture_sale_rumors = (authoring or {}).get("venture_sale_projection_rumors_by_occurrence_id") or {}
+            if not isinstance(venture_sale_rumors, dict):
+                venture_sale_rumors = {}
             for act in venture.list_ventures(self.conn, owner_kind, owner_id, status="active"):
                 op = act.get("operation_model") or "active"
                 passive = op in {"self_service", "staffed"}
@@ -2364,6 +2378,7 @@ class LifeEngineRuntime:
                         owner_kind, owner_id, occ["id"],
                         source="social_projector:venture_sale",
                         trace_id=trace.id,
+                        rumor_authoring=venture_sale_rumors.get(str(occ["id"])),
                     )
                     if projection.get("projected"):
                         social_projections += 1
@@ -2395,6 +2410,7 @@ class LifeEngineRuntime:
                         owner_kind, owner_id, settled["id"],
                         source="social_projector:venture_sale_retry",
                         trace_id=trace.id,
+                        rumor_authoring=venture_sale_rumors.get(str(settled["id"])),
                     )
                     if projection.get("projected"):
                         social_projections += 1
@@ -2859,6 +2875,7 @@ class LifeEngineRuntime:
         if action in {"run", "simulate", "execute"}:
             completion_authoring = None
             serendipity_authoring = None
+            social_projection_authoring = None
             authoring_block_id = None
             if bool(payload.get("allow_authoring", True)):
                 try:
@@ -2882,9 +2899,19 @@ class LifeEngineRuntime:
                     serendipity_authoring = prepare_serendipity_authoring_for_block(
                         self.conn, owner_kind, owner_id, authoring_block,
                     )
+                    try:
+                        from .social_projector import prepare_completed_event_projection_authoring_for_block
+
+                        social_projection_authoring = prepare_completed_event_projection_authoring_for_block(
+                            self.conn, owner_kind, owner_id, authoring_block,
+                            completion_authoring=completion_authoring,
+                        )
+                    except Exception:
+                        social_projection_authoring = None
                 except Exception:
                     completion_authoring = None
                     serendipity_authoring = None
+                    social_projection_authoring = None
                     authoring_block_id = None
             with transaction(self.conn):
                 control = ensure_control(self.conn, owner_kind, owner_id)
@@ -2907,11 +2934,13 @@ class LifeEngineRuntime:
                     block = dict(block_row)
                     block_completion_authoring = completion_authoring if authoring_block_id == str(block.get("id") or "") else None
                     block_serendipity_authoring = serendipity_authoring if authoring_block_id == str(block.get("id") or "") else None
+                    block_social_projection_authoring = social_projection_authoring if authoring_block_id == str(block.get("id") or "") else None
                     decision = simulate_schedule_block_execution(
                         self.conn, owner_kind, owner_id, control, tick_id=payload.get("tick_id"), trace_id=trace.id,
                         wake_job_id=payload.get("wake_job_id"), block=block, now=payload.get("now"), manual=True,
                         completion_authoring=block_completion_authoring,
                         serendipity_authoring=block_serendipity_authoring,
+                        social_projection_authoring=block_social_projection_authoring,
                         allow_authoring=False,
                     )
                     ops = decision.get("proposed_ops") or []

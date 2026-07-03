@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import life_author
 from .db import savepoint
 from .jsonutil import dumps, loads
 from .social_world import (
@@ -42,10 +43,26 @@ _NEGATIVE_SIGNALS = {
 
 _CLIENT_ROLES = {"client", "requester", "customer", "委托人", "客户", "请求人", "香客"}
 
+# LifeAuthor 输出合同：只承载社会投影流言的人类可见正文。作用域限于一次
+# 事务外 authoring pack；事务内投影只消费 `content`，缺失、空值或异常时逐字
+# 使用当前固定模板，不能改变声望、热度、truth_layer 或投影幂等账本。
+_SOCIAL_PROJECTION_RUMOR_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "content": {
+            "type": "string",
+            "description": "一条可写入 rumors.content 的自然社会传言正文。",
+        },
+    },
+    "required": ["content"],
+}
+
 
 def project_completed_event(conn, owner_kind: str, owner_id: str, event_id: str, *,
                             summary: str | None = None,
-                            source: str = "social_projector") -> dict[str, Any]:
+                            source: str = "social_projector",
+                            rumor_authoring: dict[str, Any] | None = None) -> dict[str, Any]:
     """把一个已完成事件投影为社会事实。
 
     输入来自 LifeOps 的 COMPLETE_EVENT 或人工补投影调用；输出是本次是否产生
@@ -79,7 +96,8 @@ def project_completed_event(conn, owner_kind: str, owner_id: str, event_id: str,
         ensure_default_guimingguan_social_slots(conn, owner_kind, owner_id, source=source)
         counts = _project_by_kind(conn, owner_kind, owner_id, kind=kind, event=event,
                                   occurrence=occurrence, activity=activity, evidence=evidence,
-                                  summary=summary, source=source)
+                                  summary=summary, source=source,
+                                  rumor_authoring=rumor_authoring)
         _finish_run(conn, run["id"], counts)
         append_journal(conn, owner_kind, owner_id, "social_projection_applied",
                        {"run_id": run["id"], "projection_kind": "event_completed",
@@ -88,7 +106,8 @@ def project_completed_event(conn, owner_kind: str, owner_id: str, event_id: str,
 
 
 def project_venture_sale_settlement(conn, owner_kind: str, owner_id: str, occurrence_id: str, *,
-                                    source: str = "venture_sale") -> dict[str, Any]:
+                                    source: str = "venture_sale",
+                                    rumor_authoring: dict[str, Any] | None = None) -> dict[str, Any]:
     """把一次已结算经营 occurrence 投影为社会事实。
 
     输入来自 heartbeat 进销存结算或人工补投影调用；输出是本次投影状态与计数。
@@ -131,7 +150,8 @@ def project_venture_sale_settlement(conn, owner_kind: str, owner_id: str, occurr
 
         ensure_default_guimingguan_social_slots(conn, owner_kind, owner_id, source=source)
         counts = _project_stall(conn, owner_kind, owner_id, event=event, occurrence=occurrence,
-                                activity=activity, evidence=evidence, summary=None, source=source)
+                                activity=activity, evidence=evidence, summary=None, source=source,
+                                rumor_authoring=rumor_authoring)
         _finish_run(conn, run["id"], counts)
         append_journal(conn, owner_kind, owner_id, "social_projection_applied",
                        {"run_id": run["id"], "projection_kind": "venture_sale_settled",
@@ -142,19 +162,23 @@ def project_venture_sale_settlement(conn, owner_kind: str, owner_id: str, occurr
 def _project_by_kind(conn, owner_kind: str, owner_id: str, *, kind: str,
                      event: dict[str, Any], occurrence: dict[str, Any] | None,
                      activity: dict[str, Any] | None, evidence: dict[str, Any],
-                     summary: str | None, source: str) -> dict[str, int]:
+                     summary: str | None, source: str,
+                     rumor_authoring: dict[str, Any] | None) -> dict[str, int]:
     if kind == "commission":
         return _project_commission(conn, owner_kind, owner_id, event=event,
                                    occurrence=occurrence, activity=activity,
-                                   evidence=evidence, summary=summary, source=source)
+                                   evidence=evidence, summary=summary, source=source,
+                                   rumor_authoring=rumor_authoring)
     return _project_stall(conn, owner_kind, owner_id, event=event,
                           occurrence=occurrence, activity=activity,
-                          evidence=evidence, summary=summary, source=source)
+                          evidence=evidence, summary=summary, source=source,
+                          rumor_authoring=rumor_authoring)
 
 
 def _project_stall(conn, owner_kind: str, owner_id: str, *, event: dict[str, Any],
                    occurrence: dict[str, Any] | None, activity: dict[str, Any] | None,
-                   evidence: dict[str, Any], summary: str | None, source: str) -> dict[str, int]:
+                   evidence: dict[str, Any], summary: str | None, source: str,
+                   rumor_authoring: dict[str, Any] | None) -> dict[str, int]:
     agent = _agent_entity(conn, owner_kind, owner_id, event, source)
     ctx = _stall_context(event, activity)
     shrine = _get_or_create_entity(
@@ -249,10 +273,9 @@ def _project_stall(conn, owner_kind: str, owner_id: str, *, event: dict[str, Any
     )
     counts["requests"] += 1
 
-    rumor_content = (
-        f"有来访者低声说，{ctx['venue_name']}这回经营顺利，{agent.get('display_name') or '当前主体'}待人也算温和。"
-        if outcome == "positive"
-        else f"有来访者担心，{ctx['venue_name']}这回经营的效果还需要再看看。"
+    rumor_content = _authored_rumor_content(
+        rumor_authoring,
+        _stall_rumor_content_fallback(agent, ctx, outcome),
     )
     record_rumor(
         conn, owner_kind, owner_id,
@@ -274,7 +297,8 @@ def _project_stall(conn, owner_kind: str, owner_id: str, *, event: dict[str, Any
 
 def _project_commission(conn, owner_kind: str, owner_id: str, *, event: dict[str, Any],
                         occurrence: dict[str, Any] | None, activity: dict[str, Any] | None,
-                        evidence: dict[str, Any], summary: str | None, source: str) -> dict[str, int]:
+                        evidence: dict[str, Any], summary: str | None, source: str,
+                        rumor_authoring: dict[str, Any] | None) -> dict[str, int]:
     agent = _agent_entity(conn, owner_kind, owner_id, event, source)
     client, circle = _client_entity(conn, owner_kind, owner_id, event, activity, source)
     counts = {"entities": 2 + (1 if circle else 0), "edges": 0, "reputation_events": 0, "evaluations": 0, "rumors": 0, "requests": 0}
@@ -372,10 +396,9 @@ def _project_commission(conn, owner_kind: str, owner_id: str, *, event: dict[str
         subject_entity_id=agent["id"],
         target_kind="event",
         target_id=evidence.get("event_id"),
-        content=(
-            f"有委托人私下说，{agent.get('display_name') or '当前主体'}这次外勤处理得稳妥。"
-            if outcome == "positive"
-            else f"有人私下担心，{agent.get('display_name') or '当前主体'}这次外勤没有完全解决问题。"
+        content=_authored_rumor_content(
+            rumor_authoring,
+            _commission_rumor_content_fallback(agent, outcome),
         ),
         channel="commission_backchannel",
         heat=0.22 if outcome == "positive" else 0.32,
@@ -387,6 +410,557 @@ def _project_commission(conn, owner_kind: str, owner_id: str, *, event: dict[str
     )
     counts["rumors"] += 1
     return counts
+
+
+def _stall_rumor_content_fallback(agent: dict[str, Any], ctx: dict[str, str], outcome: str) -> str:
+    """返回经营/摆摊投影流言的历史固定正文。
+
+    输入是已经创建或读取到的主体实体、经营上下文和正/负向结果；输出逐字兼容旧版
+    `rumors.content`。调用方包括事务内投影和事务外 authoring context。无副作用；
+    这是 no-host、模型空返回、字段非法或已应用投影二次调用时的唯一 fallback。
+    """
+    return (
+        f"有来访者低声说，{ctx['venue_name']}这回经营顺利，{agent.get('display_name') or '当前主体'}待人也算温和。"
+        if outcome == "positive"
+        else f"有来访者担心，{ctx['venue_name']}这回经营的效果还需要再看看。"
+    )
+
+
+def _commission_rumor_content_fallback(agent: dict[str, Any], outcome: str) -> str:
+    """返回委托/外勤投影流言的历史固定正文。
+
+    输入是主体实体和正/负向结果；输出逐字兼容旧版 `rumors.content`。调用方包括
+    事务内投影和事务外 authoring context。无副作用；维护时不能改动字符串内容，
+    否则 no-host fallback 将不再 byte-identical。
+    """
+    return (
+        f"有委托人私下说，{agent.get('display_name') or '当前主体'}这次外勤处理得稳妥。"
+        if outcome == "positive"
+        else f"有人私下担心，{agent.get('display_name') or '当前主体'}这次外勤没有完全解决问题。"
+    )
+
+
+def _clean_authored_rumor_content(value: Any) -> str | None:
+    """规整 LifeAuthor 返回的流言正文。
+
+    输入是模型 parsed JSON 的 `content` 字段；输出是去除首尾空白后的非空字符串，
+    或 `None`。调用方是事务内投影消费层和事务外准备层。无副作用；空值由上层
+    回落固定模板，避免半成品写入 social world。
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _authored_rumor_content(authored: dict[str, Any] | None, fallback: str) -> str:
+    """把事务外 rumor authoring 包转换为最终流言正文。
+
+    输入是短期内存包和固定 fallback；输出总是可写入 `record_rumor` 的正文。
+    调用方是 `_project_stall` / `_project_commission` 的事务内路径。无模型调用、
+    无数据库读写；只要 `content` 不是非空字符串，就逐字返回 fallback。
+    """
+    authored = authored if isinstance(authored, dict) else {}
+    return _clean_authored_rumor_content(authored.get("content")) or fallback
+
+
+def _projection_applied(conn, owner_kind: str, owner_id: str, projection_kind: str,
+                        projection_key: str) -> bool:
+    """判断某个社会投影是否已经 applied。
+
+    输入是 owner、projection_kind 和稳定 projection_key；输出布尔值。调用方是
+    事务外 authoring 准备层，用来保证同一 event/occurrence 已投影后不再调用
+    LifeAuthor。副作用为只读 SELECT；失败由上层吞掉并降级为不 author。
+    """
+    row = conn.execute(
+        """SELECT 1 FROM social_projection_runs
+           WHERE owner_kind=? AND owner_id=? AND projection_kind=? AND projection_key=?
+             AND status='applied'
+           LIMIT 1""",
+        (owner_kind, owner_id, projection_kind, projection_key),
+    ).fetchone()
+    return bool(row)
+
+
+def _completion_summary_for_authoring(event: dict[str, Any],
+                                      completion_authoring: dict[str, Any] | None) -> str:
+    """推导完成事件投影预写作时使用的 completion summary。
+
+    输入是当前 event 和 execution authoring 包；输出应与 `COMPLETE_EVENT.summary`
+    保持一致的字符串。调用方是事务外 social projection authoring。无副作用；
+    这里镜像 execution 的 no-host fallback，以便 outcome 判定和投影实际消费一致。
+    """
+    authored = completion_authoring if isinstance(completion_authoring, dict) else {}
+    narrative = _clean_authored_rumor_content(authored.get("narrative"))
+    return narrative or f"执行完成：{event.get('title')}"
+
+
+def _rumor_authoring_context(*, kind: str, event: dict[str, Any], occurrence: dict[str, Any] | None,
+                             activity: dict[str, Any] | None, evidence: dict[str, Any],
+                             outcome: str, fallback_content: str,
+                             channel: str, heat: float, sentiment: str,
+                             subject_hint: dict[str, Any],
+                             authoring_now: dict[str, Any] | None = None) -> dict[str, Any]:
+    """构建 LifeAuthor 写 social projection rumor 的只读上下文。
+
+    输入是投影分类、证据、旧正文和不可改变的 rumor 元数据；输出只含事实与约束的
+    JSON context。调用方是事务外准备函数；无数据库读写。上下文显式携带 channel、
+    heat、truth_layer 和 fallback，提醒模型只改 wording，不能改社会事实合同。
+    """
+    return {
+        "projection_kind": evidence.get("projection_kind"),
+        "social_projection_kind": kind,
+        "outcome": outcome,
+        "event": {
+            "id": event.get("id"),
+            "title": event.get("title"),
+            "description": event.get("description"),
+            "event_type": event.get("event_type"),
+            "activity_domain": event.get("activity_domain"),
+            "tags": event.get("tags"),
+            "attributes": event.get("attributes"),
+            "participants": event.get("participants"),
+            "location": event.get("location"),
+        },
+        "occurrence": {
+            "id": (occurrence or {}).get("id"),
+            "date_key": (occurrence or {}).get("date_key"),
+            "sale_settled": (occurrence or {}).get("sale_settled"),
+            "sold_quantity": (occurrence or {}).get("sold_quantity"),
+            "income": (occurrence or {}).get("income"),
+        },
+        "activity": {
+            "id": (activity or {}).get("id"),
+            "title": (activity or {}).get("title"),
+            "operation_model": (activity or {}).get("operation_model"),
+            "tags": (activity or {}).get("tags"),
+            "location": (activity or {}).get("location"),
+            "supply_chain": (activity or {}).get("supply_chain"),
+        },
+        "subject_hint": subject_hint,
+        "rumor_contract": {
+            "channel": channel,
+            "heat": heat,
+            "truth_layer": "rumor_unverified",
+            "sentiment": sentiment,
+            "fallback_content": fallback_content,
+        },
+        "evidence": evidence,
+        "now": authoring_now or {},
+    }
+
+
+def _author_social_projection_rumor(conn, owner_kind: str, owner_id: str,
+                                    context: dict[str, Any], *,
+                                    trace_id: str | None = None) -> dict[str, str] | None:
+    """用 LifeAuthor 生成社会投影流言正文。
+
+    输入是 `_rumor_authoring_context` 产出的只读上下文；输出 `{content}` 或 `None`。
+    调用方式是 heartbeat/manual execution 进入写事务前的 best-effort 准备。副作用
+    仅限 LifeAuthor 自己的审计行；若调用方已在 SQLite 事务内、无 host、模型失败、
+    返回空或字段非法，本函数都返回 `None`，让投影使用 byte-identical fallback。
+    """
+    if getattr(conn, "in_transaction", False):
+        return None
+    try:
+        parsed = life_author.author(
+            conn,
+            owner_kind,
+            owner_id,
+            kind="social_projection_rumor",
+            instructions=(
+                "为一条社会世界投影生成中文流言正文，只改写 wording。"
+                "不要改变事实关系、热度、可信度、truth_layer、sentiment、请求类型或声望含义；"
+                "不要发明没有在上下文出现的专名、势力、地点或世界观设定。"
+            ),
+            context=context,
+            schema=_SOCIAL_PROJECTION_RUMOR_SCHEMA,
+            max_tokens=220,
+            temperature=0.65,
+            trace_id=trace_id,
+        )
+        content = _clean_authored_rumor_content((parsed or {}).get("content") if isinstance(parsed, dict) else None)
+        if not content:
+            return None
+        return {"content": content}
+    except Exception:
+        return None
+
+
+def prepare_completed_event_projection_authoring_for_block(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    block: dict[str, Any] | None,
+    *,
+    completion_authoring: dict[str, Any] | None = None,
+    trace_id: str | None = None,
+    source: str = "social_projector:execution_simulator",
+    authoring_now: dict[str, Any] | None = None,
+) -> dict[str, str] | None:
+    """在写事务外为一个即将完成的 schedule block 预生成投影流言。
+
+    输入是 due block 和 execution completion authoring 包；输出 `{content}` 或
+    `None`。调用方是 heartbeat/manual execution 预备层。副作用只读当前 event、
+    occurrence、activity 和 projection ledger，再 best-effort 调 LifeAuthor；
+    已 applied 的 event_completed projection 会直接跳过，保证同一事实不二次 author。
+    """
+    if not isinstance(block, dict) or getattr(conn, "in_transaction", False):
+        return None
+    event_id = block.get("event_id")
+    if not event_id:
+        return None
+    try:
+        from .events import get_event
+
+        event = get_event(conn, str(event_id))
+        if event.get("owner_kind") != owner_kind or event.get("owner_id") != owner_id:
+            return None
+        if _projection_applied(conn, owner_kind, owner_id, "event_completed", str(event_id)):
+            return None
+        occurrence = _occurrence_for_event(conn, owner_kind, owner_id, str(event_id))
+        activity = _activity_for_occurrence(conn, owner_kind, owner_id, occurrence)
+        summary = _completion_summary_for_authoring(event, completion_authoring)
+        kind = _classify_event(event, summary=summary, activity=activity, force_stall=False)
+        if kind == "stall" and _activity_has_supply(activity) and occurrence and not int(occurrence.get("sale_settled") or 0):
+            return None
+        if kind is None:
+            return None
+        evidence = _evidence(event=event, occurrence=occurrence, activity=activity,
+                             source=source, projection_kind="event_completed", summary=summary)
+        context = _prepare_rumor_authoring_context(
+            conn, owner_kind, owner_id, kind=kind, event=event, occurrence=occurrence,
+            activity=activity, evidence=evidence, summary=summary, authoring_now=authoring_now,
+        )
+        if not context:
+            return None
+        return _author_social_projection_rumor(conn, owner_kind, owner_id, context, trace_id=trace_id)
+    except Exception:
+        return None
+
+
+def _social_projection_authoring_blocks_for_tick(conn, owner_kind: str, owner_id: str,
+                                                 now: str, limit: int = 20) -> list[dict[str, Any]]:
+    """读取本轮 heartbeat 可能完成的非睡眠 schedule block。
+
+    输入是 owner、逻辑时间和数量上限；输出去重后的 block 列表。调用方是事务外
+    social projection authoring 准备层。副作用只读 wake_jobs/schedule_blocks；
+    排序和筛选镜像 execution authoring，避免为本轮不会执行的 block 调模型。
+    """
+    from .events import due_schedule_blocks, due_wake_jobs
+
+    by_id: dict[str, dict[str, Any]] = {}
+    for job in due_wake_jobs(conn, owner_kind, owner_id, now):
+        if job.get("reason") != "schedule_block_end" or not job.get("target_id"):
+            continue
+        row = conn.execute(
+            "SELECT * FROM schedule_blocks WHERE id=? AND owner_kind=? AND owner_id=?",
+            (job["target_id"], owner_kind, owner_id),
+        ).fetchone()
+        if not row:
+            continue
+        block = dict(row)
+        if block.get("block_type") == "sleep":
+            continue
+        if block.get("status") in {"planned", "locked", "ready", "in_progress"}:
+            by_id[str(block["id"])] = block
+    for block in due_schedule_blocks(conn, owner_kind, owner_id, now):
+        if block.get("block_type") == "sleep":
+            continue
+        by_id.setdefault(str(block["id"]), block)
+    return list(by_id.values())[: max(1, int(limit))]
+
+
+def prepare_completed_event_projection_authoring_for_tick(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    *,
+    now: str,
+    completion_authoring_by_block_id: dict[str, Any] | None = None,
+    trace_id: str | None = None,
+    limit: int = 20,
+    authoring_now: dict[str, Any] | None = None,
+) -> dict[str, dict[str, str]]:
+    """在 heartbeat 写事务外预生成 completion social projection rumor 包。
+
+    输入来自 `prepare_heartbeat_authoring` 的逻辑时间和 execution authoring 包；
+    输出 `{block_id: {content}}`，只在本 tick 内经 `COMPLETE_EVENT` payload 消费。
+    失败处理是逐项跳过：无 host、模型空返回、非投影事件或已 applied 投影都不会
+    抛错，事务内 projection 会使用旧固定 phrasing。
+    """
+    authored: dict[str, dict[str, str]] = {}
+    if getattr(conn, "in_transaction", False):
+        return authored
+    completion_authoring_by_block_id = completion_authoring_by_block_id if isinstance(completion_authoring_by_block_id, dict) else {}
+    try:
+        blocks = _social_projection_authoring_blocks_for_tick(conn, owner_kind, owner_id, now, limit=limit)
+    except Exception:
+        return authored
+    for block in blocks:
+        block_id = str(block.get("id") or "")
+        if not block_id:
+            continue
+        item = prepare_completed_event_projection_authoring_for_block(
+            conn, owner_kind, owner_id, block,
+            completion_authoring=completion_authoring_by_block_id.get(block_id),
+            trace_id=trace_id,
+            authoring_now=authoring_now,
+        )
+        if item:
+            authored[block_id] = item
+    return authored
+
+
+def _prepare_rumor_authoring_context(conn, owner_kind: str, owner_id: str, *, kind: str,
+                                     event: dict[str, Any], occurrence: dict[str, Any] | None,
+                                     activity: dict[str, Any] | None, evidence: dict[str, Any],
+                                     summary: str | None,
+                                     authoring_now: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """按投影类型构建流言 authoring context。
+
+    输入是已分类的投影候选；输出 LifeAuthor context 或 `None`。调用方是事务外
+    completed-event 和 venture-sale authoring 准备函数。副作用只读 canon identity；
+    不创建实体，不触碰默认 slot，不写 reputation/evaluation/rumor/request。
+    """
+    outcome = _outcome(summary, event)
+    agent_name, agent_name_source = _agent_name(conn, owner_kind, owner_id)
+    agent_hint = {"display_name": agent_name, "name_source": agent_name_source}
+    if kind == "commission":
+        fallback = _commission_rumor_content_fallback(agent_hint, outcome)
+        return _rumor_authoring_context(
+            kind=kind, event=event, occurrence=occurrence, activity=activity, evidence=evidence,
+            outcome=outcome, fallback_content=fallback, channel="commission_backchannel",
+            heat=0.22 if outcome == "positive" else 0.32,
+            sentiment="positive" if outcome == "positive" else "concern",
+            subject_hint=agent_hint, authoring_now=authoring_now,
+        )
+    if kind == "stall":
+        ctx = _stall_context(event, activity)
+        fallback = _stall_rumor_content_fallback(agent_hint, ctx, outcome)
+        return _rumor_authoring_context(
+            kind=kind, event=event, occurrence=occurrence, activity=activity, evidence=evidence,
+            outcome=outcome, fallback_content=fallback, channel="visitor_word_of_mouth",
+            heat=0.24 if outcome == "positive" else 0.28,
+            sentiment="positive" if outcome == "positive" else "concern",
+            subject_hint={**agent_hint, **ctx}, authoring_now=authoring_now,
+        )
+    return None
+
+
+def prepare_venture_sale_settlement_authoring(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    occurrence_id: str,
+    *,
+    source: str = "social_projector:venture_sale",
+    projected_summary: str | None = None,
+    trace_id: str | None = None,
+    authoring_now: dict[str, Any] | None = None,
+) -> dict[str, str] | None:
+    """在写事务外为一个经营结算 occurrence 预生成投影流言。
+
+    输入是 occurrence_id 和可选的预估结算 summary；输出 `{content}` 或 `None`。
+    调用方是 heartbeat venture_supply 预备层和测试直接准备层。副作用只读
+    occurrence/activity/event/projection ledger；已 applied 的 venture_sale_settled
+    projection 会直接跳过，保证同一 occurrence 不二次 author。
+    """
+    if getattr(conn, "in_transaction", False):
+        return None
+    try:
+        if _projection_applied(conn, owner_kind, owner_id, "venture_sale_settled", str(occurrence_id)):
+            return None
+        from .events import get_event
+
+        occurrence = _get_occurrence(conn, owner_kind, owner_id, str(occurrence_id))
+        if not occurrence:
+            return None
+        activity = _activity_for_occurrence(conn, owner_kind, owner_id, occurrence)
+        if not activity:
+            return None
+        event: dict[str, Any] = {}
+        if occurrence.get("event_id"):
+            try:
+                event = get_event(conn, occurrence["event_id"])
+            except Exception:
+                event = {}
+        sold = _float(occurrence.get("sold_quantity"))
+        income = _float(occurrence.get("income"))
+        if not _activity_has_supply(activity) and sold <= 0 and income <= 0:
+            return None
+        kind = _classify_event(event, activity=activity, force_stall=True)
+        if kind is None:
+            return None
+        summary = projected_summary if projected_summary is not None else f"sold={sold:g}; income={income:g}"
+        evidence = _evidence(event=event, occurrence=occurrence, activity=activity,
+                             source=source, projection_kind="venture_sale_settled",
+                             summary=summary)
+        context = _prepare_rumor_authoring_context(
+            conn, owner_kind, owner_id, kind=kind, event=event, occurrence=occurrence,
+            activity=activity, evidence=evidence, summary=summary, authoring_now=authoring_now,
+        )
+        if not context:
+            return None
+        return _author_social_projection_rumor(conn, owner_kind, owner_id, context, trace_id=trace_id)
+    except Exception:
+        return None
+
+
+def _account_value(conn, owner_kind: str, owner_id: str, key: str | None) -> float:
+    """只读获取资源账户当前值，供事务外经营结算 authoring 预估 sold/income。
+
+    输入是资源 key；输出当前值或 0。调用方是 `prepare_venture_sale_settlement_authoring_for_tick`。
+    副作用为 SELECT；缺账户、空 key 或读取异常都按 0 降级，不影响真实结算逻辑。
+    """
+    if not key:
+        return 0.0
+    try:
+        row = conn.execute(
+            "SELECT current_value FROM resource_accounts WHERE owner_kind=? AND owner_id=? AND resource_key=?",
+            (owner_kind, owner_id, key),
+        ).fetchone()
+        return float(row["current_value"]) if row and row["current_value"] is not None else 0.0
+    except Exception:
+        return 0.0
+
+
+def _window_end_ts(date_key: str, end_time: str | None, tz_name: str) -> int | None:
+    """计算 passive venture 当日窗口结束时间戳。
+
+    输入是 occurrence date_key、活动 end_time 和时区名；输出 epoch 秒或 `None`。
+    调用方是事务外 sale-settlement authoring 预判层。无数据库副作用；解析失败按
+    `None` 处理，与 runtime 结算逻辑保持同样的“无窗口则可立即结算”语义。
+    """
+    if not end_time:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime as _dt
+
+        eh, em = (int(x) for x in str(end_time).split(":")[:2])
+        y, mo, d = (int(x) for x in str(date_key).split("-"))
+        return int(_dt(y, mo, d, eh, em, tzinfo=ZoneInfo(tz_name or "UTC")).timestamp())
+    except Exception:
+        return None
+
+
+def prepare_venture_sale_settlement_authoring_for_tick(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    *,
+    now: str,
+    control: dict[str, Any] | None = None,
+    trace_id: str | None = None,
+    limit: int = 20,
+    authoring_now: dict[str, Any] | None = None,
+) -> dict[str, dict[str, str]]:
+    """在 heartbeat 写事务外预生成经营结算投影流言包。
+
+    输入是 owner、控制状态和逻辑时间；输出 `{occurrence_id: {content}}`，供
+    `_settle_supply_chain_for_tick` 在事务内消费。函数只读 venture/activity/event/
+    resource/projection ledger；它只预估本轮会被 runtime 结算或补投影的 occurrence，
+    不写 sale_settled、库存、收入或任何社会事实。
+    """
+    authored: dict[str, dict[str, str]] = {}
+    if owner_kind != "agent" or getattr(conn, "in_transaction", False):
+        return authored
+    gates = (control or {}).get("module_gates") or {}
+    if str(gates.get("venture", gates.get("recurring_activities", "auto")) or "auto").lower() in {"off", "disabled", "false"}:
+        return authored
+    try:
+        from . import venture
+        from .canon import get_active_canon
+        from .events import get_event
+        from .schedule_view import _tz_from_canon
+        from .time_utils import to_epoch as _to_epoch
+
+        canon = get_active_canon(conn, owner_kind, owner_id)
+        tz_name = _tz_from_canon(canon) or "UTC"
+        now_ts = int(_to_epoch(now))
+        terminal = {"completed", "partial", "done"}
+        attempted: set[str] = set()
+        for act in venture.list_ventures(conn, owner_kind, owner_id, status="active"):
+            if len(authored) >= max(1, int(limit)):
+                break
+            op = act.get("operation_model") or "active"
+            passive = op in {"self_service", "staffed"}
+            sc = act.get("supply_chain") if isinstance(act.get("supply_chain"), dict) else None
+            has_supply = bool(sc and sc.get("goods_resource"))
+            if not (has_supply or passive):
+                continue
+            goods = sc["goods_resource"] if has_supply else None
+            unit_price = float((sc or {}).get("unit_price") or 0)
+            demand = float((sc or {}).get("demand_per_occurrence") or 0)
+            rows = conn.execute(
+                "SELECT id, event_id, date_key FROM venture_occurrences WHERE owner_kind=? AND owner_id=? AND activity_id=? AND sale_settled=0",
+                (owner_kind, owner_id, act["id"]),
+            ).fetchall()
+            for row in rows:
+                if len(authored) >= max(1, int(limit)):
+                    break
+                occ = dict(row)
+                ev = get_event(conn, occ["event_id"]) if occ.get("event_id") else None
+                if not passive:
+                    if not ev or ev.get("status") not in terminal:
+                        continue
+                else:
+                    wend = _window_end_ts(occ.get("date_key"), act.get("end_time"), act.get("timezone") or tz_name)
+                    if wend is not None and now_ts < wend:
+                        continue
+                    # passive occurrence 会在 runtime 事务内先补 COMPLETE_EVENT 再结算；
+                    # authoring 这里只预备 occurrence 流言，不改变 linked event 状态。
+                sold = 0.0
+                income = 0.0
+                if has_supply:
+                    stock = _account_value(conn, owner_kind, owner_id, goods)
+                    sold = max(0.0, min(demand, stock))
+                    income = round(sold * unit_price, 2)
+                summary = f"sold={sold:g}; income={income:g}"
+                item = prepare_venture_sale_settlement_authoring(
+                    conn, owner_kind, owner_id, str(occ["id"]),
+                    source="social_projector:venture_sale",
+                    projected_summary=summary,
+                    trace_id=trace_id,
+                    authoring_now=authoring_now,
+                )
+                attempted.add(str(occ["id"]))
+                if item:
+                    authored[str(occ["id"])] = item
+            for settled in conn.execute(
+                """SELECT occ.id
+                   FROM venture_occurrences occ
+                   WHERE occ.owner_kind=? AND occ.owner_id=? AND occ.activity_id=?
+                     AND occ.sale_settled=1
+                     AND NOT EXISTS (
+                       SELECT 1 FROM social_projection_runs pr
+                       WHERE pr.owner_kind=occ.owner_kind
+                         AND pr.owner_id=occ.owner_id
+                         AND pr.projection_kind='venture_sale_settled'
+                         AND pr.projection_key=occ.id
+                         AND pr.status='applied'
+                     )
+                   ORDER BY occ.date_key DESC
+                   LIMIT 20""",
+                (owner_kind, owner_id, act["id"]),
+            ).fetchall():
+                if len(authored) >= max(1, int(limit)):
+                    break
+                occurrence_id = str(settled["id"])
+                if occurrence_id in attempted:
+                    continue
+                item = prepare_venture_sale_settlement_authoring(
+                    conn, owner_kind, owner_id, occurrence_id,
+                    source="social_projector:venture_sale_retry",
+                    trace_id=trace_id,
+                    authoring_now=authoring_now,
+                )
+                if item:
+                    authored[occurrence_id] = item
+    except Exception:
+        return authored
+    return authored
 
 
 def _classify_event(event: dict[str, Any], *, summary: str | None = None,

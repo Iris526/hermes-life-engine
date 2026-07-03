@@ -1081,16 +1081,17 @@ def simulate_schedule_block_execution(
     manual: bool = False,
     completion_authoring: dict[str, Any] | None = None,
     serendipity_authoring: dict[str, Any] | None = None,
+    social_projection_authoring: dict[str, Any] | None = None,
     allow_authoring: bool = False,
 ) -> dict[str, Any]:
     """记录一次到点日程块的确定性执行决策。
 
     输入来自 heartbeat 找到的到期 schedule_block、当前控制状态和逻辑时间；
     输出是一条 execution_decision 以及待提交 LifeOps。`completion_authoring`
-    和 `serendipity_authoring` 是事务外预生成的人类可见文本包；`allow_authoring`
-    只保留调用合同标记，本函数不会访问宿主模型。本函数只写执行审计，不直接改变
-    事件/日程/资源，调用方必须继续走 LifeOps 校验和事务提交。失败时由 heartbeat
-    标记 wake job 或 fallback sweep 异常，避免状态机半写。
+    和 `serendipity_authoring`、`social_projection_authoring` 是事务外预生成的
+    人类可见文本包；`allow_authoring` 只保留调用合同标记，本函数不会访问宿主模型。
+    本函数只写执行审计，不直接改变事件/日程/资源，调用方必须继续走 LifeOps 校验和
+    事务提交。失败时由 heartbeat 标记 wake job 或 fallback sweep 异常，避免状态机半写。
     """
     _ = allow_authoring
     event_id = block.get("event_id")
@@ -1168,9 +1169,12 @@ def simulate_schedule_block_execution(
         return record_execution_decision(conn, owner_kind, owner_id, tick_id=tick_id, trace_id=trace_id, wake_job_id=wake_job_id, schedule_block_id=block.get("id"), event_id=event_id, decision_type="postponed", status="proposed", reason="resource shortage", score=score, proposed_ops=ops)
 
     authored_completion = _authored_completion_texts(completion_authoring, event.get("title"))
+    complete_payload = {"event_id": event_id, "summary": authored_completion["narrative"], "source": "execution_simulator"}
+    if isinstance(social_projection_authoring, dict) and social_projection_authoring:
+        complete_payload["social_projection_authoring"] = social_projection_authoring
     ops = [
         {"type": "UPDATE_SCHEDULE_BLOCK_STATUS", "payload": {"schedule_block_id": block["id"], "status": "completed", "reason": "execution simulator completed the scheduled block"}},
-        {"type": "COMPLETE_EVENT", "payload": {"event_id": event_id, "summary": authored_completion["narrative"], "source": "execution_simulator"}},
+        {"type": "COMPLETE_EVENT", "payload": complete_payload},
     ]
     if importance >= 50:
         ops.append({"type": "CREATE_MEMORY", "payload": {"memory_type": "episodic", "content": authored_completion["memory"], "event_id": event_id, "source": "execution_simulator", "importance": min(100, importance)}})
