@@ -182,7 +182,17 @@ def _compact_interaction_time(interaction_time: dict[str, Any] | None, *, minima
             for s in spans[:3 if minimal else 6]
         ]
     if minimal:
+        # Default: a compact paraphrase to keep the deep-truncation capsule tight.
         out["rule"] = "occupy_now 需先 do_now；likely_ended 不能继续断言用户仍在做。"
+        # But when an activity is actually likely_ended, the precise guidance must
+        # survive truncation — that warning is the whole reason the span is
+        # tracked. Surface the real rule verbatim from its single source
+        # (conversation.py preflight), so even in the minimal capsule the model is
+        # told not to keep asserting the user is still doing it.
+        relevant = [r for r in (data.get("rules") or []) if "likely_ended" in r]
+        if relevant and any(s.get("status") == "likely_ended" for s in spans):
+            out["rules"] = relevant
+            out.pop("rule", None)
     else:
         out["rules"] = data.get("rules") or []
     return out
