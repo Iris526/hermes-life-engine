@@ -124,13 +124,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
             "export", "exports", "inspect_export", "import", "restore",
             "package_check", "large_smoke", "maintenance", "cron_test",
             "release_check", "all",
-            "surface", "integration_check", "api_freeze", "api_freeze_status",
-            "release_readiness", "v1_rc_check", "mandatory_gate_patch",
-            "concurrency_smoke", "schedule_overlap_smoke",
-            "heartbeat_idempotency_smoke", "lifeops_stress",
-            "acceptance", "acceptance_suite", "v1_rc_acceptance",
-            "acceptance_reports", "acceptance_report", "acceptance_runs",
-            "v1_rc_checklists", "sleep_reply_dream_acceptance",
+            "mandatory_gate_patch", "sleep_reply_dream_acceptance",
             "srd_acceptance", "sleep_dream_acceptance",
             "sleep_reply_dream_acceptance_runs", "srd_acceptance_runs",
             "sleep_reply_dream_acceptance_get", "srd_acceptance_get",
@@ -868,8 +862,7 @@ def _advanced_help() -> str:
         "  autonomy list/plan/run/sleep_context | proactive list/create/evaluate/outbox/send/suppress\n"
         "  execution list/run/serendipity | sleep status/plan/start/wake/plans/sessions | dream status/run/entries/findings | reply status/list/release/doctor | call | confirmation list/confirm/reject <id>\n"
         "  truth list/resolve/observe/bind | behavior summary/init/resolve/add_source | final_gate check/reports/get\n"
-        "  upgrade [check|backup|export|import|restore|package_check|rebuild|verify|large_smoke|cron_test]\n"
-        "  upgrade [integration_check|surface|api_freeze|release_readiness|acceptance|v1_rc_check]\n"
+        "  upgrade [check|backup|export|import|restore|package_check|rebuild|verify|large_smoke|cron_test|mandatory_gate_patch]\n"
         "  branch <name> | trace [audit|verify|doctor|migrations|receipts|explain <id>] | webui"
     )
 
@@ -1127,30 +1120,8 @@ def slash_life(raw_args: str, **kwargs) -> str:
             if action in {"cron_test", "heartbeat_test", "test"}:
                 script = write_tick_script()
                 return format_result(rt.upgrade("cron_test", script_path=str(script)))
-            if action in {"surface", "tools"}:
-                return format_result(rt.upgrade("surface"))
-            if action in {"integration", "integration_check"}:
-                return format_result(rt.upgrade("integration_check", include_details=("details" in rest or "--details" in rest)))
-            if action in {"api_freeze", "freeze"}:
-                return format_result(rt.upgrade("api_freeze"))
-            if action in {"api_freeze_status", "freeze_status"}:
-                return format_result(rt.upgrade("api_freeze_status"))
-            if action in {"release", "release_readiness", "v1_rc_check"}:
-                return format_result(rt.upgrade("release_readiness", include_details=("details" in rest or "--details" in rest)))
             if action in {"mandatory_gate_patch", "patch"}:
                 return format_result(rt.upgrade("mandatory_gate_patch"))
-            if action in {"concurrency_smoke", "schedule_overlap_smoke", "heartbeat_idempotency_smoke", "lifeops_stress"}:
-                return format_result(rt.upgrade(action))
-            if action in {"acceptance", "acceptance_suite", "v1_rc_acceptance"}:
-                return format_result(rt.upgrade("acceptance"))
-            if action in {"acceptance_reports"}:
-                return format_result(rt.upgrade("acceptance_reports"))
-            if action in {"acceptance_report"} and len(rest) > 1:
-                return format_result(rt.upgrade("acceptance_report", report_id=rest[1]))
-            if action in {"acceptance_runs"}:
-                return format_result(rt.upgrade("acceptance_runs", acceptance_run_id=(rest[1] if len(rest) > 1 else None)))
-            if action in {"v1_rc_checklists", "v1_rc_checklist"}:
-                return format_result(rt.upgrade("v1_rc_checklists"))
             if action in {"sleep_reply_dream_acceptance", "srd_acceptance", "sleep_dream_acceptance"}:
                 return format_result(rt.upgrade("sleep_reply_dream_acceptance"))
             if action in {"sleep_reply_dream_acceptance_runs", "srd_acceptance_runs"}:

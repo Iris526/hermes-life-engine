@@ -330,18 +330,10 @@ from .final_gate import (
     write_final_gate_report,
 )
 from .upgrade import (
-    acceptance_suite,
-    api_freeze_snapshot,
-    api_freeze_status,
     backup_database,
-    concurrency_smoke,
     export_profile_archive,
-    get_acceptance_report,
     inspect_profile_export,
-    integration_check,
     large_db_smoke,
-    list_acceptance_reports,
-    list_acceptance_runs,
     list_backups,
     list_maintenance_runs,
     list_profile_exports,
@@ -349,13 +341,10 @@ from .upgrade import (
     migration_history,
     record_package_manifest,
     rebuild_memory_indexes,
-    release_readiness,
     run_tick_script_test,
     run_upgrade_check,
     stage_profile_import,
     stage_restore_plan,
-    surface_snapshot,
-    v1_rc_checklists,
     verify_memory_indexes,
 )
 from .validators import validate_life_ops
@@ -4059,30 +4048,8 @@ class LifeEngineRuntime:
                 if not script:
                     script = str(write_tick_script())
                 return run_tick_script_test(self.conn, owner_kind, owner_id, script_path=str(script), timeout=int(payload.get("timeout", 30)))
-            if action in {"surface", "tool_surface", "command_surface"}:
-                return {"ok": True, "surface": surface_snapshot()}
-            if action in {"integration_check", "hermes_integration_check"}:
-                return integration_check(self.conn, owner_kind, owner_id, include_details=bool(payload.get("include_details", False)))
-            if action in {"api_freeze", "api_freeze_snapshot"}:
-                return api_freeze_snapshot(self.conn, owner_kind, owner_id)
-            if action in {"api_freeze_status", "api_freeze_snapshots"}:
-                return api_freeze_status(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 10)))
-            if action in {"release_readiness", "v1_rc_check"}:
-                return release_readiness(self.conn, owner_kind, owner_id)
             if action in {"mandatory_gate_patch", "core_patch"}:
                 return mandatory_gate_patch()
-            if action in {"concurrency_smoke", "schedule_overlap_smoke", "heartbeat_idempotency_smoke", "lifeops_stress"}:
-                return concurrency_smoke(self.conn, owner_kind, owner_id, action=action, workers=int(payload.get("workers", 4)), items=int(payload.get("items", payload.get("memories", 20))))
-            if action in {"acceptance", "acceptance_suite", "v1_rc_acceptance"}:
-                return acceptance_suite(self.conn, owner_kind, owner_id, report_path=payload.get("report_path"))
-            if action in {"acceptance_reports"}:
-                return list_acceptance_reports(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 20)))
-            if action in {"acceptance_report"}:
-                return get_acceptance_report(self.conn, str(payload.get("report_id") or payload.get("id") or ""))
-            if action in {"acceptance_runs"}:
-                return list_acceptance_runs(self.conn, owner_kind, owner_id, acceptance_run_id=payload.get("acceptance_run_id"), limit=int(payload.get("limit", 50)))
-            if action in {"v1_rc_checklists", "v1_rc_checklist"}:
-                return v1_rc_checklists(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 20)))
             if action in {"sleep_reply_dream_acceptance", "srd_acceptance", "sleep_dream_acceptance"}:
                 return run_sleep_reply_dream_acceptance(self.conn, owner_kind, owner_id)
             if action in {"sleep_reply_dream_acceptance_runs", "srd_acceptance_runs"}:

@@ -100,32 +100,8 @@ def test_v010_trace_explain_event_and_trace_coverage(tmp_path):
         rt.close()
 
 
-def test_v010_acceptance_release_surfaces_and_simple_human_commands(tmp_path):
-    fresh_home(tmp_path)
-    rt = LifeEngineRuntime()
-    try:
-        integration = rt.upgrade("integration_check")
-        assert integration["ok"] is True
-        surface = rt.upgrade("surface")
-        assert surface["ok"] is True
-        assert len(surface["surface"]["minimal_human_commands"]) <= 12
-        freeze = rt.upgrade("api_freeze")
-        assert freeze["ok"] is True
-        acceptance = rt.upgrade("acceptance")
-        assert acceptance["ok"] is True
-        assert acceptance["summary"]["passed"] == acceptance["summary"]["scenarios"] == 5
-        release = rt.upgrade("release_readiness")
-        assert release["ok"] is True
-    finally:
-        rt.close()
-
-
-def test_v010_slash_upgrade_acceptance_and_help(tmp_path):
+def test_v010_help_surfaces_setup_and_advanced(tmp_path):
     fresh_home(tmp_path)
     help_text = slash_life("help")
     assert "/life setup" in help_text
     assert "通常不需要人类记住内部工具" in help_text
-    advanced = slash_life("advanced")
-    assert "acceptance" in advanced
-    result = slash_life("upgrade acceptance")
-    assert '"ok": true' in result
