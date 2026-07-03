@@ -79,6 +79,30 @@ const DOMAIN_LAST = {};
 let activeDomain = "stage";
 function domainOf(ov) { return OVERLAY_DOMAIN[ov] || "stage"; }
 
+// ── 表现层文案表:引擎枚举 → 中文,渲染层只查表,不再裸倒英文 ──
+const LABELS = {
+  gate: { heartbeat: "心跳", schedule: "日程", daily_rhythm: "日常节奏", passive_metabolism: "被动代谢",
+    personality_drift: "性格漂移", meals: "三餐", venture: "营生", campaigns: "事变·资料片",
+    world_evolution: "世界演化", reply_gate: "回复闸", autonomy: "自主规划", proactive: "主动传讯",
+    managed_review_loop: "回顾循环", final_audit: "终审", truth_sources: "真值来源", dream: "梦境",
+    life_author: "生活作者", companion: "主动陪伴", reflection: "自省", context_mode: "上下文档位",
+    context_budget_chars: "上下文预算" },
+  gateVal: { auto: "自动", manual: "手动", off: "关", on: "开", full: "全开", advisory: "建议",
+    true: "开", false: "关", slim: "精简", minimal: "最简", standard: "标准", rich: "丰富" },
+  mode: { busy: "忙碌", idle: "空闲", asleep: "睡着", napping: "小憩", dreaming: "做梦", awake: "清醒",
+    uninterruptible_event: "专注事务" },
+  reply: { immediate: "即时回复", deferred: "延后", defer_until_event_end: "事毕再回",
+    defer_or_wake: "延后或唤醒", defer_until_available: "有空再回" },
+  interrupt: { interruptible: "可打断", soft_interruptible: "可轻打断", sleep_interruptible: "睡中可扰",
+    uninterruptible: "勿扰", none: "无" },
+  heartbeatMode: { auto: "自动", manual: "手动", off: "关" },
+};
+function zhLabel(map, val) {
+  if (val == null || val === "") return val;
+  const k = String(val);
+  return (map && (map[k] || map[k.toLowerCase()])) || val;
+}
+
 function renderSubnav(domainId) {
   const host = document.getElementById("subnav");
   if (!host) return;
@@ -376,15 +400,15 @@ function renderSidebar() {
   // 状态网格
   const stateGrid = document.getElementById("state-grid");
   const stateItems = [
-    ["模式", state.mode],
+    ["模式", zhLabel(LABELS.mode, state.mode)],
     ["体态", state.body_state?.state],
     ["心神", state.mind_state?.state],
     ["环境", state.environment_state?.state],
-    ["回复", state.reply_mode],
-    ["中断", state.interruptibility_level],
+    ["回复", zhLabel(LABELS.reply, state.reply_mode)],
+    ["中断", zhLabel(LABELS.interrupt, state.interruptibility_level)],
   ].filter(([, v]) => v);
   stateGrid.innerHTML = stateItems.map(([l, v]) =>
-    `<div class="state-item"><span class="label">${l}</span><span class="val">${v}</span></div>`
+    `<div class="state-item"><span class="label">${l}</span><span class="val">${escapeHtml(String(v))}</span></div>`
   ).join("") || `<div class="state-item"><span class="label">—</span><span class="val">—</span></div>`;
 
   // 资源条
@@ -2497,14 +2521,16 @@ function renderSettings() {
   document.getElementById("settings-engine").innerHTML = `<h3>引擎状态</h3>
     ${kv("引擎状态", control.engine_state)}
     ${kv("Canon 版本", control.active_canon_version)}
-    ${kv("心跳模式", control.heartbeat_mode)}
+    ${kv("心跳模式", zhLabel(LABELS.heartbeatMode, control.heartbeat_mode))}
     ${kv("工作区", control.workspace)}`;
   // 模块门
   const gates = control.module_gates || {};
   const gatesHtml = Object.entries(gates).map(([k, v]) => {
     const cls = String(v).toLowerCase();
     const badgeCls = cls === "auto" || cls === "full" || cls === "true" ? "auto" : cls === "off" || cls === "false" ? "off" : cls === "manual" ? "manual" : "advisory";
-    return `<div class="settings-row"><span class="sk">${k}</span><span class="gate-badge ${badgeCls}">${v}</span></div>`;
+    const isNum = typeof v === "number" || /^\d+$/.test(String(v));
+    const valLabel = isNum ? String(v) : zhLabel(LABELS.gateVal, v);
+    return `<div class="settings-row"><span class="sk" title="${escapeHtml(k)}">${escapeHtml(zhLabel(LABELS.gate, k))}</span><span class="gate-badge ${badgeCls}">${escapeHtml(String(valLabel))}</span></div>`;
   }).join("");
   document.getElementById("settings-gates").innerHTML = `<h3>模块阵门</h3>${gatesHtml || '<div class="empty-state">无</div>'}`;
   // doctor
