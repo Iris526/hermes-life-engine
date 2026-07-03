@@ -131,56 +131,19 @@ def _slot_entries_from_value(slot_type: str, value: Any) -> list[dict[str, Any]]
     return entries
 
 
-_GUIMINGGUAN_DEFAULT_SOCIAL_SLOTS = {
-    "entity_kind": {
-        "shrine": ("道观/宫观", "供香客、常客与委托人形成社会关系的场所或经营主体。"),
-        "agent": ("生活主体", "当前 LifeEngine 主体在社会世界中的实体。"),
-        "visitor_group": ("访客群体", "香客、常客或本地顾客等群体实体。"),
-        "client": ("委托人", "提出上门、外勤或勘察需求的个人或未具名委托实体。"),
-        "patron": ("香客/主顾", "持续来访、供奉或购买服务的人。"),
-        "merchant": ("商户", "商业圈层或商户身份。"),
-        "neighborhood": ("本地圈层", "邻里、街坊、商户圈等非地图枚举的社会圈层。"),
-        "venue": ("场所", "可被事件 freeform location 指向的地点实体。"),
-    },
-    "relationship_axis": {
-        "trust": ("信任", "一方对另一方可靠性的判断。"),
-        "familiarity": ("熟悉", "重复接触积累的熟悉度。"),
-        "gratitude": ("感谢", "因帮助、服务或交付产生的感谢。"),
-        "suspicion": ("怀疑", "失败、延期或不透明带来的疑虑。"),
-        "obligation": ("人情/义务", "未结清的人情、承诺或后续责任。"),
-    },
-    "reputation_axis": {
-        "trustworthy": ("可信", "在相关 audience 中被认为可靠可信。"),
-        "approachable": ("亲近可问", "让人愿意上门、询问或求助。"),
-        "efficacious": ("灵验/有效", "服务、符箓或处理结果被认为有效。"),
-        "fieldwork_reliability": ("外勤可靠", "上门、勘察、处理委托时的稳定交付。"),
-        "price_fairness": ("价钱公道", "价格是否被认为合理。"),
-    },
-    "evaluation_axis": {
-        "satisfaction": ("满意度", "评价者对服务或结果的满意度。"),
-        "professionalism": ("专业度", "处理过程是否显得专业、有章法。"),
-        "kindness": ("待人温和", "待人是否温和、愿意解释。"),
-        "perceived_effectiveness": ("感知效果", "评价者感知到的效果。"),
-        "price_acceptance": ("价格接受度", "评价者是否接受价格。"),
-    },
-    "rumor_channel": {
-        "visitor_word_of_mouth": ("香客口碑", "香客、常客之间的低热度口碑。"),
-        "east_market_gossip": ("东市闲谈", "东市或相近商业环境中的闲谈渠道；不是地图枚举。"),
-        "commission_backchannel": ("委托人私下反馈", "委托人与中间人之间的私下评价。"),
-        "neighborhood_talk": ("邻里闲话", "本地圈层里的低热度传播。"),
-    },
-}
-
-
 def ensure_default_guimingguan_social_slots(conn, owner_kind: str, owner_id: str,
+                                           *, social_slots: dict[str, Any] | None = None,
                                            source: str = "social_projector") -> list[dict[str, Any]]:
-    """Ensure the generic slots used by the Guimingguan social projector exist.
+    """把 active skin 提供的归明观社会槽写入当前 owner。
 
-    These slots describe social primitives only. They intentionally do not
-    declare concrete origin, faction, or map-location enums; generated entities
-    keep those attributes as unknown/freeform/pending metadata until a worldview
-    package defines the relevant slots.
+    输入是 owner 标识和已由调用方从 active Canon/skin 解析出的 `social_slots`。
+    输出是本次新增或更新的槽定义列表。调用方是社会投影 savepoint 内的兼容
+    seeding；副作用只写 `worldview_slot_definitions` 和 journal。没有 skin 槽
+    时直接返回空列表，保证未声明 guimingguan skin 的 owner 不继承角色槽。
     """
+    slots = social_slots if isinstance(social_slots, dict) else {}
+    if not slots:
+        return []
     out: list[dict[str, Any]] = []
     existing = {
         (row["slot_type"], row["key"])
@@ -189,16 +152,30 @@ def ensure_default_guimingguan_social_slots(conn, owner_kind: str, owner_id: str
             (owner_kind, owner_id),
         ).fetchall()
     }
-    for slot_type, entries in _GUIMINGGUAN_DEFAULT_SOCIAL_SLOTS.items():
-        for key, (label, description) in entries.items():
-            if (slot_type, key) in existing:
+    for slot_type, entries in slots.items():
+        if slot_type not in _SLOT_CANON_KEYS or not isinstance(entries, dict):
+            continue
+        for key, raw in entries.items():
+            k = str(key or "").strip()
+            if not k:
+                continue
+            if isinstance(raw, dict):
+                label = raw.get("label") or raw.get("display_name") or raw.get("name") or k
+                description = raw.get("description")
+            elif isinstance(raw, (list, tuple)):
+                label = raw[0] if len(raw) >= 1 else k
+                description = raw[1] if len(raw) >= 2 else None
+            else:
+                label = str(raw or k)
+                description = None
+            if (slot_type, k) in existing:
                 continue
             out.append(upsert_slot_definition(
                 conn, owner_kind, owner_id,
                 slot_type=slot_type,
-                key=key,
-                label=label,
-                description=description,
+                key=k,
+                label=str(label or k),
+                description=str(description) if description else None,
                 config={"default_for": "guimingguan_social_projection"},
                 source=source,
             ))

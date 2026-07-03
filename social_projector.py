@@ -11,8 +11,11 @@ from __future__ import annotations
 from typing import Any
 
 from . import life_author
+from .canon import get_active_canon
 from .db import savepoint
 from .jsonutil import dumps, loads
+from .living import _canon_skin_name, _skin_data
+from .skins import DEFAULT_LEGACY_LIVING_SKIN
 from .social_world import (
     WORLD_AUDIENCE,
     apply_reputation_event,
@@ -28,7 +31,7 @@ from .trace import append_journal, new_id
 
 _STALL_SIGNALS = {
     "stall", "venture", "sale", "shop", "business", "customer",
-    "摆摊", "摊", "归明观", "香客", "净符", "卖符", "经营", "营业", "售出", "买卖",
+    "摆摊", "摊", "归明观", "净符", "卖符", "经营", "营业", "售出", "买卖",
 }
 
 _COMMISSION_SIGNALS = {
@@ -41,7 +44,7 @@ _NEGATIVE_SIGNALS = {
     "失败", "未解决", "延期", "延误", "不顺利", "担心", "疑虑", "问题",
 }
 
-_CLIENT_ROLES = {"client", "requester", "customer", "委托人", "客户", "请求人", "香客"}
+_CLIENT_ROLES = {"client", "requester", "customer", "委托人", "客户", "请求人"}
 
 # LifeAuthor 输出合同：只承载社会投影流言的人类可见正文。作用域限于一次
 # 事务外 authoring pack；事务内投影只消费 `content`，缺失、空值或异常时逐字
@@ -57,6 +60,41 @@ _SOCIAL_PROJECTION_RUMOR_SCHEMA: dict[str, Any] = {
     },
     "required": ["content"],
 }
+
+
+def _guimingguan_social_slots_for_active_canon(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
+    """读取当前 active Canon 允许 seed 的归明观社会槽。
+
+    输入是投影 owner；输出是 guimingguan skin 中的 `social_slots` 或空 dict。
+    调用方是事件/经营投影 savepoint 内的兼容 seeding。函数只读 Canon 和 skin，
+    不写数据库；未声明 guimingguan skin、未知 skin 或读取失败时返回空 dict，
+    让现代 owner 保持 character-clean。
+    """
+    try:
+        canon = get_active_canon(conn, owner_kind, owner_id)
+        if _canon_skin_name(canon) != DEFAULT_LEGACY_LIVING_SKIN:
+            return {}
+        skin = _skin_data(canon)
+    except Exception:
+        return {}
+    social_slots = skin.get("social_slots") if isinstance(skin, dict) else None
+    return social_slots if isinstance(social_slots, dict) else {}
+
+
+def _ensure_guimingguan_social_slots_for_active_skin(conn, owner_kind: str, owner_id: str,
+                                                     *, source: str) -> list[dict[str, Any]]:
+    """按 active skin 条件写入归明观默认社会槽。
+
+    输入是投影 owner 和来源；输出是 `ensure_default_guimingguan_social_slots`
+    返回的新增槽列表。调用方是完成事件和经营结算投影。副作用只在 active Canon
+    指向 guimingguan skin 时发生；否则不写任何 slot。
+    """
+    social_slots = _guimingguan_social_slots_for_active_canon(conn, owner_kind, owner_id)
+    if not social_slots:
+        return []
+    return ensure_default_guimingguan_social_slots(
+        conn, owner_kind, owner_id, social_slots=social_slots, source=source,
+    )
 
 
 def project_completed_event(conn, owner_kind: str, owner_id: str, event_id: str, *,
@@ -93,7 +131,7 @@ def project_completed_event(conn, owner_kind: str, owner_id: str, event_id: str,
         if not run.get("created"):
             return {"projected": False, "reason": "already_projected", "run": run}
 
-        ensure_default_guimingguan_social_slots(conn, owner_kind, owner_id, source=source)
+        _ensure_guimingguan_social_slots_for_active_skin(conn, owner_kind, owner_id, source=source)
         counts = _project_by_kind(conn, owner_kind, owner_id, kind=kind, event=event,
                                   occurrence=occurrence, activity=activity, evidence=evidence,
                                   summary=summary, source=source,
@@ -148,7 +186,7 @@ def project_venture_sale_settlement(conn, owner_kind: str, owner_id: str, occurr
         if not run.get("created"):
             return {"projected": False, "reason": "already_projected", "run": run}
 
-        ensure_default_guimingguan_social_slots(conn, owner_kind, owner_id, source=source)
+        _ensure_guimingguan_social_slots_for_active_skin(conn, owner_kind, owner_id, source=source)
         counts = _project_stall(conn, owner_kind, owner_id, event=event, occurrence=occurrence,
                                 activity=activity, evidence=evidence, summary=None, source=source,
                                 rumor_authoring=rumor_authoring)
@@ -260,7 +298,7 @@ def _project_stall(conn, owner_kind: str, owner_id: str, *, event: dict[str, Any
         target_entity_id=shrine["id"],
         request_type="wish",
         topic=topic,
-        summary="香客/顾客在经营事件中留下的祝愿或购买需求。",
+        summary="来访者/顾客在经营事件中留下的祝愿或购买需求。",
         details={**details, "event_title": event.get("title")},
         privacy_level="local",
         linked_event_id=evidence.get("event_id"),

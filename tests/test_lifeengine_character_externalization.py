@@ -6,6 +6,7 @@ import shutil
 
 
 RESIDUE_TERMS = ("灵铢", "归明观", "符纸", "朱砂", "香案", "净符", "晨巡")
+SOCIAL_SLOT_RESIDUE_TERMS = ("道观", "宫观", "香客", "主顾", "香客口碑")
 
 
 def fresh_home(tmp_path):
@@ -28,6 +29,97 @@ def _contains_residue(value) -> bool:
     """
     text = json.dumps(value, ensure_ascii=False, sort_keys=True)
     return any(term in text for term in RESIDUE_TERMS)
+
+
+def _result(commit: dict, index: int = 0) -> dict:
+    """从 LifeOps commit 结果里取指定 op 的 result。
+
+    输入是 runtime 工具返回的 commit dict 和结果下标；输出是该 op 的 result。
+    调用方是本文件社会投影测试。函数只读传入对象；结构缺失时返回空 dict，让
+    断言在后续字段检查处失败。
+    """
+    return ((commit.get("results") or [])[index].get("result") or {})
+
+
+def _slot_text(rt, owner_id: str) -> str:
+    """读取当前 owner 已落库的社会槽定义文本。
+
+    输入是测试 runtime 和 owner_id；输出是稳定 JSON 文本。调用方用它断言默认
+    agent 仍有 skin 槽、现代 owner 不继承角色槽。函数只读测试库。
+    """
+    rows = rt.conn.execute(
+        """SELECT slot_type, key, label, description
+           FROM worldview_slot_definitions
+           WHERE owner_kind='agent' AND owner_id=?
+           ORDER BY slot_type, key""",
+        (owner_id,),
+    ).fetchall()
+    return json.dumps([dict(row) for row in rows], ensure_ascii=False, sort_keys=True)
+
+
+class _FakeUsage:
+    """模拟 LifeAuthor usage 统计。
+
+    该结构只服务本文件 fake LLM，生命周期限于单次 `_idle_prompt` 调用。业务代码
+    只读取这些固定 token/cost 字段写审计，测试断言不依赖数值。
+    """
+
+    input_tokens = 12
+    output_tokens = 8
+    total_tokens = 20
+    cost_usd = 0.0
+
+
+class _FakeResult:
+    """承载 fake LLM 返回给 LifeAuthor 的结构化结果。
+
+    输入是 parsed dict；输出对象暴露 LifeAuthor 期望的 parsed/provider/model/usage
+    字段。作用域仅限本文件 prompt 断言，不代表真实宿主模型合同变更。
+    """
+
+    def __init__(self, parsed):
+        self.parsed = parsed
+        self.usage = _FakeUsage()
+        self.provider = "fake"
+        self.model = "fake-model"
+
+
+class _FakeLlm:
+    """记录 LifeAuthor 调用参数的离线 fake LLM。
+
+    输入是固定 parsed；输出由 `complete_structured` 包成 `_FakeResult`。调用方是
+    `_idle_prompt`，用于读取 idle prompt instructions，不访问网络或宿主模型。
+    """
+
+    def __init__(self, parsed):
+        self._parsed = parsed
+        self.calls: list[dict] = []
+
+    def complete_structured(self, **kwargs):
+        """记录一次 LifeAuthor 调用并返回固定 parsed。"""
+        self.calls.append(kwargs)
+        return _FakeResult(self._parsed)
+
+
+def _idle_prompt(rt, owner_id: str) -> str:
+    """直接调用 companion idle author 并返回 LifeAuthor instructions。
+
+    输入是测试 runtime 和 agent owner_id；输出是 companion 传给 LifeAuthor 的 prompt。
+    调用方用它断言默认 skin 有称呼、现代 no-skin agent 省略称呼。副作用仅限设置
+    并恢复测试 LLM，以及写一条 LifeAuthor 审计记录。
+    """
+    from lifeengine import companion as companion_module
+    from lifeengine import life_author
+
+    fake = _FakeLlm({"summary": "今天画了一张小草图，忽然想起你。", "emotional_tone": "warm"})
+    life_author.set_test_llm(fake)
+    try:
+        parsed = companion_module._author_idle_line(rt.conn, owner_id, "anonymous-user", trace_id=None)
+        assert parsed and parsed["summary"]
+        assert fake.calls
+        return fake.calls[-1]["instructions"]
+    finally:
+        life_author.set_test_llm(None)
 
 
 def test_default_agent_keeps_legacy_living_skin(monkeypatch, tmp_path):
@@ -53,6 +145,29 @@ def test_default_agent_keeps_legacy_living_skin(monkeypatch, tmp_path):
         assert _contains_residue(payload)
         assert "归明观晨巡与开观" in rhythm["rendered"]
         assert "晨巡" in json.dumps(payload, ensure_ascii=False)
+
+        ev = _result(rt.event_tool(
+            "create",
+            title="归明观午后摆摊卖净符",
+            event_type="work",
+            activity_domain="venture",
+            tags=["摆摊", "归明观", "净符"],
+            attributes={
+                "wish_topic": "general_blessing",
+                "venue_name": "归明观",
+                "customer_group_name": "东市香客",
+            },
+            resource_costs={},
+        ))
+        projected = _result(rt.event_tool("complete", event_id=ev["id"], summary="卖符顺利，香客愿意再来。")).get("social_projection") or {}
+        assert projected["projected"] is True
+        default_slot_text = _slot_text(rt, "default-agent")
+        assert "道观/宫观" in default_slot_text
+        assert "香客/主顾" in default_slot_text
+        assert "香客口碑" in default_slot_text
+
+        default_prompt = _idle_prompt(rt, "default-agent")
+        assert "可以自然叫他“师兄”" in default_prompt
     finally:
         rt.close()
 
@@ -87,6 +202,46 @@ def test_modern_canon_without_living_skin_has_no_character_residue(monkeypatch, 
             (owner_id,),
         ).fetchall()
         resource_state = rt.resources("list", owner_id=owner_id)["resources"]
+
+        ev = _result(rt.event_tool(
+            "create",
+            owner_id=owner_id,
+            title="周末创意市集摆摊",
+            event_type="work",
+            activity_domain="venture",
+            tags=["stall", "shop"],
+            attributes={
+                "wish_topic": "poster_feedback",
+                "venue_name": "独立创意市集",
+                "customer_group_name": "路过顾客",
+            },
+            resource_costs={},
+        ))
+        projected = _result(rt.event_tool(
+            "complete",
+            owner_id=owner_id,
+            event_id=ev["id"],
+            summary="明信片卖得还不错，顾客说想看下一套。",
+        )).get("social_projection") or {}
+        assert projected["projected"] is True
+        modern_slot_text = _slot_text(rt, owner_id)
+        assert all(term not in modern_slot_text for term in SOCIAL_SLOT_RESIDUE_TERMS)
+        social_request_text = json.dumps(
+            [
+                dict(row)
+                for row in rt.conn.execute(
+                    "SELECT summary FROM social_requests WHERE owner_kind='agent' AND owner_id=? ORDER BY created_at",
+                    (owner_id,),
+                ).fetchall()
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        assert all(term not in social_request_text for term in SOCIAL_SLOT_RESIDUE_TERMS)
+
+        modern_prompt = _idle_prompt(rt, owner_id)
+        assert "师兄" not in modern_prompt
+        assert "可以自然叫他" not in modern_prompt
 
         produced = {
             "resource_rendered": resources["rendered"],

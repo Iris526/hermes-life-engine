@@ -23,8 +23,10 @@ from zoneinfo import ZoneInfo
 
 from . import life_author
 from . import relationship as rel
+from .canon import get_active_canon
 from .emotion import current_mood, mood_band
 from .jsonutil import loads
+from .living import _skin_data
 from .proactive import create_proactive_intent
 from .time_utils import parse_datetime
 from .trace import append_audit
@@ -51,6 +53,7 @@ _COMPANION_MECHANICAL_PREFIXES = (
 )
 _RECENT_IDLE_REPEAT_WINDOW_DAYS = 7
 _RECENT_IDLE_REPEAT_JACCARD = 0.32
+_GENERIC_IDLE_DEDUP_FILLERS = ("Ringo", "我刚", "刚刚", "忽然", "莫名", "想跟你", "想给你", "一句", "嘿嘿")
 
 _DEFAULT_POLICY: dict[str, Any] = {
     "enabled": True,
@@ -81,6 +84,100 @@ def _trim_companion_line(text: str) -> str:
     return msg.strip()
 
 
+def _address_text(value: Any) -> str | None:
+    """从 Canon/skin 候选值里提取可用于称呼的文本。
+
+    输入是字符串或包含称呼字段的 dict；输出是去空白后的称呼或 None。调用方是
+    companion prompt 和去重逻辑。函数无副作用；非文本、空文本或未知形态都按
+    None 处理，避免为无 skin 的现代 agent 合成角色称呼。
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, dict):
+        for key in ("address_term", "user_address_term", "user_display_name", "display_name", "name", "label"):
+            text = _address_text(value.get(key))
+            if text:
+                return text
+    return None
+
+
+def _mapped_address_text(value: Any, user_id: str | None) -> str | None:
+    """从按用户划分的 Canon 称呼映射里取当前用户的称呼。
+
+    输入是可能的 user->称呼 映射和当前 user_id；输出是当前用户、default 或 primary
+    对应的称呼。调用方是 `_canon_companion_address_term`。函数只读传入对象，缺失
+    映射时返回 None，不回退到任何角色默认值。
+    """
+    if not isinstance(value, dict):
+        return None
+    candidates: list[Any] = []
+    if user_id:
+        candidates.append(value.get(user_id))
+    candidates.extend(value.get(key) for key in ("default", "primary"))
+    for candidate in candidates:
+        text = _address_text(candidate)
+        if text:
+            return text
+    return None
+
+
+def _canon_companion_address_term(canon: dict[str, Any] | None, user_id: str | None) -> str | None:
+    """读取 Canon 显式声明的陪伴称呼。
+
+    输入是 active Canon 和目标 user_id；输出是 companion/relationship 块中声明的
+    address term 或用户显示名。调用方是 idle prompt 与 idle 去重。函数只解释
+    Canon，不读写数据库；Canon 未声明时返回 None，让无 skin agent 省略称呼子句。
+    """
+    if not isinstance(canon, dict):
+        return None
+    for block_name in ("companion", "relationship"):
+        block = canon.get(block_name)
+        if not isinstance(block, dict):
+            continue
+        for mapping_key in ("address_terms", "user_address_terms", "users"):
+            text = _mapped_address_text(block.get(mapping_key), user_id)
+            if text:
+                return text
+        for key in ("address_term", "user_address_term", "user_display_name", "display_name"):
+            text = _address_text(block.get(key))
+            if text:
+                return text
+    return None
+
+
+def _active_agent_canon(conn, agent_id: str) -> dict[str, Any]:
+    """读取 companion 当前 agent 的 active Canon。
+
+    输入是 agent_id；输出是 active Canon 或空 dict。调用方是称呼解析。函数只读
+    Canon；读取失败按空 Canon 处理，避免 companion 主动消息因称呼缺失而失败。
+    """
+    try:
+        return get_active_canon(conn, "agent", agent_id) or {}
+    except Exception:
+        return {}
+
+
+def _companion_address_term(conn, agent_id: str, user_id: str | None) -> str | None:
+    """解析 idle companion 可使用的用户称呼。
+
+    输入是数据库连接、agent_id 和 user_id；输出是 Canon 显式称呼、用户显示名或
+    active skin 的 companion.address_term。调用方是 prompt 构造和重复度检查。
+    副作用为无；没有任何来源时返回 None，prompt 不生成称呼子句，去重也不剥离
+    角色称呼。
+    """
+    canon = _active_agent_canon(conn, agent_id)
+    text = _canon_companion_address_term(canon, user_id)
+    if text:
+        return text
+    try:
+        skin = _skin_data(canon)
+    except Exception:
+        skin = {}
+    companion = skin.get("companion") if isinstance(skin, dict) else {}
+    return _address_text((companion or {}).get("address_term") if isinstance(companion, dict) else None)
+
+
 def _companion_rejection_reason(text: str) -> str | None:
     """Return why an authored companion line should not become an intent."""
     raw = str(text or "")
@@ -102,28 +199,34 @@ def _companion_rejection_reason(text: str) -> str | None:
     return None
 
 
-def _line_bigrams(text: str) -> set[str]:
-    """Return lightweight content bigrams for repeated companion-line checks."""
+def _line_bigrams(text: str, *, address_term: str | None = None) -> set[str]:
+    """生成陪伴文案去重用的轻量 bigram。
+
+    输入是一句候选文案和当前 Canon/skin 解析出的可选称呼；输出是去掉通用 QQ
+    口头词后的 bigram 集合。调用方是最近 idle 文案重复检查。函数无副作用；
+    只有传入称呼时才剥离称呼，现代 agent 不会因固定角色词被误删。
+    """
     s = _trim_companion_line(text)
     s = re.sub(r"[\s\W_]+", "", s, flags=re.UNICODE)
-    # Remove common QQ filler so repeated props/actions carry the score, not
-    # every line beginning with 师兄/我刚/忽然想.
-    for filler in ("师兄", "Ringo", "我刚", "刚刚", "忽然", "莫名", "想跟你", "想给你", "一句", "嘿嘿"):
+    fillers = []
+    if isinstance(address_term, str) and address_term.strip():
+        fillers.append(address_term.strip())
+    fillers.extend(_GENERIC_IDLE_DEDUP_FILLERS)
+    for filler in fillers:
         s = s.replace(filler, "")
     return {s[i:i + 2] for i in range(max(0, len(s) - 1)) if s[i:i + 2].strip()}
 
 
 def _looks_like_recent_idle_repeat(conn, agent_id: str, user_id: str | None, text: str,
                                    now: str | None = None) -> bool:
-    """Return True when a draft is too similar to recent companion prose.
+    """判断候选 idle 文案是否过于接近近期陪伴文案。
 
-    The recency window is anchored to the tick's LOGICAL ``now`` when supplied,
-    not wall-clock ``datetime('now')``. A wall-clock anchor made the window slide
-    out from under fixed-date test fixtures (and, in replays, drift off the data),
-    so an intent authored inside the tick's own timeframe could fall outside the
-    dedup window and reappear as a rephrased repeat.
+    输入是 agent/user、候选文本和可选逻辑时间；输出是是否应拒绝。调用方是
+    `_sanitize_parsed_line`。函数只读 proactive_intents；窗口锚定传入的逻辑
+    `now`，避免固定日期测试或回放因 wall-clock 漂移而漏掉近期重复。
     """
-    mine = _line_bigrams(text)
+    address_term = _companion_address_term(conn, agent_id, user_id)
+    mine = _line_bigrams(text, address_term=address_term)
     if len(mine) < 6:
         return False
     params: list[Any] = [agent_id]
@@ -140,7 +243,7 @@ def _looks_like_recent_idle_repeat(conn, agent_id: str, user_id: str | None, tex
         (*params, now or "now", f"-{_RECENT_IDLE_REPEAT_WINDOW_DAYS} days"),
     ).fetchall()
     for row in rows:
-        other = _line_bigrams(str(row["summary"] or ""))
+        other = _line_bigrams(str(row["summary"] or ""), address_term=address_term)
         if len(other) < 6:
             continue
         overlap = len(mine & other)
@@ -526,10 +629,12 @@ def _author_idle_line(conn, agent_id: str, user_id: str, *, trace_id: str | None
     }
     if authoring_now:
         context["authoring_now"] = authoring_now
+    address_term = _companion_address_term(conn, agent_id, user_id)
+    address_clause = f"，可以自然叫他“{address_term}”" if address_term else ""
     instructions = (
         "你现在心情不错，也没什么大事，就是想跟对方说句话——可以是你今天的一件小事、"
         "一个忽然冒出来的念头，或是想起了对方。一句话，自然、轻，像随手发的消息。"
-        "这是 QQ 私聊；用第一人称，可以自然叫他“师兄”。不要像汇报，不要解释系统，"
+        f"这是 QQ 私聊；用第一人称{address_clause}。不要像汇报，不要解释系统，"
         "不要总写添灯油/火苗/常明净愿灯；如果素材重复，就换成更贴近日常的小动作或一句惦记。"
         "输出 summary=你想说的那句话；emotional_tone=语气。"
     )
