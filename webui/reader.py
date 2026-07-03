@@ -164,6 +164,38 @@ class LifeEngineReader:
             owners.add(("agent", "default-agent"))
         return [{"owner_kind": k, "owner_id": v} for k, v in sorted(owners)]
 
+    def agents(self, selected_owner_kind: str, selected_owner_id: str) -> list[dict[str, Any]]:
+        """读取 constellation 顶栏使用的 active agent roster。
+
+        输入是 WebUI 当前 selected owner；输出来自 `registry.active_agents` 的
+        agent 列表，并补充 `is_selected` 供前端高亮。调用方是 `/api/agents`；
+        副作用仅限只读 SQLite。旧库缺少 registry 所需表时返回空列表，避免新增
+        switcher 破坏单 owner 或冷启动页面。
+        """
+        with self._connect() as conn:
+            if not (self._table_exists(conn, "canon_versions") and self._table_exists(conn, "controls")):
+                return []
+            try:
+                from ..registry import active_agents
+
+                agents = active_agents(conn)
+            except sqlite3.Error:
+                return []
+        selected_kind = str(selected_owner_kind or "")
+        selected_id = str(selected_owner_id or "")
+        out: list[dict[str, Any]] = []
+        for agent in agents:
+            owner_kind = str(agent.get("owner_kind") or "")
+            owner_id = str(agent.get("owner_id") or "")
+            out.append({
+                "owner_kind": owner_kind,
+                "owner_id": owner_id,
+                "name": agent.get("name") or owner_id,
+                "engine_state": agent.get("engine_state") or "unknown",
+                "is_selected": owner_kind == selected_kind and owner_id == selected_id,
+            })
+        return out
+
     def control(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
         with self._connect() as conn:
             table = "controls" if self._table_exists(conn, "controls") else "engine_control"

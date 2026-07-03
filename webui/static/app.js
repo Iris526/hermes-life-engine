@@ -5,6 +5,7 @@
 const API = "";
 let snapshotData = null;
 let collectionsData = null;
+let agentRoster = [];
 let activeOverlay = "stage";
 let currentPeriod = "today";
 let currentBagTab = null;
@@ -13,6 +14,7 @@ let codexDocs = [];
 let reloadSerial = Date.now();
 let soundOn = true;
 let audioCtx = null;
+let switchingOwner = false;
 
 // WebUI 只读 read model 缓存。作用域是当前浏览器页面生命周期；数据来自 /api/goals 与
 // /api/rhythm，仅用于渲染新增面板与舞台节奏条，刷新或重新打开面板时可被最新响应替换。
@@ -183,6 +185,7 @@ async function loadSnapshot(options = {}) {
     const res = await fetch(apiUrl("/api/snapshot", { period: currentPeriod }, options.force));
     snapshotData = await res.json();
     collectionsData = snapshotData;
+    await loadAgentRoster({ force: options.force });
     // 如果是第一次加载,隐藏 loading
     document.getElementById("loading-screen").classList.add("hidden");
     document.getElementById("main-layout").classList.remove("hidden");
@@ -197,7 +200,7 @@ async function reloadInPage() {
   const btn = document.getElementById("btn-reload");
   const keepOverlay = activeOverlay;
   reloadSerial = Date.now();
-  if (sseSource) { sseSource.close(); sseSource = null; }
+  closeSSE(true);
   codexDocs = [];
   closeDrawer();
   reloadStylesheets();
@@ -216,6 +219,20 @@ async function loadCollections() {
   try {
     collectionsData = await (await fetch(apiUrl("/api/snapshot", {}, true))).json();
   } catch {}
+}
+
+// 拉取当前 active agent roster。输入来自 loadSnapshot 或 owner 切换；输出写入
+// agentRoster，供顶栏 switcher 渲染。副作用只有网络读取；旧后端或旧库缺 endpoint
+// 时降级为空数组，保持单 owner 页面按原样显示。
+async function loadAgentRoster(options = {}) {
+  try {
+    const res = await fetch(apiUrl("/api/agents", {}, options.force));
+    if (!res.ok) throw new Error("agents fetch failed");
+    const data = await res.json();
+    agentRoster = Array.isArray(data) ? data : (Array.isArray(data?.agents) ? data.agents : []);
+  } catch {
+    agentRoster = [];
+  }
 }
 
 // ── 生活日志 (LifeFeed) ───────────────────────────
@@ -336,6 +353,18 @@ let sseSource = null;
 let sseReconnectTimer = null;
 let sseReconnectDelay = 2000;
 const SSE_RECONNECT_MAX = 30000;
+
+// 关闭当前 SSE 连接。输入 resetDelay 表示是否把重连退避恢复到初始值；输出为空。
+// 调用方是页面内重载和 agent 切换。副作用是关闭 EventSource 并清掉 pending timer，
+// 确保下一次 connectSSE 会按当前 selected owner 重新建立流。
+function closeSSE(resetDelay = false) {
+  if (sseSource) sseSource.close();
+  sseSource = null;
+  clearTimeout(sseReconnectTimer);
+  sseReconnectTimer = null;
+  if (resetDelay) sseReconnectDelay = 2000;
+}
+
 function connectSSE() {
   if (sseSource) return;
   clearTimeout(sseReconnectTimer);
@@ -411,6 +440,7 @@ function renderTopBar() {
   const engine = engineDisplayState(control, state, snapshotData.current_event);
   document.getElementById("db-selector").textContent = meta.db_path ? meta.db_path.split("/").pop() : "—";
   document.getElementById("owner-tag").textContent = `${owner.owner_kind || "agent"}:${owner.owner_id || "—"}`;
+  renderAgentSwitcher(owner);
   const chip = document.getElementById("engine-state-tag");
   chip.textContent = engine.label;
   chip.title = `engine=${control.engine_state || "—"}; heartbeat=${control.heartbeat_mode || "—"}`;
@@ -420,6 +450,48 @@ function renderTopBar() {
     tickBtn.title = engine.active ? "手动推进一次 LifeEngine 心跳" : "开启 LifeEngine 并推进一次";
     tickBtn.innerHTML = `${engine.active ? "▶" : "⏵"}<span class="btn-label">${engine.active ? "推进" : "开启"}</span>`;
   }
+}
+
+// 渲染顶栏 constellation agent switcher。输入是当前 snapshot owner；输出更新
+// #agent-switcher 并绑定点击事件。调用方是 renderTopBar；副作用只限 DOM 与后续
+// 用户点击触发的 owner 切换，不改变旧的 owner-tag 展示。
+function renderAgentSwitcher(owner = {}) {
+  const host = document.getElementById("agent-switcher");
+  if (!host) return;
+  const agents = Array.isArray(agentRoster) ? agentRoster : [];
+  if (!agents.length) {
+    host.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+  const selectedKind = String(owner.owner_kind || "agent");
+  const selectedId = String(owner.owner_id || "");
+  host.hidden = false;
+  host.innerHTML = agents.map(agent => {
+    const ownerKind = String(agent?.owner_kind || "agent");
+    const ownerId = String(agent?.owner_id || "");
+    const selected = !!agent?.is_selected || (ownerKind === selectedKind && ownerId === selectedId);
+    const state = String(agent?.engine_state || "unknown");
+    const stateClass = agentStateClass(state);
+    const name = agent?.name || ownerId || "—";
+    return `<button class="agent-pill ${selected ? "active" : ""} ${stateClass}" data-owner-kind="${escapeHtml(ownerKind)}" data-owner-id="${escapeHtml(ownerId)}" title="${escapeHtml(ownerKind + ":" + ownerId + " · " + state)}">
+      <span class="agent-dot"></span>
+      <span class="agent-pill-name">${escapeHtml(name)}</span>
+    </button>`;
+  }).join("");
+  host.querySelectorAll(".agent-pill").forEach(btn => {
+    btn.onclick = () => switchObservedAgent(btn.dataset.ownerKind, btn.dataset.ownerId);
+  });
+}
+
+// 将 engine_state 映射到安全 CSS class。输入来自 /api/agents；输出只包含固定小集合，
+// 避免把服务端字符串直接拼进 class。调用方是 renderAgentSwitcher，无外部副作用。
+function agentStateClass(state) {
+  const normalized = String(state || "").toLowerCase();
+  if (normalized === "active") return "agent-state-active";
+  if (normalized === "paused" || normalized === "paused_setup") return "agent-state-paused";
+  if (normalized === "disabled" || normalized === "archived") return "agent-state-off";
+  return "agent-state-setup";
 }
 
 // ── 左栏 ──────────────────────────────────────
@@ -2866,6 +2938,74 @@ function switchOverlay(name) {
   if (name === "codex" && !codexDocs.length) renderCodex();
   if (name === "feed") loadFeed();
   if (name === "innerlife") loadGoals();
+}
+
+// 清理只属于当前 selected owner 的前端缓存。输入为空；输出为空。调用方是
+// switchObservedAgent；副作用只发生在浏览器内存，确保换观察对象后日志、目标、
+// 节律和世界地图交互状态不会沿用上一位 agent。
+function resetOwnerScopedCaches() {
+  feedItems = [];
+  feedCursor = null;
+  goalsData = null;
+  goalsLoading = false;
+  rhythmData = null;
+  rhythmLoading = false;
+  collectionsData = null;
+  worldMapState = {
+    mapKey: null,
+    viewBox: null,
+    markMode: false,
+    dragging: false,
+    dragStart: null,
+    selectedMarkerId: null,
+    hoverPoint: null,
+    pendingMarker: null,
+    settingsOpen: false,
+  };
+}
+
+// agent 切换后的面板补拉。输入为空；输出 Promise。调用方是 switchObservedAgent；
+// 副作用只读取当前 selected owner 的 endpoint，让停留在 feed/innerlife 时也能立刻
+// 看到新 agent 的数据。
+async function refreshActiveOverlayAfterOwnerSwitch() {
+  if (activeOverlay === "feed") await loadFeed();
+  if (activeOverlay === "innerlife") await loadGoals();
+  if (activeOverlay === "stage") await loadRhythm();
+}
+
+// 切换当前观察的 agent。输入来自 agent switcher 的 data-owner-*；输出 Promise。
+// 调用方是用户点击顶栏 roster。副作用包括 POST /api/owner、关闭旧 SSE、清理
+// owner 作用域缓存、重拉 snapshot，并让下一条 SSE 按 server 的 selected owner
+// 重新指向新生活域。失败时只显示 toast，不改变本地 snapshot。
+async function switchObservedAgent(ownerKind, ownerId) {
+  ownerKind = String(ownerKind || "").trim();
+  ownerId = String(ownerId || "").trim();
+  if (!ownerKind || !ownerId || switchingOwner) return;
+  const current = snapshotData?.owner || {};
+  if (current.owner_kind === ownerKind && current.owner_id === ownerId) return;
+  switchingOwner = true;
+  try {
+    const res = await fetch(`${API}/api/owner`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner_kind: ownerKind, owner_id: ownerId }),
+    });
+    if (!res.ok) throw new Error("owner switch failed");
+    const data = await res.json();
+    if (data.ok === false) throw new Error(data.error || "owner switch rejected");
+    closeSSE(true);
+    resetOwnerScopedCaches();
+    closeDrawer();
+    await loadSnapshot({ force: true });
+    await refreshActiveOverlayAfterOwnerSwitch();
+    const agent = (agentRoster || []).find(item => item.owner_kind === ownerKind && item.owner_id === ownerId);
+    showToast(`已切换观测对象：${agent?.name || ownerId}`, "ok", 2600);
+  } catch (err) {
+    console.error("switch owner error:", err);
+    showToast("切换观测对象失败", "warn");
+  } finally {
+    switchingOwner = false;
+  }
 }
 
 // ── 操作 ──────────────────────────────────────

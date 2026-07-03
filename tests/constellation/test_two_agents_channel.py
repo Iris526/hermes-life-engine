@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 from lifeengine.constants import DEFAULT_AGENT_ID
 from lifeengine.inter_agent import deliver_inter_agent, enqueue_inter_agent
 from lifeengine.jsonutil import loads
+from lifeengine.paths import db_path
 from lifeengine.registry import active_agents, tick_all_active
 from lifeengine.runtime import LifeEngineRuntime
+from lifeengine.webui.server import create_app
 
 
 RESIDUE_TERMS = ("灵铢", "归明观", "符纸")
@@ -168,5 +172,36 @@ def test_two_agents_inter_agent_channel_is_unverified_and_idempotent(monkeypatch
         )
         assert duplicate["enqueued"] is False
         assert rt.conn.execute("SELECT COUNT(*) FROM inter_agent_outbox").fetchone()[0] == 1
+    finally:
+        rt.close()
+
+
+def test_webui_agents_endpoint_returns_active_roster_and_selection(monkeypatch, tmp_path: Path) -> None:
+    """验证 WebUI constellation roster 只读 active registry 并标出当前观察对象。
+
+    场景直接创建两个 active Canon，不依赖 demo seed。调用方是前端 agent switcher；
+    测试固定 `/api/agents` 的数组 shape，以及 `/api/owner` 切换后 is_selected 跟随
+    WebUIState，而不改变既有 `/api/owners` 合同。
+    """
+    monkeypatch.setenv("HERMES_HOME", str(_fresh_home(tmp_path)))
+    rt = LifeEngineRuntime()
+    agent_b = "agent-qing"
+    try:
+        rt.setup("名字是 凛。她是现代画师。", "agent", DEFAULT_AGENT_ID)
+        rt.commit_canon("agent", DEFAULT_AGENT_ID)
+        rt.setup("名字是 青。她是现代城市里的独立音乐人和声音设计师。", "agent", agent_b)
+        rt.commit_canon("agent", agent_b)
+
+        client = TestClient(create_app(str(db_path())))
+        first = client.get("/api/agents").json()
+        assert {item["owner_id"] for item in first} == {DEFAULT_AGENT_ID, agent_b}
+        assert {item["owner_id"]: item["name"] for item in first}[agent_b] == "青"
+        assert all(set(item) == {"owner_kind", "owner_id", "name", "engine_state", "is_selected"} for item in first)
+        assert any(item["owner_id"] == DEFAULT_AGENT_ID and item["is_selected"] for item in first)
+
+        client.post("/api/owner", json={"owner_kind": "agent", "owner_id": agent_b})
+        switched = client.get("/api/agents").json()
+        assert any(item["owner_id"] == agent_b and item["is_selected"] for item in switched)
+        assert not any(item["owner_id"] == DEFAULT_AGENT_ID and item["is_selected"] for item in switched)
     finally:
         rt.close()

@@ -117,11 +117,24 @@ class WebUIState:
         try:
             reader = LifeEngineReader(str(self.db_path))
             owners = reader.owners()
-            if owners:
-                self.owner_kind = owners[0]["owner_kind"]
-                self.owner_id = owners[0]["owner_id"]
+            owner = self._preferred_owner(owners)
+            if owner:
+                self.owner_kind = owner["owner_kind"]
+                self.owner_id = owner["owner_id"]
         except Exception:
             pass
+
+    def _preferred_owner(self, owners: list[dict[str, str]]) -> dict[str, str] | None:
+        """选择 WebUI 初始观察 owner。
+
+        输入是 reader.owners() 的候选列表；输出优先 `agent:default-agent`，否则为
+        第一位 owner。调用方是初始化和选择 DB 后的重定位；副作用无。这样单 agent
+        仍保持旧行为，多 agent demo 则稳定先落在 A/凛，再由 switcher 切到 B。
+        """
+        for owner in owners:
+            if owner.get("owner_kind") == "agent" and owner.get("owner_id") == "default-agent":
+                return owner
+        return owners[0] if owners else None
 
     def reader(self) -> LifeEngineReader:
         return LifeEngineReader(str(self.db_path))
@@ -130,9 +143,10 @@ class WebUIState:
         self.db_path = resolve_lifeengine_db(path)
         reader = self.reader()
         owners = reader.owners()
-        if owners:
-            self.owner_kind = owners[0]["owner_kind"]
-            self.owner_id = owners[0]["owner_id"]
+        owner = self._preferred_owner(owners)
+        if owner:
+            self.owner_kind = owner["owner_kind"]
+            self.owner_id = owner["owner_id"]
         return {"ok": True, "meta": reader.meta(), "owners": owners, "selected_owner": {"owner_kind": self.owner_kind, "owner_id": self.owner_id}}
 
     def set_owner(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
@@ -181,6 +195,16 @@ def create_app(life_dir: str | None = None) -> FastAPI:
     @app.get("/api/owners")
     def owners() -> dict[str, Any]:
         return {"owners": state.reader().owners(), "selected": {"owner_kind": state.owner_kind, "owner_id": state.owner_id}}
+
+    @app.get("/api/agents")
+    def agents() -> list[dict[str, Any]]:
+        """返回顶栏 constellation roster。
+
+        输入来自当前 WebUIState 的 selected owner；输出为 active agent 数组，每项含
+        owner_kind、owner_id、name、engine_state、is_selected。调用方是静态 WebUI
+        的 agent switcher；副作用只读数据库，不改变既有 /api/owners shape。
+        """
+        return state.reader().agents(state.owner_kind, state.owner_id)
 
     @app.post("/api/owner")
     async def owner(request: Request) -> dict[str, Any]:
@@ -393,7 +417,9 @@ def create_app(life_dir: str | None = None) -> FastAPI:
                 if await request.is_disconnected():
                     break
                 try:
-                    snap = state.reader().snapshot(state.owner_kind, state.owner_id, period=period, date=date)
+                    ok = state.owner_kind
+                    oid = state.owner_id
+                    snap = state.reader().snapshot(ok, oid, period=period, date=date)
                     h = snap.get("snapshot_hash")
                     if h != last:
                         yield f"event: snapshot\ndata: {json.dumps(snap, ensure_ascii=False)}\n\n"

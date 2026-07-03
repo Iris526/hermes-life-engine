@@ -17,6 +17,8 @@ from typing import Any
 
 OWNER_KIND = "agent"
 OWNER_ID = "default-agent"
+AGENT_B_ID = "agent-qing"
+AGENT_B_NAME = "青"
 TARGET_USER_ID = "ringo"
 DEMO_DATE = "2026-07-03"
 DEMO_TZ = "Asia/Shanghai"
@@ -228,6 +230,150 @@ PROACTIVE_INTENTS: list[dict[str, Any]] = [
         "intent_type": "ask_about_user",
         "summary": "你上次说的面试，后来怎么样了？我刚把画夹扣好，忽然想起这件事。",
         "created_at": "2026-07-03T18:22:00+08:00",
+    },
+]
+
+
+# 第二个 demo agent 的现代设定。作用域仅限 constellation 演示库；它通过
+# CanonDraft patch 进入 active Canon，不写角色 skin，也不引用凛的世界专名。
+B_CANON_PATCH: dict[str, Any] = {
+    "identity": {
+        "name": AGENT_B_NAME,
+        "role": "独立音乐人 / 声音设计师",
+        "self_description": "住在现代城市里的独立音乐人和声音设计师，靠现场采样、短片配乐和小型演出生活。",
+    },
+    "worldview": {
+        "world_type": "现代城市创作生活",
+        "raw_world_description": "青住在旧厂房改成的城市工作室，白天整理现场录音，夜里给短片和独立演出做声音设计。",
+        "social_slots": {
+            "entity_kinds": {
+                "agent": {"label": "生活主体", "description": "LifeEngine 当前演示主体。"},
+                "collaborator": {"label": "创作合作者", "description": "短片、演出或录音项目里的协作对象。"},
+                "venue": {"label": "演出/录音场地", "description": "会承载采样、排练或现场演出的现代空间。"},
+            },
+            "relationship_axes": {
+                "trust": {"label": "信任"},
+                "creative_sync": {"label": "创作默契"},
+            },
+            "reputation_axes": {
+                "sound_craft": {"label": "声音质感"},
+                "reliable_delivery": {"label": "交付稳定"},
+            },
+            "evaluation_axes": {
+                "listening_depth": {"label": "聆听深度"},
+                "texture_finish": {"label": "质感完成度"},
+            },
+            "rumor_channels": {
+                "studio_chat": {"label": "工作室闲聊"},
+                "venue_backstage": {"label": "后台口碑"},
+            },
+        },
+    },
+    "truth_sources": {
+        "bindings": {
+            "time": {
+                "domain": "time",
+                "authority": "system_clock",
+                "timezone": DEMO_TZ,
+                "time_flow": "real_time",
+            },
+            "weather": {
+                "domain": "weather",
+                "authority": "narrative_simulator",
+                "mode": "modern_city_local",
+                "freshness_ttl_minutes": 180,
+            },
+            "currency": {
+                "domain": "currency",
+                "authority": "fixed_setting",
+                "value": "JPY",
+            },
+        },
+    },
+    "proactive": {"mode": "pending_only"},
+    "living": {"skin": None},
+}
+
+
+# B 的现代生活资源。通过 RESOURCE_DEFINE LifeOps 写入，保持 skin-free agent 不继承
+# default-agent 的角色货币或物资；按 key guard，重跑不重置已有账户余额。
+B_RESOURCES: list[dict[str, Any]] = [
+    {
+        "key": "energy",
+        "display_name": "体力",
+        "resource_class": "vital",
+        "unit": "points",
+        "min_value": 0,
+        "max_value": 100,
+        "initial": 58,
+        "rules": {"heartbeat_recovery": 2, "metabolism": -0.04},
+    },
+    {
+        "key": "mood",
+        "display_name": "情绪亮度",
+        "resource_class": "vital",
+        "unit": "points",
+        "min_value": -100,
+        "max_value": 100,
+        "initial": 12,
+        "rules": {"heartbeat_recovery": 1},
+    },
+    {
+        "key": "money.jpy",
+        "display_name": "日元账户",
+        "resource_class": "fungible",
+        "unit": "JPY",
+        "min_value": 0,
+        "max_value": 200000,
+        "initial": 42000,
+        "rules": {"purpose": "录音、交通和小型演出收入"},
+    },
+    {
+        "key": "focus.deep_listening",
+        "display_name": "深听专注",
+        "resource_class": "capacity",
+        "unit": "points",
+        "min_value": 0,
+        "max_value": 100,
+        "initial": 64,
+        "rules": {"purpose": "声音设计和混音判断"},
+    },
+    {
+        "key": "sample.library.roomtone",
+        "display_name": "房间底噪采样",
+        "resource_class": "material",
+        "unit": "段",
+        "min_value": 0,
+        "max_value": 120,
+        "initial": 9,
+        "rules": {"purpose": "短片配乐与环境声拼贴"},
+    },
+]
+
+
+# B 的 LifeFeed 叙事点。由 diary/proactive 公开 API 写入，再补固定时间戳，
+# 让 inter-agent sharing 能从现有 shareable surface 读取，不手写跨 agent 结果。
+B_DIARY_ENTRIES: list[dict[str, Any]] = [
+    {
+        "date": "2026-07-02",
+        "diary_type": "daily",
+        "content": "下午在旧厂房楼梯间录了三段脚步声。混响很短，像有人把一句话说到一半就停住。我把它标成 roomtone-0702，准备放进短片开场。",
+        "created_at": "2026-07-02T21:10:00+08:00",
+    },
+    {
+        "date": "2026-07-03",
+        "diary_type": "daily",
+        "content": "夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
+        "created_at": "2026-07-03T22:05:00+08:00",
+    },
+]
+
+
+B_PROACTIVE_INTENTS: list[dict[str, Any]] = [
+    {
+        "intent_type": "idle_share",
+        "summary": "我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
+        "created_at": "2026-07-03T22:18:00+08:00",
     },
 ]
 
@@ -494,16 +640,17 @@ def result_from_commit(commit: dict[str, Any], index: int = 0) -> dict[str, Any]
     return ((commit.get("results") or [{}])[index].get("result") or {})
 
 
-def active_canon(conn: Any) -> dict[str, Any]:
+def active_canon(conn: Any, owner_id: str = OWNER_ID) -> dict[str, Any]:
     """读取当前 active Canon。
 
-    输入是 Runtime 连接；输出 active Canon 数据。调用方是 Canon 幂等比较；
-    副作用只读数据库。没有 active Canon 时返回空对象，让首次 setup 路径接管。
+    输入是 Runtime 连接和 agent owner_id；输出 active Canon 数据。调用方是
+    Canon 幂等比较；副作用只读数据库。没有 active Canon 时返回空对象，让首次
+    setup 路径接管。
     """
     row = first(
         conn,
         "SELECT data_json FROM canon_versions WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY version DESC LIMIT 1",
-        (OWNER_KIND, OWNER_ID),
+        (OWNER_KIND, owner_id),
     )
     if not row:
         return {}
@@ -1135,6 +1282,173 @@ def ensure_life_feed(rt: Any, event_ids: dict[str, str]) -> None:
     ensure_self_narrative(rt)
 
 
+def ensure_second_agent_canon(rt: Any) -> None:
+    """确保第二个现代 agent 的 Canon 已提交且没有角色 skin。
+
+    输入是 LifeEngineRuntime；输出为空。调用方式为 seed 编排同步调用；副作用通过
+    setup/required_settings/commit_canon/control 写入 `agent-qing` 的 active Canon
+    和运行态。重跑时按 identity/role/living.skin 做幂等比较，只在设定不匹配时
+    提交新 Canon 版本。
+    """
+    canon = active_canon(rt.conn, AGENT_B_ID)
+    identity = canon.get("identity") or {}
+    living = canon.get("living") or {}
+    needs_patch = (
+        identity.get("name") != AGENT_B_NAME
+        or identity.get("role") != "独立音乐人 / 声音设计师"
+        or bool(living.get("skin"))
+    )
+    if not canon:
+        rt.setup(
+            "名字是 青。她是现代城市里的独立音乐人和声音设计师，货币用日元。",
+            OWNER_KIND,
+            AGENT_B_ID,
+        )
+        needs_patch = True
+    if needs_patch:
+        rt.required_settings("patch", OWNER_KIND, AGENT_B_ID, patch=B_CANON_PATCH, source=SOURCE)
+        rt.commit_canon(OWNER_KIND, AGENT_B_ID)
+    rt.control("resume", OWNER_KIND, AGENT_B_ID, reason="demo seed constellation")
+
+
+def ensure_second_agent_resources(rt: Any) -> None:
+    """写入第二个 agent 的现代资源账户。
+
+    输入是 Runtime；输出为空。副作用通过 RESOURCE_DEFINE LifeOps 为 `agent-qing`
+    建立体力、情绪、日元、深听专注和采样库资源。函数按 resource_key 检查账户，
+    已存在时跳过，避免 reset 之外的重跑覆盖人类浏览后的余额变化。
+    """
+    for resource in B_RESOURCES:
+        if not scalar(
+            rt.conn,
+            "SELECT 1 FROM resource_accounts WHERE owner_kind=? AND owner_id=? AND resource_key=?",
+            (OWNER_KIND, AGENT_B_ID, resource["key"]),
+        ):
+            rt.commit_ops([{"type": "RESOURCE_DEFINE", "payload": resource}], OWNER_KIND, AGENT_B_ID, source=SOURCE)
+
+
+def ensure_second_agent_diary(rt: Any) -> None:
+    """写入第二个 agent 的可分享日记。
+
+    输入是 Runtime；输出为空。副作用通过 rt.diary("write") 创建 diary_entries，
+    再固定 created_at。按 owner/date/type/content guard，确保重跑不会重复制造
+    sharing 来源。
+    """
+    for item in B_DIARY_ENTRIES:
+        row = first(
+            rt.conn,
+            """SELECT * FROM diary_entries
+               WHERE owner_kind=? AND owner_id=? AND diary_type=? AND date=? AND content=? LIMIT 1""",
+            (OWNER_KIND, AGENT_B_ID, item["diary_type"], item["date"], item["content"]),
+        )
+        if not row:
+            rt.diary(
+                "write",
+                owner_id=AGENT_B_ID,
+                diary_type=item["diary_type"],
+                date=item["date"],
+                content=item["content"],
+                privacy="safe_to_share",
+            )
+            row = first(
+                rt.conn,
+                """SELECT * FROM diary_entries
+                   WHERE owner_kind=? AND owner_id=? AND diary_type=? AND date=? AND content=? LIMIT 1""",
+                (OWNER_KIND, AGENT_B_ID, item["diary_type"], item["date"], item["content"]),
+            )
+        if row:
+            update_created_at(rt.conn, "diary_entries", row["id"], item["created_at"])
+
+
+def ensure_second_agent_proactive(rt: Any) -> None:
+    """写入第二个 agent 的 idle_share 讲述。
+
+    输入是 Runtime；输出为空。副作用通过 rt.proactive("create") 建立 safe_to_share
+    idle_share intent，再固定 created_at/queued_at。调用方是 constellation seed；
+    这些 intent 只作为现有 inter-agent sharing 的读取来源，不直接写入其它 agent。
+    """
+    for item in B_PROACTIVE_INTENTS:
+        row = first(
+            rt.conn,
+            """SELECT * FROM proactive_intents
+               WHERE agent_id=? AND target_type='user' AND target_id=? AND intent_type=? AND summary=? LIMIT 1""",
+            (AGENT_B_ID, TARGET_USER_ID, item["intent_type"], item["summary"]),
+        )
+        if not row:
+            out = result_from_commit(
+                rt.proactive(
+                    "create",
+                    owner_id=AGENT_B_ID,
+                    target_type="user",
+                    target_id=TARGET_USER_ID,
+                    intent_type=item["intent_type"],
+                    summary=item["summary"],
+                    emotional_tone="focused",
+                    importance=62,
+                    urgency=18,
+                    novelty=58,
+                    relationship_relevance=52,
+                    privacy_level="safe_to_share",
+                    status="queued",
+                    delivery_policy={"mode": "pending_only", "demo_seed": True},
+                )
+            )
+            row = first(rt.conn, "SELECT * FROM proactive_intents WHERE id=?", (out.get("id"),))
+        if row:
+            update_created_at(rt.conn, "proactive_intents", row["id"], item["created_at"])
+
+
+def ensure_second_agent_life(rt: Any) -> None:
+    """编排第二个 agent 的最小可见生活。
+
+    输入是 Runtime；输出为空。副作用依次写入 skin-free Canon、现代资源、可分享
+    diary 和 idle_share。调用方是 seed_demo；函数不写世界 peer/rumor，跨 agent
+    可见性只由后续 `ensure_constellation_sharing` 通过现有 sharing path 完成。
+    """
+    ensure_second_agent_canon(rt)
+    ensure_second_agent_resources(rt)
+    ensure_second_agent_diary(rt)
+    ensure_second_agent_proactive(rt)
+
+
+def ensure_inter_agent_gates(rt: Any) -> None:
+    """开启两个 demo agent 的 inter_agent gate。
+
+    输入是 Runtime；输出为空。副作用通过 control module API 写入 controls 的
+    module_gates_json。调用方是 seed_demo，在 sharing 前执行；单 agent 安装默认
+    仍由 DEFAULT_MODULE_GATES 保持 off。
+    """
+    for owner_id in (OWNER_ID, AGENT_B_ID):
+        rt.control("module", OWNER_KIND, owner_id, key="inter_agent", value="on")
+
+
+def ensure_constellation_sharing(rt: Any) -> dict[str, Any]:
+    """运行现有跨 Agent 分享路径，让双方世界出现 peer rumor。
+
+    输入是 Runtime；输出 sharing/delivery 摘要。副作用只调用
+    `run_inter_agent_sharing_for_tick` 与 `deliver_inter_agent`：先从双方公开的
+    idle_share/diary surface 读取讲述并入队，再由 delivery 写入接收方社会世界的
+    `peer_agent` 与 `rumor_unverified`。函数不直接 INSERT/UPDATE 任何跨 agent
+    目标表，保持 truth-layering 合同。
+    """
+    from lifeengine.canon import ensure_control
+    from lifeengine.inter_agent import deliver_inter_agent, run_inter_agent_sharing_for_tick
+
+    results: dict[str, Any] = {}
+    for owner_id in (OWNER_ID, AGENT_B_ID):
+        control = ensure_control(rt.conn, OWNER_KIND, owner_id)
+        results[owner_id] = run_inter_agent_sharing_for_tick(
+            rt.conn,
+            (OWNER_KIND, owner_id),
+            control=control,
+            limit=2,
+            recent_hours=24 * 365 * 20,
+            deliver_limit=10,
+        )
+    results["final_delivery"] = deliver_inter_agent(rt.conn, limit=20)
+    return results
+
+
 def table_count(conn: Any, table: str, where: str = "", params: tuple[Any, ...] = ()) -> int:
     """统计单表行数。
 
@@ -1147,45 +1461,78 @@ def table_count(conn: Any, table: str, where: str = "", params: tuple[Any, ...] 
     return int(scalar(conn, sql, params) or 0)
 
 
-def build_summary(rt: Any) -> dict[str, dict[str, int]]:
+def build_summary(rt: Any, owner_id: str = OWNER_ID) -> dict[str, dict[str, int]]:
     """生成四域 row-count 摘要。
 
-    输入是 Runtime；输出按 WebUI 四域组织的计数字典。调用方是脚本 stdout 和自测；
-    副作用只读数据库。计数覆盖本次 demo 需要点亮的主要 read-side 表。
+    输入是 Runtime 和 agent owner_id；输出按 WebUI 四域组织的计数字典。调用方是
+    脚本 stdout 和自测；副作用只读数据库。计数覆盖本次 demo 需要点亮的主要
+    read-side 表，便于人类确认切换 agent 后每个观测面都有数据。
     """
     conn = rt.conn
     return {
         "舞台": {
-            "resource_accounts": table_count(conn, "resource_accounts", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "life_rhythm_items": table_count(conn, "life_rhythm_items", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "schedule_blocks_today": table_count(conn, "schedule_blocks", "owner_kind=? AND owner_id=? AND start LIKE ?", (OWNER_KIND, OWNER_ID, f"{DEMO_DATE}%")),
-            "pending_proactive": table_count(conn, "proactive_intents", "agent_id=? AND status IN ('generated','queued')", (OWNER_ID,)),
+            "resource_accounts": table_count(conn, "resource_accounts", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "life_rhythm_items": table_count(conn, "life_rhythm_items", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "schedule_blocks_today": table_count(conn, "schedule_blocks", "owner_kind=? AND owner_id=? AND start LIKE ?", (OWNER_KIND, owner_id, f"{DEMO_DATE}%")),
+            "pending_proactive": table_count(conn, "proactive_intents", "agent_id=? AND status IN ('generated','queued')", (owner_id,)),
         },
         "生活日志": {
-            "diary_entries": table_count(conn, "diary_entries", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "dream_entries": table_count(conn, "dream_entries", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "serendipity_events": table_count(conn, "serendipity_events", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "self_narrative_memories": table_count(conn, "memories", "owner_kind=? AND owner_id=? AND memory_type='self_narrative'", (OWNER_KIND, OWNER_ID)),
-            "rumors": table_count(conn, "rumors", "owner_kind=? AND owner_id=? AND status='active'", (OWNER_KIND, OWNER_ID)),
+            "diary_entries": table_count(conn, "diary_entries", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "dream_entries": table_count(conn, "dream_entries", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "serendipity_events": table_count(conn, "serendipity_events", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "self_narrative_memories": table_count(conn, "memories", "owner_kind=? AND owner_id=? AND memory_type='self_narrative'", (OWNER_KIND, owner_id)),
+            "rumors": table_count(conn, "rumors", "owner_kind=? AND owner_id=? AND status='active'", (OWNER_KIND, owner_id)),
         },
         "世界": {
-            "world_profiles": table_count(conn, "world_profiles", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "world_regions": table_count(conn, "world_regions", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "world_places": table_count(conn, "world_places", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "world_conditions": table_count(conn, "world_conditions", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "world_chronicle_events": table_count(conn, "world_chronicle_events", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "world_entities": table_count(conn, "world_entities", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "social_edges": table_count(conn, "social_edges", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "reputation_accounts": table_count(conn, "reputation_accounts", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "rumors": table_count(conn, "rumors", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
+            "world_profiles": table_count(conn, "world_profiles", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "world_regions": table_count(conn, "world_regions", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "world_places": table_count(conn, "world_places", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "world_conditions": table_count(conn, "world_conditions", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "world_chronicle_events": table_count(conn, "world_chronicle_events", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "world_entities": table_count(conn, "world_entities", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "social_edges": table_count(conn, "social_edges", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "reputation_accounts": table_count(conn, "reputation_accounts", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "rumors": table_count(conn, "rumors", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
         },
         "系统": {
-            "canon_versions": table_count(conn, "canon_versions", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "life_transactions": table_count(conn, "life_transactions", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "life_ops": table_count(conn, "life_ops", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "goals": table_count(conn, "goals", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
-            "ventures": table_count(conn, "ventures", "owner_kind=? AND owner_id=?", (OWNER_KIND, OWNER_ID)),
+            "canon_versions": table_count(conn, "canon_versions", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "life_transactions": table_count(conn, "life_transactions", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "life_ops": table_count(conn, "life_ops", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "goals": table_count(conn, "goals", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
+            "ventures": table_count(conn, "ventures", "owner_kind=? AND owner_id=?", (OWNER_KIND, owner_id)),
         },
+    }
+
+
+def build_cross_agent_counts(rt: Any) -> dict[str, Any]:
+    """统计 constellation 交叉可见性。
+
+    输入是 Runtime；输出每个 agent 接收到的 peer_agent 与 rumor_unverified 数量，
+    以及 outbox 状态计数。调用方是 seed stdout、自测和健康断言；副作用只读数据库。
+    计数只看 inter_agent delivery 写入的目标形状，不参与任何跨 agent 写入。
+    """
+    conn = rt.conn
+    per_agent = {}
+    for owner_id in (OWNER_ID, AGENT_B_ID):
+        per_agent[owner_id] = {
+            "peer_agent": table_count(
+                conn,
+                "world_entities",
+                "owner_kind=? AND owner_id=? AND entity_kind='peer_agent' AND status='active'",
+                (OWNER_KIND, owner_id),
+            ),
+            "rumor_unverified": table_count(
+                conn,
+                "rumors",
+                "owner_kind=? AND owner_id=? AND target_kind='inter_agent_outbox' AND truth_layer='rumor_unverified' AND status='active'",
+                (OWNER_KIND, owner_id),
+            ),
+        }
+    return {
+        "per_agent": per_agent,
+        "outbox_delivered": table_count(conn, "inter_agent_outbox", "status='delivered'"),
+        "outbox_queued": table_count(conn, "inter_agent_outbox", "status='queued'"),
+        "outbox_failed": table_count(conn, "inter_agent_outbox", "status='failed'"),
     }
 
 
@@ -1214,26 +1561,64 @@ def assert_demo_health(summary: dict[str, dict[str, int]]) -> None:
         raise AssertionError("demo seed incomplete: " + ", ".join(failed))
 
 
-def print_summary(home: Path, db: Path, summary: dict[str, dict[str, int]]) -> None:
+def assert_constellation_health(summaries: dict[str, dict[str, dict[str, int]]], cross: dict[str, Any]) -> None:
+    """检查第二 agent 与双向 constellation 可见性。
+
+    输入是每个 agent 的四域摘要和 cross-agent 计数；输出为空。调用方是 seed 末尾
+    自检；副作用无。失败时抛 AssertionError，避免演示库看似 seeded 但 roster 或
+    双向 rumor 实际缺席。
+    """
+    b = summaries.get(AGENT_B_ID) or {}
+    cross_per_agent = (cross.get("per_agent") or {})
+    checks = {
+        f"{AGENT_B_ID}.canon_versions": (b.get("系统") or {}).get("canon_versions", 0) >= 1,
+        f"{AGENT_B_ID}.resource_accounts": (b.get("舞台") or {}).get("resource_accounts", 0) >= 3,
+        f"{AGENT_B_ID}.diary_entries": (b.get("生活日志") or {}).get("diary_entries", 0) >= 2,
+        f"{AGENT_B_ID}.pending_proactive": (b.get("舞台") or {}).get("pending_proactive", 0) >= 1,
+        f"{OWNER_ID}.peer_agent": (cross_per_agent.get(OWNER_ID) or {}).get("peer_agent", 0) >= 1,
+        f"{OWNER_ID}.rumor_unverified": (cross_per_agent.get(OWNER_ID) or {}).get("rumor_unverified", 0) >= 1,
+        f"{AGENT_B_ID}.peer_agent": (cross_per_agent.get(AGENT_B_ID) or {}).get("peer_agent", 0) >= 1,
+        f"{AGENT_B_ID}.rumor_unverified": (cross_per_agent.get(AGENT_B_ID) or {}).get("rumor_unverified", 0) >= 1,
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    if failed:
+        raise AssertionError("constellation seed incomplete: " + ", ".join(failed))
+
+
+def print_summary(home: Path, db: Path, summaries: dict[str, dict[str, dict[str, int]]], cross: dict[str, Any]) -> None:
     """打印人类可读的 seed 摘要。
 
-    输入是 home、db 路径和四域计数；输出到 stdout。调用方是 main；副作用仅为打印。
-    文案保持短小，方便用户复制命令后快速确认每个 WebUI 域都有数据。
+    输入是 home、db 路径、每个 agent 的四域计数和跨 agent 计数；输出到 stdout。
+    调用方是 main；副作用仅为打印。文案保持短小，方便用户复制命令后快速确认
+    WebUI roster、双方生活和 peer rumor 都已落地。
     """
     print(f"Seeded LifeEngine demo home: {home}")
     print(f"DB: {db}")
-    for domain, counts in summary.items():
-        joined = ", ".join(f"{key}={value}" for key, value in counts.items())
-        print(f"{domain}: {joined}")
+    for owner_id, summary in summaries.items():
+        name = AGENT_B_NAME if owner_id == AGENT_B_ID else "凛"
+        print(f"Agent {owner_id} ({name}):")
+        for domain, counts in summary.items():
+            joined = ", ".join(f"{key}={value}" for key, value in counts.items())
+            print(f"  {domain}: {joined}")
+    cross_parts = []
+    for owner_id, counts in (cross.get("per_agent") or {}).items():
+        cross_parts.append(
+            f"{owner_id}: peer_agent={counts.get('peer_agent', 0)}, rumor_unverified={counts.get('rumor_unverified', 0)}"
+        )
+    cross_parts.append(
+        "outbox="
+        f"delivered:{cross.get('outbox_delivered', 0)}, queued:{cross.get('outbox_queued', 0)}, failed:{cross.get('outbox_failed', 0)}"
+    )
+    print("跨 Agent: " + "; ".join(cross_parts))
 
 
-def seed_demo(home: Path, reset: bool) -> dict[str, dict[str, int]]:
+def seed_demo(home: Path, reset: bool) -> dict[str, Any]:
     """执行完整 demo seed。
 
-    输入是 home 路径和 reset 标记；输出四域 row-count 摘要。副作用包括设置
-    HERMES_HOME、可选删除 home、创建/迁移 SQLite DB，并通过 Runtime 公开 API 写入
-    demo 数据。函数不修改生产代码，也不访问 /tmp/le_demo 以外的默认目录，除非
-    调用方显式传入其它 home。
+    输入是 home 路径和 reset 标记；输出包含 per-agent 四域 row-count 与跨 agent
+    计数的摘要。副作用包括设置 HERMES_HOME、可选删除 home、创建/迁移 SQLite DB，
+    并通过 Runtime 公开 API 写入 demo 数据。函数不修改生产代码，也不访问
+    /tmp/le_demo 以外的默认目录，除非调用方显式传入其它 home。
     """
     configured_home = configure_home(home, reset)
     from lifeengine.paths import db_path
@@ -1251,10 +1636,18 @@ def seed_demo(home: Path, reset: bool) -> dict[str, dict[str, int]]:
         ensure_social(rt)
         ensure_goal_and_venture(rt)
         ensure_life_feed(rt, event_ids)
-        summary = build_summary(rt)
-        assert_demo_health(summary)
-        print_summary(configured_home, db_path(), summary)
-        return summary
+        ensure_second_agent_life(rt)
+        ensure_inter_agent_gates(rt)
+        sharing = ensure_constellation_sharing(rt)
+        summaries = {
+            OWNER_ID: build_summary(rt, OWNER_ID),
+            AGENT_B_ID: build_summary(rt, AGENT_B_ID),
+        }
+        cross = build_cross_agent_counts(rt)
+        assert_demo_health(summaries[OWNER_ID])
+        assert_constellation_health(summaries, cross)
+        print_summary(configured_home, db_path(), summaries, cross)
+        return {"agents": summaries, "cross_agent": cross, "sharing": sharing}
     finally:
         rt.close()
 
