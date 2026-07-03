@@ -6,7 +6,7 @@ import re
 from copy import deepcopy
 from typing import Any
 
-from .constants import DEFAULT_CANON_TEMPLATE, DEFAULT_MODULE_GATES
+from .constants import DEFAULT_CANON_TEMPLATE, DEFAULT_MODULE_GATES, validate_gate_value
 from .jsonutil import dumps, loads
 from .trace import append_journal, new_id
 from .migration import record_canon_migration
@@ -217,9 +217,13 @@ def set_engine_state(conn, owner_kind: str, owner_id: str, state: str, reason: s
 
 
 def set_module_gate(conn, owner_kind: str, owner_id: str, key: str, value: str) -> dict[str, Any]:
+    # Validate against GATE_SPECS (was zero-validation → the audit's "杂物抽屉"):
+    # reject an unknown key or an out-of-vocabulary/out-of-range value instead of
+    # silently poisoning the drawer.
+    stored = validate_gate_value(str(key), value)
     control = ensure_control(conn, owner_kind, owner_id)
     gates = dict(control.get("module_gates") or DEFAULT_MODULE_GATES)
-    gates[key] = value
+    gates[key] = stored
     update_control(conn, owner_kind, owner_id, module_gates_json=dumps(gates))
     return ensure_control(conn, owner_kind, owner_id)
 

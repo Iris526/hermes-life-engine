@@ -73,7 +73,6 @@ def _activate_synthetic(rt: Any, owner_id: str) -> None:
     rt.control("resume", owner_id=owner_id)
     rt.control("module", owner_id=owner_id, key="reply_gate", value="auto")
     rt.control("module", owner_id=owner_id, key="dream", value="auto")
-    rt.control("module", owner_id=owner_id, key="execution", value="auto")
     rt.control("module", owner_id=owner_id, key="autonomy", value="full")
     for key, initial in [("energy", 220), ("mood", 80), ("fatigue", 0), ("sleep_debt_minutes", 0)]:
         rt.resources("define", owner_id=owner_id, key=key, display_name=key, initial=initial)

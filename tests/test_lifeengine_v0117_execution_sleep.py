@@ -19,7 +19,6 @@ def activate(rt: LifeEngineRuntime):
     rt.setup("v0.11.7 sleep-aware execution simulator test agent")
     rt.commit_canon()
     rt.control("resume")
-    rt.control("module", key="execution", value="auto")
 
 
 def create_short_sleep_day_state(rt: LifeEngineRuntime):
