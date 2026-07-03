@@ -113,6 +113,7 @@ from .execution import (
     list_execution_sleep_adjustments,
     list_serendipity_events,
     prepare_execution_completion_authoring_for_block,
+    prepare_serendipity_authoring_for_block,
     simulate_schedule_block_execution,
     update_execution_decision_result,
 )
@@ -1436,6 +1437,9 @@ class LifeEngineRuntime:
                 execution_narratives = (authoring or {}).get("execution_narratives_by_block_id") or {}
                 if not isinstance(execution_narratives, dict):
                     execution_narratives = {}
+                serendipity_texts = (authoring or {}).get("serendipity_texts_by_block_id") or {}
+                if not isinstance(serendipity_texts, dict):
+                    serendipity_texts = {}
                 jobs = due_wake_jobs(self.conn, owner_kind, owner_id, now)
                 processed: list[dict[str, Any]] = []
                 with trace.span("due_wake_jobs", {"count": len(jobs)}):
@@ -1483,6 +1487,7 @@ class LifeEngineRuntime:
                                             self.conn, owner_kind, owner_id, control, tick_id=tick_id, trace_id=trace.id,
                                             wake_job_id=job["id"], block=block, now=now, manual=manual,
                                             completion_authoring=execution_narratives.get(str(block.get("id") or "")),
+                                            serendipity_authoring=serendipity_texts.get(str(block.get("id") or "")),
                                             allow_authoring=False,
                                         )
                                     ops = decision.get("proposed_ops") or []
@@ -1530,6 +1535,7 @@ class LifeEngineRuntime:
                                 self.conn, owner_kind, owner_id, control, tick_id=tick_id, trace_id=trace.id,
                                 wake_job_id=None, block=block, now=now, manual=manual,
                                 completion_authoring=execution_narratives.get(str(block.get("id") or "")),
+                                serendipity_authoring=serendipity_texts.get(str(block.get("id") or "")),
                                 allow_authoring=False,
                             )
                         ops = decision.get("proposed_ops") or []
@@ -2852,6 +2858,7 @@ class LifeEngineRuntime:
                 return {"ok": True, "sleep_adjustments": list_execution_sleep_adjustments(self.conn, owner_kind, owner_id, int(payload.get("limit", 20)))}
         if action in {"run", "simulate", "execute"}:
             completion_authoring = None
+            serendipity_authoring = None
             authoring_block_id = None
             if bool(payload.get("allow_authoring", True)):
                 try:
@@ -2872,8 +2879,12 @@ class LifeEngineRuntime:
                     completion_authoring = prepare_execution_completion_authoring_for_block(
                         self.conn, owner_kind, owner_id, authoring_block,
                     )
+                    serendipity_authoring = prepare_serendipity_authoring_for_block(
+                        self.conn, owner_kind, owner_id, authoring_block,
+                    )
                 except Exception:
                     completion_authoring = None
+                    serendipity_authoring = None
                     authoring_block_id = None
             with transaction(self.conn):
                 control = ensure_control(self.conn, owner_kind, owner_id)
@@ -2895,10 +2906,12 @@ class LifeEngineRuntime:
                         return {"ok": False, "error": "schedule block not found"}
                     block = dict(block_row)
                     block_completion_authoring = completion_authoring if authoring_block_id == str(block.get("id") or "") else None
+                    block_serendipity_authoring = serendipity_authoring if authoring_block_id == str(block.get("id") or "") else None
                     decision = simulate_schedule_block_execution(
                         self.conn, owner_kind, owner_id, control, tick_id=payload.get("tick_id"), trace_id=trace.id,
                         wake_job_id=payload.get("wake_job_id"), block=block, now=payload.get("now"), manual=True,
                         completion_authoring=block_completion_authoring,
+                        serendipity_authoring=block_serendipity_authoring,
                         allow_authoring=False,
                     )
                     ops = decision.get("proposed_ops") or []

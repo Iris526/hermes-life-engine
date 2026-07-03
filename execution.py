@@ -41,6 +41,24 @@ _EXECUTION_NARRATIVE_SCHEMA: dict[str, Any] = {
     "required": ["narrative", "memory"],
 }
 
+# LifeAuthor 输出合同：只承载偶遇/小意外的人类可见文本；生命周期限于单次
+# 事务外 authoring，缺字段或字段非法时整体回落旧版确定性模板。
+_SERENDIPITY_TEXT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "title": {
+            "type": "string",
+            "description": "一句写入 serendipity event 标题的自然小意外摘要。",
+        },
+        "description": {
+            "type": "string",
+            "description": "一句写入 serendipity event 描述的生活化背景说明。",
+        },
+    },
+    "required": ["title", "description"],
+}
+
 
 def _row_dict(row) -> dict[str, Any] | None:
     if not row:
@@ -483,6 +501,7 @@ def _sleep_adjusted_ops(
     ]
     return "partial", "sleep_pressure_downshifted", reason, ops
 
+
 def _shifted_range(block: dict[str, Any], days: int = 1) -> tuple[str | None, str | None]:
     start = parse_datetime(block.get("start"))
     end = parse_datetime(block.get("end"))
@@ -491,11 +510,15 @@ def _shifted_range(block: dict[str, Any], days: int = 1) -> tuple[str | None, st
     return (start + timedelta(days=days)).isoformat(), (end + timedelta(days=days)).isoformat()
 
 
-def _serendipity_for(event: dict[str, Any], decision_type: str) -> dict[str, Any] | None:
+def _serendipity_text_fallback(event: dict[str, Any]) -> dict[str, str] | None:
+    """返回 serendipity 事件的历史确定性文本。
+
+    输入是刚完成的事件；输出包含旧版 `title` / `description`，或在事件类型不触发
+    小意外时返回 `None`。调用方是事务外 authoring 准备层和事务内 execution
+    消费层。无副作用；这个函数是 no-host、模型空返回、字段缺失或异常时的唯一
+    逐字 fallback，维护时不能改变字符串内容。
+    """
     event_type = str(event.get("event_type") or "other")
-    importance = int(event.get("importance") or 50)
-    if decision_type != "completed" or importance < 55:
-        return None
     title_by_type = {
         "study": "复习时发现了一个需要补强的小点",
         "purchase": "购物时发现了一个新的偏好",
@@ -509,17 +532,242 @@ def _serendipity_for(event: dict[str, Any], decision_type: str) -> dict[str, Any
     if not title:
         return None
     return {
+        "title": title,
+        "description": f"这个小事件由『{event.get('title')}』执行后的叙事模拟产生。",
+    }
+
+
+def _clean_authored_serendipity_field(value: Any) -> str | None:
+    """规整 LifeAuthor 返回的 serendipity 文本字段。
+
+    输入是模型 parsed JSON 的 `title` 或 `description`；输出是去除首尾空白后的
+    非空字符串，或 `None`。调用方是 serendipity authoring 消费层；无副作用。
+    任一字段缺失都会让调用方整体回落旧模板，避免半个模型结果改变 no-host 兼容面。
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _authored_serendipity_texts(authored: dict[str, Any] | None, event: dict[str, Any]) -> dict[str, str] | None:
+    """把事务外 serendipity authoring 包转换为最终可写文本。
+
+    输入是 LifeAuthor 预生成的 `{title, description}` 和触发事件；输出总是完整的
+    两字段文本包，或在该事件类型不触发 serendipity 时返回 `None`。调用方是
+    `_serendipity_for`。无副作用；模型结果必须同时包含两个非空字符串，否则整体
+    使用 `_serendipity_text_fallback`，保证 fallback byte-identical。
+    """
+    fallback = _serendipity_text_fallback(event)
+    if fallback is None:
+        return None
+    authored = authored if isinstance(authored, dict) else {}
+    title = _clean_authored_serendipity_field(authored.get("title"))
+    description = _clean_authored_serendipity_field(authored.get("description"))
+    if title and description:
+        return {"title": title, "description": description}
+    return fallback
+
+
+def _serendipity_payload_shape(event: dict[str, Any]) -> dict[str, Any] | None:
+    """返回 serendipity 非文本字段的确定性形状。
+
+    输入是已满足 completed/importance 门的事件；输出是旧版 payload 中除
+    `title` / `description` 外的字段，或在事件类型不触发小意外时返回 `None`。
+    调用方是事务内 `_serendipity_for` 和事务外 authoring context。无副作用；
+    本函数集中保留 roll/gate/resource 以外的确定性字段，避免文案改造误改事件形状。
+    """
+    event_type = str(event.get("event_type") or "other")
+    if _serendipity_text_fallback(event) is None:
+        return None
+    importance = int(event.get("importance") or 50)
+    return {
+        "serendipity_type": "minor_discovery" if event_type not in {"study", "fitness", "health"} else "minor_problem",
+        "intensity": min(80, max(20, importance - 15)),
+        "trigger_event_id": event.get("id"),
+        "emotional_impact": {"mood_delta": 2 if event_type != "study" else 0, "insight": 1},
+        "source": "serendipity",
+    }
+
+
+def _serendipity_for(
+    event: dict[str, Any],
+    decision_type: str,
+    serendipity_authoring: dict[str, Any] | None = None,
+    allow_authoring: bool = False,
+) -> dict[str, Any] | None:
+    """生成完成事件后的 serendipity LifeOp。
+
+    输入是执行模拟的事件、决策类型和事务外预生成文本；输出是
+    `CREATE_SERENDIPITY_EVENT` proposed op 或 `None`。调用方式是事务内同步消费；
+    `allow_authoring` 只保留调用合同标记，本函数不会访问宿主模型。副作用为零；
+    completed/importance/event_type 门和非文本 payload 与旧版保持一致。
+    """
+    _ = allow_authoring
+    importance = int(event.get("importance") or 50)
+    if decision_type != "completed" or importance < 55:
+        return None
+    text = _authored_serendipity_texts(serendipity_authoring, event)
+    shape = _serendipity_payload_shape(event)
+    if text is None or shape is None:
+        return None
+    return {
         "type": "CREATE_SERENDIPITY_EVENT",
         "payload": {
-            "title": title,
-            "description": f"这个小事件由『{event.get('title')}』执行后的叙事模拟产生。",
-            "serendipity_type": "minor_discovery" if event_type not in {"study", "fitness", "health"} else "minor_problem",
-            "intensity": min(80, max(20, importance - 15)),
-            "trigger_event_id": event.get("id"),
-            "emotional_impact": {"mood_delta": 2 if event_type != "study" else 0, "insight": 1},
-            "source": "serendipity",
+            **text,
+            **shape,
         },
     }
+
+
+def _serendipity_authoring_context(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    block: dict[str, Any],
+) -> dict[str, Any] | None:
+    """收集某个 completed block 是否会产生 serendipity 的只读上下文。
+
+    输入是 owner 与一个 schedule block；输出是给 LifeAuthor 的 compact context，
+    或在该 block 当前不会自然完成/不会触发 serendipity 时返回 `None`。调用方是
+    heartbeat/manual 的事务外 authoring 准备层。副作用限定为 SELECT：复用完成分支
+    判断读取事件、资源、天气、睡眠与依赖状态；不记录 decision、不创建 LifeOps、
+    不结算资源、不改变 schedule。
+    """
+    completion_context = _completion_authoring_context(conn, owner_kind, owner_id, block)
+    if not completion_context:
+        return None
+    event_id = block.get("event_id")
+    if not event_id:
+        return None
+    event = get_event(conn, str(event_id))
+    importance = int(event.get("importance") or 50)
+    if importance < 55:
+        return None
+    fallback = _serendipity_text_fallback(event)
+    shape = _serendipity_payload_shape(event)
+    if fallback is None or shape is None:
+        return None
+    return {
+        "trigger_event": completion_context.get("event") or {},
+        "schedule_block": completion_context.get("schedule_block") or {},
+        "completion_outcome": completion_context.get("outcome") or {},
+        "serendipity": {
+            "fallback_title": fallback["title"],
+            "fallback_description": fallback["description"],
+            "serendipity_type": shape["serendipity_type"],
+            "intensity": shape["intensity"],
+            "emotional_impact": shape["emotional_impact"],
+        },
+    }
+
+
+def _author_serendipity_text(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    context: dict[str, Any],
+    *,
+    trace_id: str | None = None,
+) -> dict[str, str] | None:
+    """用 LifeAuthor 生成 serendipity 的 title/description。
+
+    输入是 `_serendipity_authoring_context` 产出的只读上下文；输出是完整的
+    `{title, description}`，或在无 host、门控关闭、模型失败、字段为空、字段缺失、
+    以及调用方误处于 SQLite 事务内时返回 `None`。调用方式是事务外 best-effort；
+    除 LifeAuthor 自身审计外不写生活事实、不触发 LifeOps、不结算资源。
+    """
+    if getattr(conn, "in_transaction", False):
+        return None
+    try:
+        parsed = life_author.author(
+            conn,
+            owner_kind,
+            owner_id,
+            kind="serendipity",
+            instructions=(
+                "为一个已完成事件后自然冒出来的小意外/偶遇写两条中文文本。"
+                " title 是写入小意外事件标题的一句话；description 是补充背景的一句话。"
+                " 保持轻、小、具体，像亲身经历后顺手记下的生活纹理；不要改变事件是否发生、"
+                "强度、影响或资源结果；不要提 LifeEngine、调度、数据库、tick、资源账本、"
+                "执行模拟器或模型；不要硬塞人物名或世界观设定。"
+            ),
+            context=context,
+            schema=_SERENDIPITY_TEXT_SCHEMA,
+            max_tokens=180,
+            temperature=0.65,
+            trace_id=trace_id,
+        )
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    title = _clean_authored_serendipity_field(parsed.get("title"))
+    description = _clean_authored_serendipity_field(parsed.get("description"))
+    if not title or not description:
+        return None
+    return {"title": title, "description": description}
+
+
+def prepare_serendipity_authoring_for_block(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    block: dict[str, Any] | None,
+    *,
+    trace_id: str | None = None,
+) -> dict[str, str] | None:
+    """在写事务外为单个 completed block 预生成 serendipity 文案。
+
+    输入是已选中的 schedule block；输出是 `{title, description}` 或 `None`。
+    调用方包括 `life_execution run/simulate` 手动路径和 heartbeat tick 预备层。
+    失败处理是全程吞掉异常并返回 `None`，让事务内 serendipity 使用旧 title/
+    description；副作用只允许 LifeAuthor 审计，不会创建事件、记忆、资源流水或
+    proposed ops。
+    """
+    if not isinstance(block, dict):
+        return None
+    try:
+        context = _serendipity_authoring_context(conn, owner_kind, owner_id, block)
+        if not context:
+            return None
+        return _author_serendipity_text(conn, owner_kind, owner_id, context, trace_id=trace_id)
+    except Exception:
+        return None
+
+
+def prepare_serendipity_authoring_for_tick(
+    conn,
+    owner_kind: str,
+    owner_id: str,
+    *,
+    now: str,
+    trace_id: str | None = None,
+    limit: int = 20,
+) -> dict[str, dict[str, str]]:
+    """在 heartbeat 写事务外预生成 serendipity 文案包。
+
+    输入来自 `prepare_heartbeat_authoring` 的 owner、逻辑时间和 trace；输出是
+    `{block_id: {title, description}}`，只在本次 tick 内使用。调用方式是同步
+    best-effort：逐个 due block 只读判断是否会自然完成并触发 serendipity，再调用
+    LifeAuthor 的 `serendipity` kind。无 host、模型空返回或任意异常都会跳过该 block，
+    事务内 `_serendipity_for` 继续使用旧版七类标题和描述模板。
+    """
+    authored: dict[str, dict[str, str]] = {}
+    try:
+        blocks = _execution_authoring_blocks_for_tick(conn, owner_kind, owner_id, now, limit=limit)
+    except Exception:
+        return authored
+    for block in blocks:
+        block_id = str(block.get("id") or "")
+        if not block_id:
+            continue
+        item = prepare_serendipity_authoring_for_block(
+            conn, owner_kind, owner_id, block, trace_id=trace_id,
+        )
+        if item:
+            authored[block_id] = item
+    return authored
 
 
 def _completion_result_fallback(title: Any) -> str:
@@ -807,16 +1055,17 @@ def simulate_schedule_block_execution(
     now: str | None = None,
     manual: bool = False,
     completion_authoring: dict[str, Any] | None = None,
+    serendipity_authoring: dict[str, Any] | None = None,
     allow_authoring: bool = False,
 ) -> dict[str, Any]:
     """记录一次到点日程块的确定性执行决策。
 
     输入来自 heartbeat 找到的到期 schedule_block、当前控制状态和逻辑时间；
     输出是一条 execution_decision 以及待提交 LifeOps。`completion_authoring`
-    是事务外预生成的完成叙事包；`allow_authoring` 只保留调用合同标记，本函数不会
-    访问宿主模型。本函数只写执行审计，不直接改变事件/日程/资源，调用方必须继续
-    走 LifeOps 校验和事务提交。失败时由 heartbeat 标记 wake job 或 fallback sweep
-    异常，避免状态机半写。
+    和 `serendipity_authoring` 是事务外预生成的人类可见文本包；`allow_authoring`
+    只保留调用合同标记，本函数不会访问宿主模型。本函数只写执行审计，不直接改变
+    事件/日程/资源，调用方必须继续走 LifeOps 校验和事务提交。失败时由 heartbeat
+    标记 wake job 或 fallback sweep 异常，避免状态机半写。
     """
     _ = allow_authoring
     event_id = block.get("event_id")
@@ -900,7 +1149,7 @@ def simulate_schedule_block_execution(
     ]
     if importance >= 50:
         ops.append({"type": "CREATE_MEMORY", "payload": {"memory_type": "episodic", "content": authored_completion["memory"], "event_id": event_id, "source": "execution_simulator", "importance": min(100, importance)}})
-    ser = _serendipity_for(event, "completed")
+    ser = _serendipity_for(event, "completed", serendipity_authoring=serendipity_authoring, allow_authoring=False)
     if ser:
         ops.append(ser)
     if pushed_through_vital:
