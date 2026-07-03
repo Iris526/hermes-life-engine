@@ -9,6 +9,7 @@ LifeOps, Validator, Receipt, Journal, and Trace.
 
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -20,6 +21,11 @@ from .trace import append_journal, new_id
 _TERMINAL_EVENT_STATUSES = (
     "completed", "cancelled", "failed", "abandoned", "archived", "discarded", "missed"
 )
+_OPINION_AFFINITY_SCALE = 12.0
+_OPINION_AFFINITY_LIMIT = 12.0
+_NEGATIVE_OPINION_TYPES = {"dislike", "concern"}
+_SEARCH_SEPARATOR_RE = re.compile(r"[\W_]+", re.UNICODE)
+_SEARCH_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
 
 def _mode(control: dict[str, Any]) -> str:
@@ -45,6 +51,143 @@ def _active_events_for_goal(conn, owner_kind: str, owner_id: str, goal_id: str) 
         (owner_kind, owner_id, goal_id, *_TERMINAL_EVENT_STATUSES),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _opinion_affinity_text(value: Any) -> str:
+    """把目标字段转成可匹配文本。
+
+    输入来自 goal 行上的标题、描述、类型和兼容性的标签字段；输出是稳定的小写文本。
+    调用方是观点亲和度排序逻辑。该函数不读写数据库、不访问网络，失败时返回空串，
+    保证旧库缺字段或字段形状变化时只降级为“无匹配”。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return " ".join(_opinion_affinity_text(v) for v in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_opinion_affinity_text(v) for v in value)
+    text = str(value).casefold()
+    return " ".join(_SEARCH_SEPARATOR_RE.sub(" ", text).split())
+
+
+def _goal_opinion_search_text(goal: dict[str, Any]) -> str:
+    """汇总一个 goal 可被观点命中的字段。
+
+    输入是数据库中的单个 goal 行；输出覆盖当前真实字段 `title`、`description`、
+    `goal_type`，并兼容未来可能出现的 `domain`、`activity_domain`、`tags`、
+    `tags_json`。调用方只在 autonomy 候选排序中使用；该函数不产生副作用，解析失败的
+    兼容字段会被忽略。
+    """
+    parts: list[str] = []
+    for key in ("title", "description", "goal_type", "domain", "activity_domain", "tags"):
+        if key in goal:
+            parts.append(_opinion_affinity_text(goal.get(key)))
+    if "tags_json" in goal:
+        try:
+            parts.append(_opinion_affinity_text(loads(goal.get("tags_json"), [])))
+        except Exception:
+            pass
+    return " ".join(p for p in parts if p)
+
+
+def _opinion_target_match_factor(target: Any, goal_text: str) -> float:
+    """计算观点 target 和 goal 文本的确定性命中强度。
+
+    输入是观点的 `target` 与 `_goal_opinion_search_text` 产出的文本；输出范围为
+    0..1，完整短语命中为 1，只有 target 内部分词命中时按命中比例折半。调用方是
+    `_goal_opinion_affinity_boost`；它不访问外部状态，避免自治选择依赖 LLM 或随机性。
+    """
+    target_text = _opinion_affinity_text(target)
+    if not target_text or not goal_text:
+        return 0.0
+    if target_text in goal_text:
+        return 1.0
+    words = [w for w in _SEARCH_WORD_RE.findall(target_text) if len(w) >= 2]
+    if not words:
+        return 0.0
+    matched = sum(1 for w in words if w in goal_text)
+    if matched <= 0:
+        return 0.0
+    return 0.5 * (matched / len(words))
+
+
+def _goal_priority_value(goal: dict[str, Any]) -> float:
+    """读取 goal priority 的排序数值。
+
+    输入是 goal 行；输出是用于 `priority + opinion_affinity` 排序的浮点值，非法或空值
+    按既有默认优先级 50 处理。调用方是观点重排和 trace score；无数据库或网络副作用。
+    """
+    try:
+        return float(goal.get("priority") if goal.get("priority") is not None else 50)
+    except (TypeError, ValueError):
+        return 50.0
+
+
+def _goal_opinion_affinity_boost(goal: dict[str, Any], salient: list[dict[str, Any]]) -> float:
+    """按显著观点计算单个 goal 的选择亲和度。
+
+    输入是一个候选 goal 和 `opinions.salient_opinions` 返回的观点列表；输出是
+    `sum(strength * confidence * match_factor * 12)` 后限制在 -12..12 的 boost。
+    调用方只用它重排当前 SQL 已选出的候选 goals，不修改持久化数据。负向观点类型
+    `dislike/concern` 若旧数据误存正 strength，会在这里按负向处理；其它情况保留
+    `strength` 的签名，确保经历既能推动也能压低相关目标。
+    """
+    goal_text = _goal_opinion_search_text(goal)
+    if not goal_text:
+        return 0.0
+    boost = 0.0
+    for opinion in salient:
+        factor = _opinion_target_match_factor(opinion.get("target"), goal_text)
+        if factor <= 0:
+            continue
+        try:
+            strength = max(-1.0, min(1.0, float(opinion.get("strength") or 0.0)))
+            confidence = max(0.0, min(1.0, float(opinion.get("confidence") or 0.0)))
+        except (TypeError, ValueError):
+            continue
+        opinion_type = str(opinion.get("opinion_type") or "").strip().lower()
+        if opinion_type in _NEGATIVE_OPINION_TYPES and strength > 0:
+            strength = -strength
+        boost += strength * confidence * factor * _OPINION_AFFINITY_SCALE
+    if abs(boost) < 1e-9:
+        return 0.0
+    return round(max(-_OPINION_AFFINITY_LIMIT, min(_OPINION_AFFINITY_LIMIT, boost)), 6)
+
+
+def _rank_goals_by_opinion_affinity(conn, owner_kind: str, owner_id: str, goals: list[Any]) -> tuple[list[Any], dict[str, float]]:
+    """用显著观点对 autonomy 候选 goals 做确定性二次排序。
+
+    输入是既有 SQL `priority DESC, updated_at ASC LIMIT 10` 得到的候选列表；输出是按
+    `priority + affinity_boost` 稳定重排后的列表，以及非零 boost 映射。调用方是
+    `plan_autonomy` 和事务外 authoring 预选路径。读取观点采用 best-effort：非 agent、
+    无候选、无观点、旧库缺 `agent_opinions` 表或读取失败时，原列表对象原样返回，
+    从而保持无观点场景与旧行为字节级一致。
+    """
+    if owner_kind != "agent" or not goals:
+        return goals, {}
+    try:
+        from . import opinions as _opinions
+        salient = _opinions.salient_opinions(conn, owner_id, limit=8)
+    except Exception:
+        return goals, {}
+    if not salient:
+        return goals, {}
+
+    boosts: dict[str, float] = {}
+    for row in goals:
+        goal = dict(row)
+        goal_id = str(goal.get("id") or "")
+        boost = _goal_opinion_affinity_boost(goal, salient)
+        if goal_id and boost:
+            boosts[goal_id] = boost
+    if not boosts:
+        return goals, {}
+
+    def rank_score(row: Any) -> float:
+        goal = dict(row)
+        return _goal_priority_value(goal) + boosts.get(str(goal.get("id") or ""), 0.0)
+
+    return sorted(goals, key=lambda row: -rank_score(row)), boosts
 
 
 def _recent_decision_exists(conn, owner_kind: str, owner_id: str, minutes: int = 60) -> bool:
@@ -387,6 +530,7 @@ def author_goal_step_for_tick(conn, owner_kind: str, owner_id: str, control: dic
                   ORDER BY priority DESC, updated_at ASC LIMIT 10""",
             (owner_kind, owner_id),
         ).fetchall()
+        goals, _ = _rank_goals_by_opinion_affinity(conn, owner_kind, owner_id, goals)
         selected = None
         selected_open_events: list[dict[str, Any]] = []
         for g in goals:
@@ -512,6 +656,7 @@ def plan_autonomy(
               ORDER BY priority DESC, updated_at ASC LIMIT 10""",
         (owner_kind, owner_id),
     ).fetchall()
+    goals, affinity_boosts = _rank_goals_by_opinion_affinity(conn, owner_kind, owner_id, goals)
     if not goals:
         if mode == "full":
             ops = [{"type": "CREATE_DIARY", "payload": {
@@ -538,6 +683,14 @@ def plan_autonomy(
         return finish(tick_id=tick_id, trace_id=trace_id, mode=mode, status="skipped", reason="no selectable goal", score=score, proposed_ops=[])
 
     score.update({"goal_id": selected["id"], "goal_title": selected["title"], "goal_priority": selected["priority"]})
+    if affinity_boosts:
+        selected_boost = affinity_boosts.get(str(selected["id"]), 0.0)
+        selected_rank_score = _goal_priority_value(selected) + selected_boost
+        score["opinion_affinity"] = {
+            "selected_boost": round(selected_boost, 6),
+            "selected_rank_score": round(selected_rank_score, 6),
+            "boosts_by_goal_id": {gid: round(boost, 6) for gid, boost in affinity_boosts.items()},
+        }
 
     if selected_open_events:
         if mode == "planned_only":
