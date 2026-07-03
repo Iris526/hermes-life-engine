@@ -72,16 +72,3 @@ def test_dream_audit_repair_applies_proposed_ops_and_resolves_findings(tmp_path)
         rt.close()
 
 
-def test_sleep_reply_dream_acceptance_surface_records_scenarios(tmp_path):
-    fresh_home(tmp_path)
-    rt = LifeEngineRuntime()
-    try:
-        activate(rt)
-        out = rt.upgrade("sleep_reply_dream_acceptance")
-        assert out["ok"] is True
-        assert out["summary"]["scenarios"] == 6
-        assert out["summary"]["failed"] == 0
-        detail = rt.upgrade("sleep_reply_dream_acceptance_get", acceptance_run_id=out["acceptance_run_id"])
-        assert len(detail["run"]["scenarios"]) == 6
-    finally:
-        rt.close()

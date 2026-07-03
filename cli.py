@@ -124,10 +124,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
             "export", "exports", "inspect_export", "import", "restore",
             "package_check", "large_smoke", "maintenance", "cron_test",
             "release_check", "all",
-            "mandatory_gate_patch", "sleep_reply_dream_acceptance",
-            "srd_acceptance", "sleep_dream_acceptance",
-            "sleep_reply_dream_acceptance_runs", "srd_acceptance_runs",
-            "sleep_reply_dream_acceptance_get", "srd_acceptance_get",
+            "mandatory_gate_patch",
             "sleep_autonomy_execution_acceptance", "sae_acceptance",
             "sleep_autonomy_execution_acceptance_runs", "sae_acceptance_runs",
             "sleep_autonomy_execution_acceptance_get", "sae_acceptance_get",
@@ -1122,12 +1119,6 @@ def slash_life(raw_args: str, **kwargs) -> str:
                 return format_result(rt.upgrade("cron_test", script_path=str(script)))
             if action in {"mandatory_gate_patch", "patch"}:
                 return format_result(rt.upgrade("mandatory_gate_patch"))
-            if action in {"sleep_reply_dream_acceptance", "srd_acceptance", "sleep_dream_acceptance"}:
-                return format_result(rt.upgrade("sleep_reply_dream_acceptance"))
-            if action in {"sleep_reply_dream_acceptance_runs", "srd_acceptance_runs"}:
-                return format_result(rt.upgrade("sleep_reply_dream_acceptance_runs"))
-            if action in {"sleep_reply_dream_acceptance_get", "srd_acceptance_get"} and len(rest) > 1:
-                return format_result(rt.upgrade("sleep_reply_dream_acceptance_get", acceptance_run_id=rest[1]))
             if action in {"sleep_autonomy_execution_acceptance", "sae_acceptance", "sleep_execution_acceptance"}:
                 return format_result(rt.upgrade("sleep_autonomy_execution_acceptance"))
             if action in {"sleep_autonomy_execution_acceptance_runs", "sae_acceptance_runs"}:

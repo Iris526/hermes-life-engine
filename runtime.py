@@ -241,12 +241,6 @@ from .reply_gate import (
     reply_gate_status,
 )
 
-from .sleep_dream_acceptance import (
-    get_sleep_reply_dream_acceptance,
-    list_sleep_reply_dream_acceptance,
-    run_sleep_reply_dream_acceptance,
-)
-
 from .sleep_autonomy_execution_acceptance import (
     get_sleep_autonomy_execution_acceptance,
     list_sleep_autonomy_execution_acceptance,
@@ -4050,12 +4044,6 @@ class LifeEngineRuntime:
                 return run_tick_script_test(self.conn, owner_kind, owner_id, script_path=str(script), timeout=int(payload.get("timeout", 30)))
             if action in {"mandatory_gate_patch", "core_patch"}:
                 return mandatory_gate_patch()
-            if action in {"sleep_reply_dream_acceptance", "srd_acceptance", "sleep_dream_acceptance"}:
-                return run_sleep_reply_dream_acceptance(self.conn, owner_kind, owner_id)
-            if action in {"sleep_reply_dream_acceptance_runs", "srd_acceptance_runs"}:
-                return list_sleep_reply_dream_acceptance(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 20)))
-            if action in {"sleep_reply_dream_acceptance_get", "srd_acceptance_get"}:
-                return get_sleep_reply_dream_acceptance(self.conn, str(payload.get("acceptance_run_id") or payload.get("id") or ""))
             if action in {"sleep_autonomy_execution_acceptance_runs", "sae_acceptance_runs"}:
                 return list_sleep_autonomy_execution_acceptance(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 20)))
             if action in {"sleep_autonomy_execution_acceptance_get", "sae_acceptance_get"}:
