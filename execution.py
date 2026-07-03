@@ -625,6 +625,7 @@ def _serendipity_authoring_context(
     owner_kind: str,
     owner_id: str,
     block: dict[str, Any],
+    authoring_now: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """收集某个 completed block 是否会产生 serendipity 的只读上下文。
 
@@ -632,9 +633,12 @@ def _serendipity_authoring_context(
     或在该 block 当前不会自然完成/不会触发 serendipity 时返回 `None`。调用方是
     heartbeat/manual 的事务外 authoring 准备层。副作用限定为 SELECT：复用完成分支
     判断读取事件、资源、天气、睡眠与依赖状态；不记录 decision、不创建 LifeOps、
-    不结算资源、不改变 schedule。
+    不结算资源、不改变 schedule。`authoring_now` 是 heartbeat 预先算好的当前时间
+    事实块，只作为 LifeAuthor 上下文，不参与触发判断。
     """
-    completion_context = _completion_authoring_context(conn, owner_kind, owner_id, block)
+    completion_context = _completion_authoring_context(
+        conn, owner_kind, owner_id, block, authoring_now=authoring_now,
+    )
     if not completion_context:
         return None
     event_id = block.get("event_id")
@@ -648,7 +652,7 @@ def _serendipity_authoring_context(
     shape = _serendipity_payload_shape(event)
     if fallback is None or shape is None:
         return None
-    return {
+    context = {
         "trigger_event": completion_context.get("event") or {},
         "schedule_block": completion_context.get("schedule_block") or {},
         "completion_outcome": completion_context.get("outcome") or {},
@@ -660,6 +664,9 @@ def _serendipity_authoring_context(
             "emotional_impact": shape["emotional_impact"],
         },
     }
+    if completion_context.get("authoring_now"):
+        context["authoring_now"] = completion_context.get("authoring_now")
+    return context
 
 
 def _author_serendipity_text(
@@ -716,6 +723,7 @@ def prepare_serendipity_authoring_for_block(
     block: dict[str, Any] | None,
     *,
     trace_id: str | None = None,
+    authoring_now: dict[str, Any] | None = None,
 ) -> dict[str, str] | None:
     """在写事务外为单个 completed block 预生成 serendipity 文案。
 
@@ -723,12 +731,14 @@ def prepare_serendipity_authoring_for_block(
     调用方包括 `life_execution run/simulate` 手动路径和 heartbeat tick 预备层。
     失败处理是全程吞掉异常并返回 `None`，让事务内 serendipity 使用旧 title/
     description；副作用只允许 LifeAuthor 审计，不会创建事件、记忆、资源流水或
-    proposed ops。
+    proposed ops。`authoring_now` 只在 heartbeat 路径传入，不改变手动路径合同。
     """
     if not isinstance(block, dict):
         return None
     try:
-        context = _serendipity_authoring_context(conn, owner_kind, owner_id, block)
+        context = _serendipity_authoring_context(
+            conn, owner_kind, owner_id, block, authoring_now=authoring_now,
+        )
         if not context:
             return None
         return _author_serendipity_text(conn, owner_kind, owner_id, context, trace_id=trace_id)
@@ -744,6 +754,7 @@ def prepare_serendipity_authoring_for_tick(
     now: str,
     trace_id: str | None = None,
     limit: int = 20,
+    authoring_now: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, str]]:
     """在 heartbeat 写事务外预生成 serendipity 文案包。
 
@@ -751,7 +762,8 @@ def prepare_serendipity_authoring_for_tick(
     `{block_id: {title, description}}`，只在本次 tick 内使用。调用方式是同步
     best-effort：逐个 due block 只读判断是否会自然完成并触发 serendipity，再调用
     LifeAuthor 的 `serendipity` kind。无 host、模型空返回或任意异常都会跳过该 block，
-    事务内 `_serendipity_for` 继续使用旧版七类标题和描述模板。
+    事务内 `_serendipity_for` 继续使用旧版七类标题和描述模板。`authoring_now` 是
+    同一 heartbeat tick 共享的事实时间块，只传给 LifeAuthor context。
     """
     authored: dict[str, dict[str, str]] = {}
     try:
@@ -764,6 +776,7 @@ def prepare_serendipity_authoring_for_tick(
             continue
         item = prepare_serendipity_authoring_for_block(
             conn, owner_kind, owner_id, block, trace_id=trace_id,
+            authoring_now=authoring_now,
         )
         if item:
             authored[block_id] = item
@@ -825,6 +838,7 @@ def _completion_authoring_context(
     owner_kind: str,
     owner_id: str,
     block: dict[str, Any],
+    authoring_now: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """收集某个 schedule block 是否会进入 completed 分支的只读上下文。
 
@@ -832,6 +846,7 @@ def _completion_authoring_context(
     或在该 block 当前不会自然完成时返回 `None`。调用方是 heartbeat/manual 的
     事务外 authoring 准备层。副作用限定为 SELECT：读取 event、资源余额、天气、
     睡眠压力和依赖状态；不记录 execution_decision、不创建 LifeOps、不结算资源。
+    `authoring_now` 是可选 heartbeat 当前时间事实，只注入上下文，不参与完成判定。
     """
     event_id = block.get("event_id")
     if not event_id:
@@ -860,7 +875,7 @@ def _completion_authoring_context(
     if hard_shortages:
         return None
     pushed_through_vital = bool(shortages) and not hard_shortages
-    return {
+    context = {
         "event": {
             "id": event.get("id"),
             "title": event.get("title"),
@@ -892,6 +907,9 @@ def _completion_authoring_context(
             },
         },
     }
+    if authoring_now:
+        context["authoring_now"] = authoring_now
+    return context
 
 
 def _author_execution_completion(
@@ -952,6 +970,7 @@ def prepare_execution_completion_authoring_for_block(
     block: dict[str, Any] | None,
     *,
     trace_id: str | None = None,
+    authoring_now: dict[str, Any] | None = None,
 ) -> dict[str, str] | None:
     """在写事务外为单个执行完成 block 预生成叙事文本。
 
@@ -959,11 +978,14 @@ def prepare_execution_completion_authoring_for_block(
     调用方包括 `life_execution run/simulate` 手动路径和 heartbeat tick 预备层。
     失败处理是全程吞掉异常并返回 `None`，让事务内 completed 分支使用旧模板；
     副作用只允许 LifeAuthor 审计，不会创建事件、记忆、结果、资源流水或 proposed ops。
+    `authoring_now` 只在 heartbeat 路径传入，不改变手动路径合同。
     """
     if not isinstance(block, dict):
         return None
     try:
-        context = _completion_authoring_context(conn, owner_kind, owner_id, block)
+        context = _completion_authoring_context(
+            conn, owner_kind, owner_id, block, authoring_now=authoring_now,
+        )
         if not context:
             return None
         return _author_execution_completion(conn, owner_kind, owner_id, context, trace_id=trace_id)
@@ -1016,6 +1038,7 @@ def prepare_execution_completion_authoring_for_tick(
     now: str,
     trace_id: str | None = None,
     limit: int = 20,
+    authoring_now: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, str]]:
     """在 heartbeat 写事务外预生成执行完成叙事包。
 
@@ -1024,6 +1047,7 @@ def prepare_execution_completion_authoring_for_tick(
     best-effort：逐个 due block 只读判断是否会自然完成，再调用 LifeAuthor 的
     `execution_narrative` kind。无 host、模型空返回或任意异常都会跳过该 block，
     事务内执行模拟继续使用旧的 `执行完成：{title}` / `完成了『{title}』。` 模板。
+    `authoring_now` 是同一 heartbeat tick 共享的事实时间块，只传给 LifeAuthor context。
     """
     authored: dict[str, dict[str, str]] = {}
     try:
@@ -1036,6 +1060,7 @@ def prepare_execution_completion_authoring_for_tick(
             continue
         item = prepare_execution_completion_authoring_for_block(
             conn, owner_kind, owner_id, block, trace_id=trace_id,
+            authoring_now=authoring_now,
         )
         if item:
             authored[block_id] = item

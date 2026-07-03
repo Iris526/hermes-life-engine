@@ -364,24 +364,32 @@ def _candidate(conn, agent_id: str, *, control: dict[str, Any] | None = None,
 
 def author_companion_for_tick(conn, agent_id: str, *, control: dict[str, Any] | None = None,
                               user_id: str | None = None, now: str | None = None,
-                              trace_id: str | None = None) -> dict[str, Any] | None:
+                              trace_id: str | None = None,
+                              authoring_now: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """在写事务外为陪伴主动意图预生成一句话。
 
     输入来自 heartbeat 的 agent/control/时间上下文；输出是一个短期有效的内存包，
     包含候选 kind、user_id、可选 note_id 以及 LifeAuthor 的 parsed 文案。调用方
     随后把该包传给 `maybe_generate_companion_intent`，由后者在事务内复查并创建
     proactive intent。副作用仅限 LifeAuthor 审计；如果无 host、节奏不满足或模型
-    失败，返回 `None`，不写 relationship/proactive 状态。
+    失败，返回 `None`，不写 relationship/proactive 状态。`authoring_now` 是 heartbeat
+    事务外预先算好的结构化时间事实，只进入 LifeAuthor context，不改变节奏门。
     """
     try:
         cand = _candidate(conn, agent_id, control=control, user_id=user_id, now=now)
         if not cand:
             return None
         if cand["kind"] == "ask_about_user":
-            parsed = _author_followup_line(conn, agent_id, cand["user_id"], cand["note"], now=now, trace_id=trace_id)
+            parsed = _author_followup_line(
+                conn, agent_id, cand["user_id"], cand["note"], now=now,
+                trace_id=trace_id, authoring_now=authoring_now,
+            )
             note_id = cand["note"].get("id")
         else:
-            parsed = _author_idle_line(conn, agent_id, cand["user_id"], trace_id=trace_id)
+            parsed = _author_idle_line(
+                conn, agent_id, cand["user_id"], trace_id=trace_id,
+                authoring_now=authoring_now,
+            )
             note_id = None
         parsed = _sanitize_parsed_line(conn, agent_id, cand["kind"], parsed, user_id=cand["user_id"], now=now, trace_id=trace_id)
         if not parsed or not str(parsed.get("summary") or "").strip():
@@ -430,18 +438,22 @@ def maybe_generate_companion_intent(conn, agent_id: str, *, control: dict[str, A
 
 
 def _author_followup_line(conn, agent_id: str, user_id: str, note: dict[str, Any], *,
-                          now: str | None, trace_id: str | None) -> dict[str, Any] | None:
+                          now: str | None, trace_id: str | None,
+                          authoring_now: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """只生成回访文案，不创建 proactive intent。
 
     输入是已通过节奏检查的一条 relationship note；输出是 LifeAuthor parsed dict。
     调用方是事务外预生成流程或兼容旧路径的事务外调用。副作用仅限 LifeAuthor 审计，
-    失败返回 `None`，由上层保持沉默而不是发送模板化关心。
+    失败返回 `None`，由上层保持沉默而不是发送模板化关心。`authoring_now` 只承载
+    heartbeat 当前时间事实，空值时不进入 context。
     """
     context = {
         "对方上次跟你说过的他生活里的事": note.get("content"),
         "话题": note.get("topic"),
         "你对此的感受倾向": note.get("sentiment"),
     }
+    if authoring_now:
+        context["authoring_now"] = authoring_now
     instructions = (
         "对方上次跟你说过上面这件他生活里的事，你一直惦记着。"
         "现在想自然地问一句后续——关心，但别啰嗦、别像查岗。"
@@ -480,12 +492,14 @@ def _create_followup_intent(conn, agent_id: str, user_id: str, note: dict[str, A
     return intent
 
 
-def _author_idle_line(conn, agent_id: str, user_id: str, *, trace_id: str | None) -> dict[str, Any] | None:
+def _author_idle_line(conn, agent_id: str, user_id: str, *, trace_id: str | None,
+                      authoring_now: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """只生成闲聊陪伴文案，不创建 proactive intent。
 
     输入是 agent/user id 和 trace id；输出是 LifeAuthor parsed dict。调用方是事务外
     预生成流程；副作用仅限 LifeAuthor 审计。无 host 或返回无效时返回 `None`，
-    保持“没事不硬发模板”的产品约束。
+    保持“没事不硬发模板”的产品约束。`authoring_now` 只承载 heartbeat 当前时间事实，
+    空值时不进入 context。
     """
     life = _recent_life(conn, agent_id)
     notes = [n.get("content") for n in rel.recent_salient_notes(conn, agent_id, user_id, limit=2) if n.get("content")]
@@ -510,6 +524,8 @@ def _author_idle_line(conn, agent_id: str, user_id: str, *, trace_id: str | None
         "你最近的一些看法/在意的": stances,
         "此刻心情": "不错",
     }
+    if authoring_now:
+        context["authoring_now"] = authoring_now
     instructions = (
         "你现在心情不错，也没什么大事，就是想跟对方说句话——可以是你今天的一件小事、"
         "一个忽然冒出来的念头，或是想起了对方。一句话，自然、轻，像随手发的消息。"

@@ -565,7 +565,8 @@ def _fallback_outbox_text(intent: dict[str, Any]) -> str:
 
 
 def _author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any], *,
-                        trace_id: str | None = None) -> str | None:
+                        trace_id: str | None = None,
+                        authoring_now: dict[str, Any] | None = None) -> str | None:
     """把主动意图改写成符合角色语气的可发送消息。
 
     输入是已通过策略、隐私和节奏检查的 proactive intent；输出是一条将
@@ -573,6 +574,7 @@ def _author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any
     预算耗尽、模型返回无效时返回 ``None``。调用方式是同步 best-effort：
     它只请求 LifeAuthor 生成内容，不修改资源账本、不提交事务、不绕过现有
     发送策略；失败由调用方使用确定性兜底，用户可见影响是语气退回保守模板。
+    `authoring_now` 是 heartbeat 预生成层提供的结构化时间事实，空值时不进入上下文。
     """
     context = {
         "主动意图": {
@@ -597,6 +599,8 @@ def _author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any
             "重新规划",
         ],
     }
+    if authoring_now:
+        context["authoring_now"] = authoring_now
     instructions = (
         "你准备主动给对方发一条消息。请把上下文里的主动意图改写成你本人会发出的"
         "一句短消息：自然、有性格、有一点当下的情绪，但不要表演腔，也不要像系统播报。"
@@ -623,16 +627,21 @@ def _author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any
 
 
 def author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any], *,
-                       trace_id: str | None = None) -> str | None:
+                       trace_id: str | None = None,
+                       authoring_now: dict[str, Any] | None = None) -> str | None:
     """在 LifeOps 写事务外生成 proactive outbox 最终文案。
 
     输入是已经存在的 proactive intent 和目标 user id；输出是一条可直接写入
     proactive_outbox 的聊天消息，或在宿主模型不可用/门控关闭/返回无效时为 `None`。
     调用方是 runtime 的 proactive evaluate 预处理和测试；副作用仅限 LifeAuthor
     调用审计，不改变 intent/outbox 状态。事务内 evaluate 会优先使用该 draft_text，
-    并在缺失时回退确定性模板。
+    并在缺失时回退确定性模板。`authoring_now` 只由 heartbeat 事务外路径传入，
+    作为事实上下文，不改变无 host fallback。
     """
-    return _author_outbox_text(conn, agent_id, user_id, intent, trace_id=trace_id)
+    return _author_outbox_text(
+        conn, agent_id, user_id, intent, trace_id=trace_id,
+        authoring_now=authoring_now,
+    )
 
 
 def _auto_send_authoring_candidates(conn, agent_id: str, control: dict[str, Any] | None, *,
@@ -709,7 +718,8 @@ def _temporary_wait_has_cleared_readonly(conn, agent_id: str, intent: dict[str, 
 
 def prepare_auto_send_outbox_authoring(conn, agent_id: str, control: dict[str, Any] | None, *,
                                        trace_id: str | None = None,
-                                       limit: int = 10) -> dict[str, str]:
+                                       limit: int = 10,
+                                       authoring_now: dict[str, Any] | None = None) -> dict[str, str]:
     """在 heartbeat 写事务外预生成 auto_send outbox 文案。
 
     输入来自 `prepare_heartbeat_authoring` 的 agent/control/trace；输出是
@@ -717,7 +727,8 @@ def prepare_auto_send_outbox_authoring(conn, agent_id: str, control: dict[str, A
     best-effort：每条候选只调用既有 `author_outbox_text`，不创建 outbox、不修改
     intent、不触碰资源账本。无 host、LifeAuthor 门控关闭、模型返回空/无效或任意
     异常时跳过该 intent，让事务内 evaluate 继续使用原有 `_fallback_outbox_text`
-    路径，保证离线/CI 行为不变。
+    路径，保证离线/CI 行为不变。`authoring_now` 是同一 heartbeat tick 共享的事实
+    时间块，只传给 LifeAuthor context。
     """
     drafts: dict[str, str] = {}
     for item in _auto_send_authoring_candidates(conn, agent_id, control, limit=limit):
@@ -729,7 +740,10 @@ def prepare_auto_send_outbox_authoring(conn, agent_id: str, control: dict[str, A
         if not intent_id or not user_id:
             continue
         try:
-            draft = author_outbox_text(conn, agent_id, user_id, intent, trace_id=trace_id)
+            draft = author_outbox_text(
+                conn, agent_id, user_id, intent, trace_id=trace_id,
+                authoring_now=authoring_now,
+            )
         except Exception:
             draft = None
         if draft:

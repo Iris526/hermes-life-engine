@@ -312,12 +312,14 @@ _DREAM_SCHEMA: dict[str, Any] = {
 
 
 def _author_dream(conn, owner_kind: str, owner_id: str, ctx: dict[str, Any],
-                  session: dict[str, Any] | None, trace_id: str | None) -> dict[str, Any] | None:
-    """Author a life-flavoured dream from the agent's OWN lived life.
+                  session: dict[str, Any] | None, trace_id: str | None,
+                  authoring_now: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """从 Agent 自己的生活上下文里生成梦境内容。
 
-    Source is life-domain only (memories / events / goals) — NO audit findings,
-    NO engine self-reference. Returns the authored dict, or None when the host
-    model is unavailable (caller falls back to a clean template).
+    输入是近期生活片段、可选睡眠 session、trace id，以及 heartbeat 事务外已经算好的
+    `authoring_now` 时间事实。输出是 LifeAuthor 的 dream parsed dict，或在 host
+    模型不可用、门控关闭、预算耗尽、模型失败时返回 `None`。副作用仅限 LifeAuthor
+    调用审计；调用方会继续使用干净的确定性梦境 fallback。
     """
     memories = [str(m.get("content") or "")[:120] for m in (ctx.get("memories") or [])[:5] if str(m.get("content") or "").strip()]
     events = [str(e.get("title") or "")[:60] for e in (ctx.get("events") or [])[:5] if e.get("title")]
@@ -342,6 +344,8 @@ def _author_dream(conn, owner_kind: str, owner_id: str, ctx: dict[str, Any],
         "你最近在意/喜欢的": stances,
         "这一觉睡了大约几分钟": duration,
     }
+    if authoring_now:
+        context["authoring_now"] = authoring_now
     instructions = (
         "给你自己写一个梦。梦要超现实、有画面和情绪，取材于上面这些*你自己的生活片段*"
         "（以及对方跟你讲过的他的生活，如果有）。用第一人称。可以变形、跳跃、用象征，"
@@ -359,7 +363,8 @@ def _author_dream(conn, owner_kind: str, owner_id: str, ctx: dict[str, Any],
 
 def author_dream_preview(conn, owner_kind: str, owner_id: str, *,
                          sleep_session_id: str | None = None,
-                         trace_id: str | None = None) -> dict[str, Any] | None:
+                         trace_id: str | None = None,
+                         authoring_now: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """在 DreamRun 写事务外预生成梦境内容。
 
     输入来自手动 `life_dream run` 或 heartbeat 自动醒来前的预备阶段；当传入
@@ -367,7 +372,8 @@ def author_dream_preview(conn, owner_kind: str, owner_id: str, *,
     session 生成预览。输出是 LifeAuthor 的 dream parsed dict，或在无 host、门控/
     预算不允许、session 不存在、模型失败时返回 `None`。副作用仅限 LifeAuthor 调用
     审计，不创建 dream_run、dream_entry、mood residue 或 proactive intent；调用方
-    必须在后续事务内重新执行 DreamAudit 和幂等检查。
+    必须在后续事务内重新执行 DreamAudit 和幂等检查。`authoring_now` 只在 heartbeat
+    预生成路径传入，用作结构化事实，不改变无模型 fallback。
     """
     try:
         session = None
@@ -380,7 +386,10 @@ def author_dream_preview(conn, owner_kind: str, owner_id: str, *,
                 return None
             session = dict(row)
         ctx = _recent_context(conn, owner_kind, owner_id, limit=6)
-        return _author_dream(conn, owner_kind, owner_id, ctx, session or {}, trace_id)
+        return _author_dream(
+            conn, owner_kind, owner_id, ctx, session or {}, trace_id,
+            authoring_now=authoring_now,
+        )
     except Exception:
         return None
 

@@ -15,7 +15,45 @@ from . import dream
 from . import execution
 from . import opinions
 from . import proactive
+from .canon import get_active_canon
+from .context_policy import _compact_time
+from .conversation import temporal_grounding
 from .events import due_wake_jobs
+
+
+def _authoring_now_grounding(conn, owner_kind: str, owner_id: str, *,
+                             now: str | None = None) -> dict[str, Any]:
+    """构建 heartbeat LifeAuthor 共用的“此刻”事实块。
+
+    输入是当前 owner 和 tick 逻辑时间；输出是只含事实的紧凑时间锚点，作用域限于
+    本次 `prepare_heartbeat_authoring` 事务外预生成包。调用方把同一份 dict 传给
+    dream、companion、execution、serendipity 和 proactive outbox authoring context。
+    副作用只读 Canon 与 conversation judgment；任何读取、时区或压缩失败都会返回
+    空 dict，让无 host / 异常路径继续走原有确定性 fallback。
+    """
+    try:
+        canon = get_active_canon(conn, owner_kind, owner_id)
+        raw = temporal_grounding(conn, owner_kind, owner_id, canon=canon, now=now)
+        if not raw:
+            return {}
+        compact = _compact_time(raw, minimal=True)
+        if not compact:
+            return {}
+        if raw.get("timezone") is not None:
+            compact["timezone"] = raw.get("timezone")
+        if raw.get("phase_label") is not None:
+            compact["phase"] = raw.get("phase_label")
+        since = raw.get("since_last_exchange")
+        if isinstance(since, dict):
+            compact["since_last_exchange"] = {
+                "minutes": since.get("minutes"),
+                "human": since.get("human"),
+            }
+        else:
+            compact["since_last_exchange"] = None
+        return compact
+    except Exception:
+        return {}
 
 
 def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: dict[str, Any], *,
@@ -39,6 +77,7 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
         "serendipity_texts_by_block_id": {},
         "dreams_by_sleep_plan_id": {},
         "proactive_outbox_drafts": {},
+        "authoring_now": {},
     }
     if owner_kind != "agent" or control.get("engine_state") != "active":
         return package
@@ -46,6 +85,8 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
     gates = control.get("module_gates") or {}
     if str(gates.get("heartbeat", "manual") or "manual").strip().lower() == "off" and not manual:
         return package
+    authoring_now = _authoring_now_grounding(conn, owner_kind, owner_id, now=now)
+    package["authoring_now"] = authoring_now
     try:
         package["autonomy_goal_step"] = autonomy.author_goal_step_for_tick(
             conn, owner_kind, owner_id, control, tick_id=tick_id,
@@ -66,6 +107,7 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
     try:
         package["companion"] = companion.author_companion_for_tick(
             conn, owner_id, control=control, now=now, trace_id=trace_id,
+            authoring_now=authoring_now,
         )
     except Exception:
         package["companion"] = None
@@ -73,6 +115,7 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
     try:
         package["execution_narratives_by_block_id"] = execution.prepare_execution_completion_authoring_for_tick(
             conn, owner_kind, owner_id, now=now, trace_id=trace_id,
+            authoring_now=authoring_now,
         )
     except Exception:
         package["execution_narratives_by_block_id"] = {}
@@ -80,13 +123,14 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
     try:
         package["serendipity_texts_by_block_id"] = execution.prepare_serendipity_authoring_for_tick(
             conn, owner_kind, owner_id, now=now, trace_id=trace_id,
+            authoring_now=authoring_now,
         )
     except Exception:
         package["serendipity_texts_by_block_id"] = {}
 
     try:
         package["proactive_outbox_drafts"] = proactive.prepare_auto_send_outbox_authoring(
-            conn, owner_id, control, trace_id=trace_id,
+            conn, owner_id, control, trace_id=trace_id, authoring_now=authoring_now,
         )
     except Exception:
         package["proactive_outbox_drafts"] = {}
@@ -102,6 +146,7 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
                     continue
                 package["dreams_by_sleep_plan_id"][sleep_plan_id] = dream.author_dream_preview(
                     conn, owner_kind, owner_id, trace_id=trace_id,
+                    authoring_now=authoring_now,
                 )
     except Exception:
         package["dreams_by_sleep_plan_id"] = {}
