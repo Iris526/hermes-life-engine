@@ -29,7 +29,7 @@ def _core_sleep(rt: LifeEngineRuntime) -> str:
     return wake["receipt"]["facts"][0]["evidence"]["sleep_session_id"]
 
 
-def test_v0114_schema_and_acceptance_tables(tmp_path):
+def test_v0114_schema_and_dream_tables(tmp_path):
     fresh_home(tmp_path)
     rt = LifeEngineRuntime()
     try:
@@ -37,7 +37,9 @@ def test_v0114_schema_and_acceptance_tables(tmp_path):
         assert _SCHEMA_VERSION >= 29
         assert rt.conn.execute("PRAGMA user_version").fetchone()[0] >= 29
         tables = {r[0] for r in rt.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        assert {"dream_repair_runs", "sleep_reply_dream_acceptance_runs", "sleep_reply_dream_acceptance_scenarios"}.issubset(tables)
+        assert "dream_repair_runs" in tables
+        # 轴二-5 v68: the sleep/reply/dream acceptance-theater tables are dropped.
+        assert not {"sleep_reply_dream_acceptance_runs", "sleep_reply_dream_acceptance_scenarios"} & tables
     finally:
         rt.close()
 

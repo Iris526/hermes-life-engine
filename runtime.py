@@ -4132,7 +4132,7 @@ class LifeEngineRuntime:
                     "events", "schedule_blocks", "wake_jobs", "truth_source_reads",
                     "goals", "autonomy_decisions", "proactive_intents", "proactive_outbox",
                     "proactive_evaluations", "proactive_deliveries", "agent_user_proactive_state",
-                    "execution_decisions", "serendipity_events", "memory_vec", "life_invariant_checks", "schema_migrations", "install_checks", "final_gate_reports", "final_gate_feedback_queue", "trace_coverage_reports", "acceptance_reports", "api_freeze_snapshots", "event_state_transitions", "schedule_block_state_transitions", "action_state_transitions", "agent_realtime_state", "agent_state_snapshots", "dream_runs", "dream_audit_findings", "dream_entries", "dream_repair_runs",
+                    "execution_decisions", "serendipity_events", "memory_vec", "life_invariant_checks", "schema_migrations", "install_checks", "final_gate_reports", "final_gate_feedback_queue", "trace_coverage_reports", "event_state_transitions", "schedule_block_state_transitions", "action_state_transitions", "agent_realtime_state", "agent_state_snapshots", "dream_runs", "dream_audit_findings", "dream_entries", "dream_repair_runs",
     "sleep_day_states", "sleep_recovery_plans", "delayed_reply_digests", "dream_repair_policies",
                 ]
                 existing = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','virtual table')").fetchall()}

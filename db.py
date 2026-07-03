@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 67
+_SCHEMA_VERSION = 68
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -333,6 +333,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 67:
         _create_schema_v67(conn)
         _record_schema_migration(conn, 67, "wake_job_retry_backoff")
+    if current < 68:
+        _create_schema_v68(conn)
+        _record_schema_migration(conn, 68, "drop_acceptance_and_qa_theater_tables")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -4710,3 +4713,31 @@ def _create_schema_v67(conn: sqlite3.Connection) -> None:
         ("next_retry_ts", "next_retry_ts INTEGER"),
     ):
         _add_column_if_missing(conn, "wake_jobs", col, ddl)
+
+
+def _create_schema_v68(conn: sqlite3.Connection) -> None:
+    """Drop the acceptance / QA-theater tables (轴二-3/5).
+
+    The synthetic self-audit that wrote these was deleted in 轴二-3 (all-`passed`
+    acceptance_suite, concurrency/api-freeze/integration smokes, the managed-review
+    acceptance/stress/observability/release-readiness meta-tower, and the
+    sleep-reply-dream acceptance metadata). Nothing reads or writes them anymore,
+    so the tables themselves are dead weight in the life DB — dropped here (real
+    verification lives in the pytest suite). Follows the v46 inventory precedent:
+    the historical CREATE stays in v16/v17/v24/v37/v38 for chain replay; this drops
+    the net result. Idempotent (DROP TABLE IF EXISTS).
+    """
+    for table in (
+        # v16 release-readiness / smokes
+        "concurrency_smoke_runs", "integration_test_runs",
+        "api_freeze_snapshots", "release_readiness_reports",
+        # v17 acceptance runner + v1 RC checklist
+        "acceptance_scenario_runs", "acceptance_reports", "v1_rc_checklists",
+        # v24 sleep/reply/dream acceptance metadata
+        "sleep_reply_dream_acceptance_runs", "sleep_reply_dream_acceptance_scenarios",
+        # v37/v38 managed-review acceptance / stress / observability / readiness
+        "human_review_managed_acceptance_runs", "human_review_managed_acceptance_scenarios",
+        "human_review_managed_stress_runs", "human_review_managed_observability_reports",
+        "human_review_managed_release_readiness_reports",
+    ):
+        conn.execute(f"DROP TABLE IF EXISTS {table}")

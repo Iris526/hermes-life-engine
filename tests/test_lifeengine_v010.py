@@ -37,14 +37,16 @@ def test_v010_version_schema_and_new_tables(tmp_path):
         for table in [
             "trace_coverage_reports",
             "failed_lifeops_audits",
-            "acceptance_reports",
-            "v1_rc_checklists",
-            "api_freeze_snapshots",
             "command_surface_profiles",
         ]:
             assert rt.conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
             ).fetchone(), table
+        # 轴二-5 v68: the acceptance/QA-theater tables are dropped.
+        for gone in ["acceptance_reports", "v1_rc_checklists", "api_freeze_snapshots"]:
+            assert not rt.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (gone,)
+            ).fetchone(), gone
     finally:
         rt.close()
 
