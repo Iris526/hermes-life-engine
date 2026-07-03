@@ -8,12 +8,14 @@ can commit through the normal validator / journal / receipt path.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any
 
 from .canon import get_active_canon
 from .jsonutil import dumps, loads
+from .skins import DEFAULT_LEGACY_LIVING_SKIN, get_canon_skin
 from .trace import append_audit, append_journal, new_id
 from .time_utils import now_iso
 
@@ -131,61 +133,219 @@ def render_canon_consistency(status: str, issues: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-GUIMINGGUAN_RESOURCES = [
-    {"key": "money.lingzhu", "display_name": "灵铢", "resource_class": "currency", "unit": "枚", "min_value": 0, "max_value": None, "initial": 120},
-    {"key": "daily_cost.lingzhu", "display_name": "每日基础开销", "resource_class": "currency", "unit": "枚/日", "min_value": 0, "max_value": None, "initial": 8},
-    {"key": "commission_income.lingzhu", "display_name": "委托收入累计", "resource_class": "currency", "unit": "枚", "min_value": 0, "max_value": None, "initial": 0},
-    {"key": "energy", "display_name": "精力", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 60, "rules": {"heartbeat_recovery": 3, "metabolism": -0.06}},
-    {"key": "mood", "display_name": "心情", "resource_class": "vital", "unit": "points", "min_value": -100, "max_value": 100, "initial": 0, "rules": {"heartbeat_recovery": 1, "metabolism": -0.01}},
-    {"key": "fatigue", "display_name": "疲劳", "resource_class": "vital", "unit": "points", "min_value": 0, "max_value": 100, "initial": 20, "rules": {"heartbeat_recovery": -2, "metabolism": 0.05}},
-]
+CANON_LIVING_PRESET_NAME = "canon"
+EMPTY_LIVING_PRESET_NAME = "none"
 
 
-# Supply cabinet items: created via life_collection, not as resources.
-GUIMINGGUAN_SUPPLY_ITEMS = [
-    {"name": "符纸", "quantity": 24, "attributes": {"category": "daily_supply", "is_consumable": True, "material": "黄纸朱砂", "purpose": "净符和小委托"}},
-    {"name": "朱砂墨", "quantity": 1, "attributes": {"category": "daily_supply", "is_consumable": True, "material": "朱砂", "purpose": "画符"}},
-    {"name": "线香", "quantity": 18, "attributes": {"category": "daily_supply", "is_consumable": True, "material": "檀香", "purpose": "供奉、净场"}},
-    {"name": "铜铃", "quantity": 1, "attributes": {"category": "tool", "is_consumable": False, "material": "铜", "purpose": "仪式法器"}},
-    {"name": "小型结界仪", "quantity": 1, "attributes": {"category": "tool", "is_consumable": False, "material": "金属/灵子回路", "purpose": "结界检测"}},
-    {"name": "归明观钥匙", "quantity": 1, "attributes": {"category": "tool", "is_consumable": False, "material": "铜", "purpose": "开门"}},
-    {"name": "委托记录册", "quantity": 1, "attributes": {"category": "book", "is_consumable": False, "material": "纸", "purpose": "记录委托"}},
-]
+def canon_with_default_living_skin(canon: dict[str, Any] | None) -> dict[str, Any]:
+    """为旧默认 agent 兼容路径补一个 skin 引用。
 
-
-def resource_preset_ops(preset: str = "guimingguan") -> list[dict[str, Any]]:
-    """Resource preset for living initialization.
-
-    Only currency and vital resources are defined here.
-    Physical items (supplies/tools) should be created via life_collection (supply_cabinet).
+    输入是已经读取出的 active Canon 或默认 Canon 拷贝；输出是新的 Canon dict。
+    调用方式为 runtime 在“默认 agent 尚无 active Canon”的旧 living 动作中同步调用。
+    调用方包括 init_resources/day_rhythm/decompose_abstract 的兼容入口；副作用为无，
+    不写数据库、不修改 DEFAULT_CANON_TEMPLATE。失败处理是保留原 Canon，避免未知
+    agent 因缺少 skin 被回退到角色内容。
     """
-    if preset not in {"guimingguan", "mingdeng", "taoist_temple", "default"}:
-        preset = "guimingguan"
-    ops: list[dict[str, Any]] = []
-    for res in GUIMINGGUAN_RESOURCES:
-        ops.append({"type": "RESOURCE_DEFINE", "payload": dict(res)})
-    return ops
+    data = deepcopy(canon or {})
+    living = data.setdefault("living", {})
+    if isinstance(living, dict) and not living.get("skin"):
+        living["skin"] = DEFAULT_LEGACY_LIVING_SKIN
+    return data
+
+
+def _canon_living(canon: dict[str, Any] | None) -> dict[str, Any]:
+    """读取 Canon 的 living 块。
+
+    输入是任意 Canon-like dict；输出是 living dict 或空 dict。调用方式为本模块
+    解析资源、供给、节律和 summary 时同步调用。函数无副作用；非 dict 或缺失
+    living 时按空块处理，避免隐式角色回退。
+    """
+    data = canon if isinstance(canon, dict) else {}
+    living = data.get("living") if isinstance(data.get("living"), dict) else {}
+    return living or {}
+
+
+def _canon_skin_name(canon: dict[str, Any] | None, preset: str | None = None) -> str | None:
+    """解析本次 living 读取应使用的 skin 名。
+
+    输入是 active Canon 与可选显式 preset；输出是 skin 名或 None。调用方式为
+    skin 查找与 run-log 命名同步调用。函数不校验 skin 是否存在、不写状态；
+    未声明时返回 None，让调用方保持空结果。
+    """
+    if isinstance(preset, str) and preset.strip():
+        return preset.strip()
+    data = canon if isinstance(canon, dict) else {}
+    living = _canon_living(data)
+    for value in (living.get("skin"), living.get("preset"), data.get("skin")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _skin_data(canon: dict[str, Any] | None, preset: str | None = None) -> dict[str, Any]:
+    """读取 Canon 指向的 skin 数据。
+
+    输入是 active Canon 与可选显式 preset；输出是 skin 数据深拷贝或空 dict。
+    调用方式为资源、供给、节律和 summary 解析同步调用。函数无副作用；未知
+    skin 由 get_canon_skin 统一降级为空数据。
+    """
+    return get_canon_skin(_canon_skin_name(canon, preset))
+
+
+def _canon_resource_definitions(canon: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """把 Canon resources 转成 RESOURCE_DEFINE payload 列表。
+
+    输入是 active Canon；输出是规范化后的资源定义 payload 列表。调用方式为
+    init_resources 在没有 skin 资源时同步调用。函数无副作用；它只读取 Canon
+    中已有 resources.presets 或 resources.definitions，并兼容 min/max 字段名。
+    """
+    data = canon if isinstance(canon, dict) else {}
+    resources = data.get("resources") if isinstance(data.get("resources"), dict) else {}
+    presets = resources.get("presets") if isinstance(resources.get("presets"), dict) else {}
+    for key in ("living", "default"):
+        preset = presets.get(key)
+        if isinstance(preset, list):
+            return [deepcopy(item) for item in preset if isinstance(item, dict)]
+    definitions = resources.get("definitions") if isinstance(resources.get("definitions"), dict) else {}
+    out: list[dict[str, Any]] = []
+    for key, spec in definitions.items():
+        if not isinstance(spec, dict):
+            continue
+        payload = deepcopy(spec)
+        payload.setdefault("key", key)
+        if "min_value" not in payload and "min" in payload:
+            payload["min_value"] = payload.get("min")
+        if "max_value" not in payload and "max" in payload:
+            payload["max_value"] = payload.get("max")
+        payload.pop("min", None)
+        payload.pop("max", None)
+        out.append(payload)
+    return out
+
+
+def living_preset_name(canon: dict[str, Any] | None = None, preset: str | None = None) -> str:
+    """返回本次 living 解析使用的稳定 preset 标签。
+
+    输入是 active Canon 与可选显式 preset；输出写入 run-log 的非空标签。
+    调用方式为 runtime 在生成资源、节律或分解时同步读取；调用方是 living
+    tool 与 heartbeat。函数不写库，未知 skin 返回通用标签或空标签，不会
+    自动回退到任何角色 skin。
+    """
+    skin_name = _canon_skin_name(canon, preset)
+    if skin_name and get_canon_skin(skin_name):
+        return skin_name
+    living = _canon_living(canon)
+    if living.get("rhythm_templates") or living.get("supplies"):
+        return CANON_LIVING_PRESET_NAME
+    if _canon_resource_definitions(canon):
+        return CANON_LIVING_PRESET_NAME
+    return EMPTY_LIVING_PRESET_NAME
+
+
+def resource_preset_ops(preset: str | None = None, *, canon: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """从 Canon 生成 living 资源初始化 LifeOps。
+
+    输入是 active Canon 和可选显式 skin/preset 名；输出为 RESOURCE_DEFINE ops。
+    调用方式为 life_living init_resources 同步调用；业务调用方是 runtime.living。
+    副作用为无，真正写库由 commit_ops 完成。未知 skin 或缺少资源定义时返回空
+    列表，保证非角色 Canon 不继承任何角色货币或物资资源。
+    """
+    skin = _skin_data(canon, preset)
+    resources = (((skin.get("resources") or {}).get("definitions") or []) if skin else []) or _canon_resource_definitions(canon)
+    return [{"type": "RESOURCE_DEFINE", "payload": deepcopy(res)} for res in resources if isinstance(res, dict)]
+
+
+def supply_items(preset: str | None = None, *, canon: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """从 Canon 读取 living 供给物资定义。
+
+    输入是 active Canon 与可选显式 skin/preset 名；输出是供 collection 层消费的
+    supply item 数据。调用方式为测试或后续 collection bootstrap 同步读取；
+    当前函数不写 collection、不产生 LifeOps。未知 skin 或缺少 supplies 时返回
+    空列表，避免非角色 Canon 继承角色物资。
+    """
+    skin = _skin_data(canon, preset)
+    living = _canon_living(canon)
+    items = living.get("supplies") if isinstance(living.get("supplies"), list) else None
+    if items is None and skin:
+        items = ((skin.get("living") or {}).get("supplies") or [])
+    return [deepcopy(item) for item in (items or []) if isinstance(item, dict)]
 
 
 def _time_for(date_key: str, hhmm: str, tz: str) -> str:
     return f"{date_key}T{hhmm}:00+09:00" if tz == "Asia/Tokyo" else f"{date_key}T{hhmm}:00"
 
 
-def rhythm_templates(date_key: str | None = None, tz: str = "Asia/Tokyo", preset: str = "guimingguan") -> list[dict[str, Any]]:
+def _template_time(value: Any, date_key: str, tz: str) -> str | None:
+    """把 Canon 模板里的时间字段物化为 ISO-like 时间。
+
+    输入是模板时间值、日期和时区；输出是已有绝对时间或按日期拼出的时间字符串。
+    调用方式为 rhythm_templates 逐项同步调用。函数无副作用；空值或非字符串返回
+    None，由上层跳过该模板。
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if "T" in text:
+        return text
+    return _time_for(date_key, text, tz)
+
+
+def rhythm_templates(date_key: str | None = None, tz: str = "Asia/Tokyo", preset: str | None = None,
+                     *, canon: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """从 active Canon 物化当天 living rhythm 模板。
+
+    输入是日期、时区、active Canon 与可选显式 skin/preset 名；输出是带 start/end
+    的事件模板列表。调用方式为手动 day_rhythm、heartbeat 和抽象目标分解同步读取。
+    函数不写库；未知 skin、无 living.rhythm_templates 或模板时间缺失时返回空列表，
+    保证未声明角色内容的 Canon 不生成任何角色节律。
+    """
     date_key = date_key or datetime.now(ZoneInfo(tz)).date().isoformat()
-    return [
-        {"title": "归明观晨巡与开观", "start": _time_for(date_key, "07:30", tz), "end": _time_for(date_key, "08:05", tz), "event_type": "routine", "event_category": "maintenance", "activity_domain": "temple_morning", "resource_costs": {"energy": -4, "mood": 2}, "tags": ["晨巡", "开观", "归明观"], "worth_diary": False},
-        {"title": "打扫香案并补符纸", "start": _time_for(date_key, "08:20", tz), "end": _time_for(date_key, "08:55", tz), "event_type": "temple_chores", "event_category": "maintenance", "activity_domain": "altar_upkeep", "resource_costs": {"energy": -5, "mood": 1}, "tags": ["香案", "符纸", "日常"], "worth_diary": False},
-        {"title": "检查小型结界工具包", "start": _time_for(date_key, "09:40", tz), "end": _time_for(date_key, "10:15", tz), "event_type": "inspection", "event_category": "work", "activity_domain": "barrier_tools", "resource_costs": {"energy": -5}, "tags": ["结界仪", "工具包"], "worth_diary": False},
-        {"title": "接一个低风险净符委托", "start": _time_for(date_key, "13:30", tz), "end": _time_for(date_key, "15:00", tz), "event_type": "commission", "event_category": "work", "activity_domain": "low_risk_talisman_commission", "resource_costs": {"energy": -18, "mood": 2}, "tags": ["小委托", "净符", "十二城"], "worth_diary": True, "worth_proactive": True},
-        {"title": "傍晚记账与灵铢收支整理", "start": _time_for(date_key, "17:40", tz), "end": _time_for(date_key, "18:10", tz), "event_type": "bookkeeping", "event_category": "finance", "activity_domain": "temple_accounts", "resource_costs": {"energy": -4}, "tags": ["记账", "灵铢"], "worth_diary": True},
-        {"title": "写一张给 Ringo 的小纸条草稿", "start": _time_for(date_key, "21:30", tz), "end": _time_for(date_key, "21:45", tz), "event_type": "proactive_note", "event_category": "relationship", "activity_domain": "pending_share", "resource_costs": {"mood": 1, "energy": -2}, "tags": ["Ringo", "小纸条", "pending"], "worth_proactive": True},
-    ]
+    skin = _skin_data(canon, preset)
+    living = _canon_living(canon)
+    raw_templates = living.get("rhythm_templates") if isinstance(living.get("rhythm_templates"), list) else None
+    if raw_templates is None and skin:
+        raw_templates = ((skin.get("living") or {}).get("rhythm_templates") or [])
+    out: list[dict[str, Any]] = []
+    for template in raw_templates or []:
+        if not isinstance(template, dict):
+            continue
+        item = deepcopy(template)
+        start = _template_time(item.pop("start_time", item.get("start")), date_key, tz)
+        end = _template_time(item.pop("end_time", item.get("end")), date_key, tz)
+        if not start or not end:
+            continue
+        item["start"] = start
+        item["end"] = end
+        out.append(item)
+    return out
 
 
-def abstract_goal_children(date_key: str | None = None, tz: str = "Asia/Tokyo", preset: str = "guimingguan") -> list[dict[str, Any]]:
+def rhythm_proactive_summary(preset: str | None = None, *, canon: dict[str, Any] | None = None) -> str | None:
+    """读取 Canon 为 rhythm engine 声明的 proactive summary。
+
+    输入是 active Canon 与可选显式 skin/preset 名；输出是可直接写入 proactive
+    intent 的摘要文本或 None。调用方式为 runtime 在已生成 rhythm 且模板标记
+    worth_proactive 后同步读取；函数不写库，缺少 summary 时不生成通用替代文案。
+    """
+    living = _canon_living(canon)
+    value = living.get("rhythm_proactive_summary")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    skin = _skin_data(canon, preset)
+    value = ((skin.get("living") or {}).get("rhythm_proactive_summary") if skin else None)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def abstract_goal_children(date_key: str | None = None, tz: str = "Asia/Tokyo", preset: str | None = None,
+                           *, canon: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """从 Canon rhythm 模板拆出抽象目标子事件。
+
+    输入是日期、时区、active Canon 与可选显式 skin/preset 名；输出是 DECOMPOSE_EVENT
+    使用的 child payload 列表。调用方式为 runtime.living 的 decompose_abstract。
+    函数无副作用；无 rhythm 模板时返回空列表，不做角色默认回退。
+    """
     out = []
-    for item in rhythm_templates(date_key, tz, preset)[:4]:
+    for item in rhythm_templates(date_key, tz, preset, canon=canon)[:4]:
         out.append({
             "title": item["title"],
             "event_type": item["event_type"],
@@ -210,7 +370,7 @@ def is_abstract_goal_event(event: dict[str, Any], goal: dict[str, Any] | None = 
     gtype = str((goal or {}).get("goal_type") or "")
     gtitle = str((goal or {}).get("title") or "")
     hay = " ".join([title, etype, gtype, gtitle]).lower()
-    return ("推进目标" in title or "goal" in hay or etype in {"self_reflection", "lifestyle"}) and any(k in hay for k in ["daily", "life", "日常", "生活", "continuity", "归明观", "委托"])
+    return ("推进目标" in title or "goal" in hay or etype in {"self_reflection", "lifestyle"}) and any(k in hay for k in ["daily", "life", "日常", "生活", "continuity", "委托"])
 
 
 def list_paper_notes(conn, agent_id: str, limit: int = 20) -> dict[str, Any]:

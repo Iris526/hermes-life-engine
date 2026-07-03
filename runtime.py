@@ -427,6 +427,22 @@ class LifeEngineRuntime:
     def close(self) -> None:
         self.conn.close()
 
+    def _living_canon(self, owner_kind: str, owner_id: str, control: dict[str, Any] | None = None) -> dict[str, Any]:
+        """读取 living 层使用的 Canon。
+
+        输入是 owner 与可选 control；输出是 active Canon。调用方式为 living tool
+        与 heartbeat 同步读取；业务调用方是日节律、资源预设和目标分解。函数只在
+        默认 agent 尚未提交 active Canon 的旧兼容路径上补 skin 引用，不写数据库，
+        不修改 DEFAULT_CANON_TEMPLATE；其它 agent 缺少 skin 时保持原 Canon。
+        """
+        from .living import canon_with_default_living_skin
+
+        control = control or ensure_control(self.conn, owner_kind, owner_id)
+        canon = get_active_canon(self.conn, owner_kind, owner_id)
+        if owner_kind == "agent" and owner_id == DEFAULT_AGENT_ID and not control.get("active_canon_version"):
+            return canon_with_default_living_skin(canon)
+        return canon
+
     # ----- control / setup -------------------------------------------------
     def status(self, owner_kind: str = "agent", owner_id: str = DEFAULT_AGENT_ID) -> dict[str, Any]:
         with transaction(self.conn):
@@ -1695,12 +1711,12 @@ class LifeEngineRuntime:
         try:
             from zoneinfo import ZoneInfo
             from .impromptu import _next_free_slot
-            from .living import rhythm_templates
+            from .living import living_preset_name, rhythm_templates
             from .time_utils import parse_datetime
 
-            canon = get_active_canon(self.conn, owner_kind, owner_id)
+            canon = self._living_canon(owner_kind, owner_id, control)
             tz_name = _tz_from_canon(canon) or "Asia/Tokyo"
-            preset = str(((canon.get("schedule_rules") or {}).get("living_preset") if isinstance(canon, dict) else None) or "guimingguan")
+            preset = living_preset_name(canon)
             now_dt = parse_datetime(now)
             if now_dt is None:
                 return {"status": "skipped", "reason": "unparseable now"}
@@ -1734,7 +1750,7 @@ class LifeEngineRuntime:
             skipped_items: list[dict[str, Any]] = []
             tx_ids: list[str] = []
             receipts: list[str] = []
-            templates = rhythm_templates(date_key=date_key, tz=tz_name, preset=preset)
+            templates = rhythm_templates(date_key=date_key, tz=tz_name, canon=canon)
             with trace.span("daily_rhythm", {"date_key": date_key, "template_count": len(templates)}):
                 for item in templates:
                     start_ts = _to_epoch(item.get("start"))
@@ -4794,6 +4810,7 @@ class LifeEngineRuntime:
         from .living import (
             canon_consistency_check, resource_preset_ops, rhythm_templates, abstract_goal_children,
             is_abstract_goal_event, list_paper_notes, diary_draft_content,
+            living_preset_name, rhythm_proactive_summary,
         )
         action_l = str(action or "summary").strip().lower()
         if action_l in {"summary", "status", "help"}:
@@ -4811,8 +4828,10 @@ class LifeEngineRuntime:
             # pre-v46 aliases kept for backward compatibility; they route to
             # the same resource-preset path (physical items now live in
             # supply_cabinet collections, not inventory tables).
-            preset = str(payload.get("preset") or "guimingguan")
-            ops = resource_preset_ops(preset)
+            canon = self._living_canon(owner_kind, owner_id)
+            requested_preset = str(payload.get("preset")).strip() if payload.get("preset") else None
+            preset = living_preset_name(canon, requested_preset)
+            ops = resource_preset_ops(requested_preset, canon=canon)
             commit = self.commit_ops(ops, owner_kind, owner_id, "living_resource_preset", session_id, turn_id)
             resource_keys = [op["payload"].get("key") for op in ops if op["type"] == "RESOURCE_DEFINE"]
             rendered = "生活资源预设已写入\n==================\n资源：" + "、".join(resource_keys)
@@ -4830,10 +4849,12 @@ class LifeEngineRuntime:
             return {"ok": True, "run_id": run_id, "commit": commit, "resource_keys": resource_keys, "rendered": rendered}
         if action_l in {"day_rhythm", "rhythm", "plan_day", "generate_day", "living_day"}:
             # Concrete daily rhythm: create specific events and schedule blocks instead of abstract "推进目标" placeholders.
-            preset = str(payload.get("preset") or "guimingguan")
+            canon = self._living_canon(owner_kind, owner_id)
+            requested_preset = str(payload.get("preset")).strip() if payload.get("preset") else None
+            preset = living_preset_name(canon, requested_preset)
             date_key = payload.get("date") or payload.get("date_key")
             tz = payload.get("timezone") or "Asia/Tokyo"
-            templates = rhythm_templates(date_key=date_key, tz=tz, preset=preset)
+            templates = rhythm_templates(date_key=date_key, tz=tz, preset=requested_preset, canon=canon)
             event_ids: list[str] = []
             block_ids: list[str] = []
             tx_ids: list[str] = []
@@ -4861,8 +4882,9 @@ class LifeEngineRuntime:
                     bid = (((c2.get("results") or [{}])[0].get("result") or {}).get("id"))
                     if bid: block_ids.append(bid)
                     tx_ids.append(c2.get("transaction_id")); receipts.append((c2.get("receipt") or {}).get("receipt_id"))
-            if owner_kind == "agent" and any(i.get("worth_proactive") for i in templates):
-                self.commit_ops([{"type": "CREATE_PROACTIVE_INTENT", "payload": {"target_type": "self_journal", "intent_type": "report_progress", "summary": "我给今天折了几张归明观的小日程纸条：晨巡、香案、工具包、小委托和傍晚记账。", "emotional_tone": "calm", "importance": 62, "urgency": 25, "novelty": 45, "relationship_relevance": 45, "privacy_level": "safe_to_share", "status": "generated"}}], owner_kind, owner_id, "life_rhythm_engine", session_id, turn_id)
+            summary = rhythm_proactive_summary(requested_preset, canon=canon)
+            if owner_kind == "agent" and summary and any(i.get("worth_proactive") for i in templates):
+                self.commit_ops([{"type": "CREATE_PROACTIVE_INTENT", "payload": {"target_type": "self_journal", "intent_type": "report_progress", "summary": summary, "emotional_tone": "calm", "importance": 62, "urgency": 25, "novelty": 45, "relationship_relevance": 45, "privacy_level": "safe_to_share", "status": "generated"}}], owner_kind, owner_id, "life_rhythm_engine", session_id, turn_id)
             rendered = "今日生活节律已生成\n================\n" + "\n".join([f"- {t['start'][11:16]}-{t['end'][11:16]} {t['title']}" for t in templates])
             with transaction(self.conn):
                 run_id = new_id("rhythm")
@@ -4902,7 +4924,9 @@ class LifeEngineRuntime:
                 goal_id = goal.get("id") or event.get("goal_id")
             if not goal_id:
                 return {"ok": False, "error": "abstract event has no linked goal"}
-            children = abstract_goal_children(date_key=payload.get("date"), tz=payload.get("timezone") or "Asia/Tokyo", preset=str(payload.get("preset") or "guimingguan"))
+            canon = self._living_canon(owner_kind, owner_id)
+            requested_preset = str(payload.get("preset")).strip() if payload.get("preset") else None
+            children = abstract_goal_children(date_key=payload.get("date"), tz=payload.get("timezone") or "Asia/Tokyo", preset=requested_preset, canon=canon)
             commit = self.commit_ops([{"type": "DECOMPOSE_EVENT", "payload": {"parent_event_id": event["id"], "goal_id": goal_id, "children": children, "decomposition_type": "life_rhythm", "strategy": "concrete_daily_children", "source": "life_rhythm_decomposer", "link_children_to_goal": True}}], owner_kind, owner_id, "life_rhythm_decomposer", session_id, turn_id)
             rendered = "抽象目标事件已分解为具体日常\n==============================\n" + "\n".join([f"- {c['title']}" for c in children])
             return {"ok": True, "parent_event_id": event["id"], "goal_id": goal_id, "commit": commit, "rendered": rendered}

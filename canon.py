@@ -6,10 +6,11 @@ import re
 from copy import deepcopy
 from typing import Any
 
-from .constants import DEFAULT_CANON_TEMPLATE, DEFAULT_MODULE_GATES, validate_gate_value
+from .constants import DEFAULT_AGENT_ID, DEFAULT_CANON_TEMPLATE, DEFAULT_MODULE_GATES, validate_gate_value
 from .jsonutil import dumps, loads
 from .trace import append_journal, new_id
 from .migration import record_canon_migration
+from .skins import DEFAULT_LEGACY_LIVING_SKIN
 
 
 def owner_key(owner_kind: str, owner_id: str) -> tuple[str, str]:
@@ -133,6 +134,7 @@ def commit_draft(conn, owner_kind: str, owner_id: str, draft_id: str | None = No
     from_version = control.get("active_canon_version")
     data = deepcopy(base)
     _deep_update(data, draft.get("extracted", {}))
+    _apply_default_living_skin(data, owner_kind, owner_id, draft.get("extracted", {}), from_version)
     version_row = conn.execute(
         "SELECT COALESCE(MAX(version), 0) FROM canon_versions WHERE owner_kind=? AND owner_id=?",
         (owner_kind, owner_id),
@@ -169,6 +171,25 @@ def commit_draft(conn, owner_kind: str, owner_id: str, draft_id: str | None = No
     # See _ensure_resources_from_canon (kept for reference only).
     append_journal(conn, owner_kind, owner_id, "canon_committed", {"version": version, "canon_id": canon_id, "migration": migration}, "canon")
     return {"canon_id": canon_id, "version": version, "status": status, "data": data, "migration": migration}
+
+
+def _apply_default_living_skin(data: dict[str, Any], owner_kind: str, owner_id: str,
+                               extracted: dict[str, Any], from_version: int | None) -> None:
+    """给旧默认 agent 首次 Canon 提交补 living skin 引用。
+
+    输入是即将持久化的 Canon、owner 标识、草案抽取块和来源版本；输出为空，
+    通过原地更新 data.living.skin 完成兼容。调用方式仅限 commit_draft 首次
+    activate 前同步执行；业务调用方是默认 agent 的历史 setup/commit 流。
+    副作用只作用于待写入的 Canon dict，不修改 DEFAULT_CANON_TEMPLATE。若用户
+    草案已经显式写入 living 块，则尊重用户 Canon，不自动补 skin。
+    """
+    if owner_kind != "agent" or owner_id != DEFAULT_AGENT_ID or from_version is not None:
+        return
+    if isinstance(extracted, dict) and "living" in extracted:
+        return
+    living = data.setdefault("living", {})
+    if isinstance(living, dict) and not living.get("skin"):
+        living["skin"] = DEFAULT_LEGACY_LIVING_SKIN
 
 
 def rename_identity(conn, owner_kind: str, owner_id: str, name: str, *, source: str = "rename") -> dict[str, Any]:

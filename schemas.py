@@ -1111,7 +1111,7 @@ LIFE_LIVING = {
         "properties": {
             **OWNER_PROPS,
             "action": {"type": "string", "description": "summary/consistency/init_resources/day_rhythm/decompose_abstract/paper_notes/create_note/diary_draft."},
-            "preset": {"type": "string", "description": "Living preset, e.g. guimingguan."},
+            "preset": {"type": "string", "description": "Optional named Canon living skin/preset."},
             "date": {"type": "string", "description": "YYYY-MM-DD date for rhythm/decomposition."},
             "timezone": {"type": "string", "description": "IANA timezone, default Asia/Tokyo."},
             "event_id": {"type": "string", "description": "Abstract parent event id to decompose."},

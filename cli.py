@@ -31,7 +31,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_living = sub.add_parser("living", help="Concrete living layer: rhythm, Canon consistency, resource presets, paper notes")
     p_living.add_argument("action", nargs="?", default="summary", choices=["summary", "consistency", "init_resources", "day_rhythm", "decompose_abstract", "paper_notes", "create_note", "diary_draft"])
     p_living.add_argument("text", nargs="*", help="Optional note text or additional args")
-    p_living.add_argument("--preset", default="guimingguan")
+    p_living.add_argument("--preset", default=None)
     p_living.add_argument("--date")
     p_living.add_argument("--timezone", default="Asia/Tokyo")
     p_living.add_argument("--event-id")
@@ -956,7 +956,7 @@ def slash_life(raw_args: str, **kwargs) -> str:
             )
         if cmd in {"living", "生活", "节律", "小日子"}:
             action = rest[0] if rest else "summary"
-            payload = {"preset": "guimingguan"}
+            payload = {}
             if action in {"day", "daily", "today"}:
                 action = "day_rhythm"
             if action in {"resources", "init_resources", "库存初始化", "inventory", "init_inventory"}:
