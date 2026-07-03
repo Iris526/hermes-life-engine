@@ -14,6 +14,13 @@ let reloadSerial = Date.now();
 let soundOn = true;
 let audioCtx = null;
 
+// WebUI 只读 read model 缓存。作用域是当前浏览器页面生命周期；数据来自 /api/goals 与
+// /api/rhythm，仅用于渲染新增面板与舞台节奏条，刷新或重新打开面板时可被最新响应替换。
+let goalsData = null;
+let goalsLoading = false;
+let rhythmData = null;
+let rhythmLoading = false;
+
 // 世界地图交互状态。作用域仅限当前 WebUI 页面生命周期；数据源来自 snapshotData.world_model.map，
 // 临时 viewBox/mark/settings 不落库，保存标记或设定时才通过 worldAction 写入 LifeEngine。
 let worldMapState = {
@@ -96,6 +103,15 @@ const LABELS = {
   interrupt: { interruptible: "可打断", soft_interruptible: "可轻打断", sleep_interruptible: "睡中可扰",
     uninterruptible: "勿扰", none: "无" },
   heartbeatMode: { auto: "自动", manual: "手动", off: "关" },
+  goalStatus: { active: "正在追", open: "打开", in_progress: "推进中", planned: "计划中",
+    paused: "暂缓", completed: "已完成", done: "已完成", cancelled: "已取消", archived: "已归档" },
+  goalKind: { lifestyle: "生活", creative_work: "创作", creative: "创作", work: "工作",
+    study: "学习", health: "健康", relationship: "关系", maintenance: "维护" },
+  rhythmKind: { maintenance: "维护", work: "事务", finance: "账务", relationship: "关系",
+    routine: "日常", temple_morning: "晨巡", altar_upkeep: "香案", barrier_tools: "工具",
+    low_risk_talisman_commission: "委托", temple_accounts: "记账", pending_share: "待分享" },
+  rhythmStatus: { planned: "计划中", active: "进行中", in_progress: "进行中",
+    completed: "已完成", done: "已完成", skipped: "已跳过", cancelled: "已取消" },
 };
 function zhLabel(map, val) {
   if (val == null || val === "") return val;
@@ -689,6 +705,8 @@ function renderStage() {
   } else {
     replyEl.classList.add("hidden");
   }
+
+  loadRhythm();
 }
 
 const ACTOR_FX = {
@@ -2393,6 +2411,182 @@ function formatSigned(value) {
   return `${v > 0 ? "+" : ""}${formatNum(v)}`;
 }
 
+// 格式化目标与进展时间。输入来自 /api/goals 的 ISO 字符串；输出是卡片内短时间文案。
+// 调用方是目标渲染函数；无副作用，非法时间保留安全截断后的原始片段以兼容旧库。
+function formatShortDateTime(ts) {
+  if (!ts) return "";
+  const raw = String(ts);
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (m) return `${m[2]}/${m[3]} ${m[4]}:${m[5]}`;
+  try {
+    const d = new Date(raw);
+    if (!isNaN(d)) {
+      return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+    }
+  } catch {}
+  return raw.slice(0, 16);
+}
+
+// 解析舞台节奏的时分。输入可以是 ISO 时间或 HH:mm；输出是当天分钟数。
+// 调用方用它判断当前/临近节奏项；函数不读写 DOM，解析失败返回 null 让渲染自然降级。
+function parseClockMinutes(value) {
+  if (!value) return null;
+  const m = String(value).match(/(?:T|\b)(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(min)) return null;
+  return Math.max(0, Math.min(23, h)) * 60 + Math.max(0, Math.min(59, min));
+}
+
+// 读取当前舞台时钟。优先使用 snapshotData.clock.hhmm，让 demo 固定日期也能按舞台时间
+// 高亮 rhythm；没有快照时才退回浏览器本地时间。无 DOM 副作用。
+function currentRhythmMinutes() {
+  const fromClock = parseClockMinutes(snapshotData?.clock?.hhmm);
+  if (fromClock != null) return fromClock;
+  const d = new Date();
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+// 生成节奏条时间标签。输入是 /api/rhythm 的 start/end；输出展示用 HH:mm 或 HH:mm-HH:mm。
+// 调用方只消费字符串，未知时间会降级为“未定时”，避免空字段造成舞台报错。
+function rhythmTimeLabel(start, end) {
+  const startText = String(start || "").match(/(\d{1,2}:\d{2})/)?.[1];
+  const endText = String(end || "").match(/(\d{1,2}:\d{2})/)?.[1];
+  if (startText && endText) return `${startText}-${endText}`;
+  return startText || endText || "未定时";
+}
+
+// 判断节奏条中需要强调的 item。输入是按 start 排序的 items；输出当前或最近项的位置。
+// 调用方式是 renderRhythm 同步调用；不改状态，缺少时间时返回 -1 让 UI 不强行高亮。
+function rhythmHighlight(items) {
+  const now = currentRhythmMinutes();
+  let nearIndex = -1;
+  let nearGap = Infinity;
+  for (let i = 0; i < items.length; i += 1) {
+    const start = parseClockMinutes(items[i]?.start);
+    if (start == null) continue;
+    const endRaw = parseClockMinutes(items[i]?.end);
+    let end = endRaw == null ? start + 45 : endRaw;
+    let nowForItem = now;
+    if (end < start) {
+      end += 24 * 60;
+      if (nowForItem < start) nowForItem += 24 * 60;
+    }
+    if (nowForItem >= start && nowForItem <= end) return { index: i, kind: "current" };
+    const gap = Math.min(Math.abs(start - now), Math.abs(start + 24 * 60 - now), Math.abs(start - 24 * 60 - now));
+    if (gap < nearGap) {
+      nearGap = gap;
+      nearIndex = i;
+    }
+  }
+  return { index: nearIndex, kind: nearIndex >= 0 ? "near" : "" };
+}
+
+// 拉取目标 read model。输入由 switchOverlay("innerlife") 触发；输出写入 goalsData 并渲染
+// #goals-list。副作用只有网络读取和 DOM 更新；失败、404 或旧库缺数据都显示温和空态。
+async function loadGoals() {
+  const host = document.getElementById("goals-list");
+  if (!host || goalsLoading) return;
+  goalsLoading = true;
+  if (!goalsData) host.innerHTML = '<div class="empty-state">载入中…</div>';
+  try {
+    const res = await fetch(apiUrl("/api/goals"));
+    if (!res.ok) throw new Error("goals fetch failed");
+    goalsData = await res.json();
+  } catch {
+    goalsData = { goals: [] };
+  } finally {
+    goalsLoading = false;
+    renderGoals(goalsData);
+  }
+}
+
+// 渲染“她在追的事”。输入严格按 /api/goals shape；输出为目标卡、里程碑和进展行。
+// 调用方是 loadGoals；所有 LLM/用户文本与枚举展示都先转义，失败和空数组降级为邀请式空态。
+function renderGoals(data) {
+  const host = document.getElementById("goals-list");
+  if (!host) return;
+  const goals = Array.isArray(data?.goals) ? data.goals : [];
+  if (!goals.length) {
+    host.innerHTML = '<div class="empty-state">她还没有立下想追的事 · 心跳与自省里会长出来</div>';
+    return;
+  }
+  host.innerHTML = goals.map(goal => {
+    const milestones = Array.isArray(goal?.milestones) ? goal.milestones : [];
+    const progress = Array.isArray(goal?.progress) ? goal.progress : [];
+    const kind = goal?.kind ? `<span class="goal-kind">${escapeHtml(zhLabel(LABELS.goalKind, goal.kind))}</span>` : "";
+    const priorityNum = Number(goal?.priority);
+    const priority = Number.isFinite(priorityNum) ? `<span class="goal-priority">优先 ${escapeHtml(formatNum(priorityNum))}</span>` : "";
+    const status = escapeHtml(zhLabel(LABELS.goalStatus, goal?.status || "active"));
+    const milestonesHtml = milestones.length ? `<div class="goal-milestones">${milestones.map(ms => {
+      const done = !!ms?.done;
+      const date = ms?.target_date ? `<span class="goal-date">${escapeHtml(formatShortDateTime(ms.target_date))}</span>` : "";
+      return `<div class="goal-milestone ${done ? "done" : "pending"}">
+        <span class="goal-check">${done ? "✓" : "○"}</span>
+        <span class="goal-ms-title">${escapeHtml(ms?.title || "未命名里程碑")}</span>${date}
+      </div>`;
+    }).join("")}</div>` : "";
+    const progressHtml = progress.length ? `<div class="goal-progress">${progress.slice(0, 3).map(p => {
+      const deltaNum = Number(p?.delta);
+      const delta = Number.isFinite(deltaNum) ? `<span class="goal-delta">${escapeHtml(formatSigned(deltaNum))}</span>` : "";
+      const when = p?.created_at ? `<span class="goal-date">${escapeHtml(formatShortDateTime(p.created_at))}</span>` : "";
+      return `<div class="goal-progress-line">${delta}<span class="goal-progress-note">${escapeHtml(p?.note || "有了新的推进")}</span>${when}</div>`;
+    }).join("")}</div>` : "";
+    return `<article class="goal-card">
+      <div class="goal-head">
+        <div class="goal-title">${escapeHtml(goal?.title || "未命名目标")}</div>
+        <div class="goal-meta"><span class="goal-status">${status}</span>${kind}${priority}</div>
+      </div>
+      ${milestonesHtml}${progressHtml}
+    </article>`;
+  }).join("");
+}
+
+// 拉取每日节奏 read model。输入由 renderStage 的快照渲染触发；输出缓存 rhythmData 并渲染
+// #stage-rhythm。副作用只有网络读取和舞台 DOM 更新；失败或空数据隐藏条带，不打断舞台。
+async function loadRhythm() {
+  const host = document.getElementById("stage-rhythm");
+  if (!host || rhythmLoading) return;
+  rhythmLoading = true;
+  try {
+    const res = await fetch(apiUrl("/api/rhythm"));
+    if (!res.ok) throw new Error("rhythm fetch failed");
+    rhythmData = await res.json();
+  } catch {
+    rhythmData = { date: null, items: [] };
+  } finally {
+    rhythmLoading = false;
+    renderRhythm(rhythmData);
+  }
+}
+
+// 渲染舞台“今日节奏”。输入严格按 /api/rhythm shape；输出为横向 rhythm slot。
+// 调用方是 loadRhythm；文本统一转义，空 items 直接 hidden，避免冷启动或旧库出现 JS 异常。
+function renderRhythm(data) {
+  const host = document.getElementById("stage-rhythm");
+  if (!host) return;
+  const items = Array.isArray(data?.items) ? data.items : [];
+  if (!items.length) {
+    host.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+  const highlight = rhythmHighlight(items);
+  host.hidden = false;
+  host.innerHTML = `<div class="rhythm-strip-label">今日节奏</div>
+    <div class="rhythm-slots">${items.map((item, i) => {
+      const emph = i === highlight.index ? ` ${highlight.kind}` : "";
+      const kind = item?.kind ? `<span class="rhythm-kind">${escapeHtml(zhLabel(LABELS.rhythmKind, item.kind))}</span>` : "";
+      const note = item?.note ? ` title="${escapeHtml(item.note)}"` : "";
+      return `<div class="rhythm-slot${emph}"${note}>
+        <span class="rhythm-time">${escapeHtml(rhythmTimeLabel(item?.start, item?.end))}</span>
+        <span class="rhythm-dot">·</span>
+        <span class="rhythm-title">${escapeHtml(item?.title || "未命名节奏")}</span>${kind}
+      </div>`;
+    }).join("")}</div>`;
+}
+
 // ── 心相 / 内境面板 ────────────────────────────
 function renderInnerLife() {
   const inner = snapshotData.inner_life || {};
@@ -2671,6 +2865,7 @@ function switchOverlay(name) {
   // 懒加载:功法库首次打开时加载
   if (name === "codex" && !codexDocs.length) renderCodex();
   if (name === "feed") loadFeed();
+  if (name === "innerlife") loadGoals();
 }
 
 // ── 操作 ──────────────────────────────────────

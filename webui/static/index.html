@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>生命观察站 · 废土观星台</title>
-<link rel="stylesheet" href="/static/styles.css?v=20260703-4d4">
+<link rel="stylesheet" href="/static/styles.css?v=20260704-goals-rhythm">
 </head>
 <body>
 <div id="app">
@@ -114,6 +114,7 @@
           <!-- 顶部:任务条 + 时钟 -->
           <div class="quest-ribbon hidden" id="quest-ribbon"></div>
           <div class="stage-clock" id="stage-clock"></div>
+          <div id="stage-rhythm" class="rhythm-strip" hidden></div>
           <div id="reply-indicator" class="reply-indicator hidden"></div>
 
           <!-- 主动说话:有待发/待提起的主动意图时,明灯头上冒话 -->
@@ -385,6 +386,10 @@
             <div id="self-narrative" class="self-narrative"></div>
           </div>
           <div class="innerlife-section">
+            <h3 class="section-label">她在追的事</h3>
+            <div id="goals-list" class="goals-list"><div class="empty-state">载入中…</div></div>
+          </div>
+          <div class="innerlife-section">
             <h3 class="section-label">我的看法</h3>
             <div id="opinions-list" class="opinions-list"></div>
           </div>
@@ -455,6 +460,6 @@
 
   </div>
 </div>
-<script src="/static/app.js?v=20260703-4d4"></script>
+<script src="/static/app.js?v=20260704-goals-rhythm"></script>
 </body>
 </html>
