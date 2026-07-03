@@ -234,6 +234,12 @@ def create_app(life_dir: str | None = None) -> FastAPI:
     def campaigns(owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
         return {"items": state.reader().campaigns(owner_kind or state.owner_kind, owner_id or state.owner_id)}
 
+    @app.get("/api/feed")
+    def feed(owner_kind: str | None = None, owner_id: str | None = None,
+             before: str | None = None, limit: int = 40) -> dict[str, Any]:
+        return state.reader().life_feed(owner_kind or state.owner_kind, owner_id or state.owner_id,
+                                        before=before, limit=max(1, min(int(limit), 100)))
+
     @app.get("/api/inner_life")
     def inner_life(owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
         return state.reader().inner_life(owner_kind or state.owner_kind, owner_id or state.owner_id)

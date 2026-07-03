@@ -140,6 +140,19 @@
         </div>
       </div>
 
+      <!-- 生活日志 · LifeFeed 叙事卷轴 -->
+      <div id="overlay-feed" class="overlay-panel">
+        <div class="panel-full-header">
+          <span class="panel-title">📖 生活日志</span>
+          <span class="panel-sub" id="feed-sub">她真正过过的日子 — 日记 · 梦 · 偶遇 · 惦记 · 自省 · 坊间</span>
+          <button class="panel-close" data-close>✕</button>
+        </div>
+        <div class="panel-full-body">
+          <div id="feed-list" class="feed-list"><div class="empty-state">载入中…</div></div>
+          <button id="feed-more" class="feed-more" hidden>载入更早</button>
+        </div>
+      </div>
+
       <!-- 随身物品面板 -->
       <div id="overlay-bag" class="overlay-panel">
         <div class="panel-full-header">
@@ -416,6 +429,9 @@
     <footer class="hotbar hud-border-top">
       <button class="hotbar-btn active" data-overlay="stage" title="舞台">
         <span class="hotbar-icon">🎭</span><span class="hotbar-label">舞台</span>
+      </button>
+      <button class="hotbar-btn" data-overlay="feed" title="生活日志">
+        <span class="hotbar-icon">📖</span><span class="hotbar-label">日志</span>
       </button>
       <button class="hotbar-btn" data-overlay="bag" title="随身物品">
         <span class="hotbar-icon">🎒</span><span class="hotbar-label">随身</span>

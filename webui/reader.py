@@ -984,6 +984,76 @@ class LifeEngineReader:
                 return self._all(conn, f"SELECT * FROM {table} ORDER BY created_at DESC LIMIT ?", (limit,))
             return {"intents": _q("proactive_intents"), "outbox": _q("proactive_outbox")}
 
+    def life_feed(self, owner_kind: str, owner_id: str, before: str | None = None, limit: int = 40) -> dict[str, Any]:
+        """A time-ordered narrative of what she actually lived — the "living evidence".
+
+        Merges the engine's authored/lived rows (diary, dreams, serendipity,
+        companion outreach, her self-narrative, social rumors, persona drift,
+        campaign beats) into one cursor-paginated feed, so the observatory shows
+        her day/week as a story instead of only schedule blocks and resource bars.
+        `before` is an ISO created_at cursor (returns items strictly older).
+        """
+        items: list[dict[str, Any]] = []
+
+        def add(row: dict[str, Any], kind: str, icon: str, title: str, text: Any, **meta: Any) -> None:
+            ts = row.get("created_at")
+            if not ts:
+                return
+            body = " ".join(str(text or "").split())
+            items.append({
+                "id": f"{kind}:{row.get('id')}", "ts": ts, "kind": kind, "icon": icon,
+                "title": title, "text": body[:400],
+                "meta": {k: v for k, v in meta.items() if v is not None},
+            })
+
+        with self._connect() as conn:
+            cur = " AND created_at < ?" if before else ""
+            cp = (before,) if before else ()
+
+            def q(table: str, where: str, params: tuple, order: str = "created_at DESC") -> list[dict[str, Any]]:
+                if not self._table_exists(conn, table):
+                    return []
+                return self._all(conn, f"SELECT * FROM {table} WHERE {where}{cur} ORDER BY {order} LIMIT ?",
+                                 (*params, *cp, limit))
+
+            for r in q("diary_entries", "owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
+                add(r, "diary", "📓", "日记", r.get("content"), diary_type=r.get("diary_type"))
+            for r in q("dream_entries", "owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
+                add(r, "dream", "💭", "梦", r.get("share_text") or r.get("summary") or r.get("content"),
+                    symbols=_safe_json(r.get("symbols_json"), []) or None, truth_layer=r.get("truth_layer"))
+            for r in q("serendipity_events", "owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
+                add(r, "serendipity", "🎲", r.get("title") or "偶遇", r.get("description"),
+                    serendipity_type=r.get("serendipity_type"))
+            for r in q("proactive_intents",
+                       "agent_id=? AND intent_type IN ('idle_share','ask_about_user','self_reflection_share')",
+                       (owner_id,)):
+                add(r, "companion", "📣", "她想跟你说", r.get("summary"),
+                    intent_type=r.get("intent_type"), status=r.get("status"))
+            for r in q("memories", "owner_kind=? AND owner_id=? AND memory_type='self_narrative'", (owner_kind, owner_id)):
+                add(r, "reflection", "🌱", "她的自述", r.get("content"))
+            for r in q("rumors", "owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
+                add(r, "rumor", "🌐", "坊间流言", r.get("content"), truth_layer=r.get("truth_layer"), heat=r.get("heat"))
+            for r in q("persona_drift_log", "owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
+                add(r, "persona", "🎭", f"性格微移 · {r.get('trait_key')}", r.get("reason"),
+                    trait=r.get("trait_key"), delta=r.get("delta"))
+            if self._table_exists(conn, "campaign_phase_occurrences"):
+                crows = self._all(
+                    conn,
+                    "SELECT o.*, c.title AS campaign_title FROM campaign_phase_occurrences o "
+                    "LEFT JOIN campaigns c ON c.id=o.campaign_id "
+                    "WHERE o.owner_kind=? AND o.owner_id=?" + (" AND o.created_at < ?" if before else "") +
+                    " ORDER BY o.created_at DESC LIMIT ?",
+                    (owner_kind, owner_id, *cp, limit),
+                )
+                for r in crows:
+                    add(r, "campaign", "📜", f"资料片 · {r.get('campaign_title') or '事变'}",
+                        f"进入「{r.get('phase')}」阶段")
+
+        items.sort(key=lambda x: str(x["ts"]), reverse=True)
+        items = items[:limit]
+        next_cursor = items[-1]["ts"] if len(items) >= limit else None
+        return {"items": items, "next_cursor": next_cursor}
+
     def collections(self, owner_kind: str, owner_id: str, limit: int = 100) -> dict[str, Any]:
         with self._connect() as conn:
             if not self._table_exists(conn, "item_collections"):

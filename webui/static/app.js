@@ -141,6 +141,60 @@ async function loadCollections() {
   } catch {}
 }
 
+// ── 生活日志 (LifeFeed) ───────────────────────────
+let feedItems = [];
+let feedCursor = null;
+const FEED_KIND = {
+  diary: { cls: "diary", label: "日记" }, dream: { cls: "dream", label: "梦" },
+  serendipity: { cls: "serendipity", label: "偶遇" }, companion: { cls: "companion", label: "她想跟你说" },
+  reflection: { cls: "reflection", label: "自省" }, rumor: { cls: "rumor", label: "坊间" },
+  persona: { cls: "persona", label: "成长" }, campaign: { cls: "campaign", label: "资料片" },
+};
+
+function fmtFeedTime(ts) {
+  const m = String(ts || "").replace("T", " ").match(/^(\d{4})-(\d{2})-(\d{2})[ ]?(\d{2}):(\d{2})/);
+  return m ? { day: `${m[2]}/${m[3]}`, time: `${m[4]}:${m[5]}` } : { day: String(ts || ""), time: "" };
+}
+
+async function loadFeed(before = null) {
+  const list = document.getElementById("feed-list");
+  const more = document.getElementById("feed-more");
+  try {
+    const data = await (await fetch(apiUrl("/api/feed", { limit: 40, before }))).json();
+    const items = data.items || [];
+    feedItems = before ? feedItems.concat(items) : items;
+    feedCursor = data.next_cursor || null;
+    renderFeed();
+    if (more) { more.hidden = !feedCursor; more.onclick = () => loadFeed(feedCursor); }
+  } catch {
+    if (list && !before) list.innerHTML = `<div class="empty-state">载入失败</div>`;
+  }
+}
+
+function renderFeed() {
+  const list = document.getElementById("feed-list");
+  if (!list) return;
+  if (!feedItems.length) {
+    list.innerHTML = `<div class="empty-state">她还没有留下生活痕迹。让她醒来、心跳几次，日记 · 梦 · 偶遇就会长出来。</div>`;
+    return;
+  }
+  let lastDay = "";
+  list.innerHTML = feedItems.map(it => {
+    const t = fmtFeedTime(it.ts);
+    const meta = FEED_KIND[it.kind] || { cls: "misc", label: it.kind };
+    let dayHead = "";
+    if (t.day !== lastDay) { lastDay = t.day; dayHead = `<div class="feed-day">${escapeHtml(t.day)}</div>`; }
+    const syms = (it.meta && Array.isArray(it.meta.symbols) && it.meta.symbols.length)
+      ? `<div class="feed-symbols">${it.meta.symbols.map(s => `<span>${escapeHtml(s)}</span>`).join("")}</div>` : "";
+    return `${dayHead}<div class="feed-item feed-${meta.cls}">
+      <div class="feed-rail"><span class="feed-icon">${escapeHtml(it.icon || "•")}</span><span class="feed-time">${escapeHtml(t.time)}</span></div>
+      <div class="feed-card">
+        <div class="feed-head"><span class="feed-kind">${escapeHtml(meta.label)}</span><span class="feed-title">${escapeHtml(it.title || "")}</span></div>
+        <div class="feed-text">${escapeHtml(it.text || "")}</div>${syms}
+      </div></div>`;
+  }).join("");
+}
+
 async function loadSchedule() {
   if (!snapshotData) return;
   try {
@@ -2489,6 +2543,7 @@ function switchOverlay(name) {
   closeDrawer();
   // 懒加载:功法库首次打开时加载
   if (name === "codex" && !codexDocs.length) renderCodex();
+  if (name === "feed") loadFeed();
 }
 
 // ── 操作 ──────────────────────────────────────
