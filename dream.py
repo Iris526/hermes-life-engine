@@ -19,7 +19,7 @@ from .proactive import create_proactive_intent
 from .resources import reconcile_resources
 from .time_utils import now_iso, to_epoch
 from .trace import append_journal, new_id
-from .sleep_reply_dream_policy import get_policy as get_srd_policy, render_dream_share
+from .sleep_reply_dream_policy import get_policy as get_srd_policy
 from . import life_author
 from . import relationship as rel
 
@@ -531,7 +531,11 @@ def run_dream_cycle(conn, owner_kind: str, owner_id: str, *, sleep_session_id: s
         dream_residue = ""
     if not share_text:
         share_text = "我做了个梦，醒来还留着点感觉，有点想跟你说说。"
-    share_text = render_dream_share({"effective_policy": srd_policy}, summary=share_text)
+    # The authored share_text (or the life-flavoured fallback) is already a
+    # complete, natural line — it lands directly. It used to be re-wrapped every
+    # night in a fixed "我刚醒，梦到了一点和最近生活有关的东西：…" prefix, which
+    # was the audit's flagged 机械感 (a generated dream, repackaged identically
+    # each day).
     source_memory_ids = [m.get("id") for m in (ctx.get("memories") or []) if m.get("id")]
     source_event_ids = [e.get("id") for e in (ctx.get("events") or []) if e.get("id")]
     source_goal_ids = [g.get("id") for g in (ctx.get("goals") or []) if g.get("id")]
