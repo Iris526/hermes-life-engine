@@ -41,6 +41,7 @@ _OBSERVED_WRITES = {
     "daily_rhythm": ["off"],
     "dream": ["auto"],
     "final_audit": ["repair", "strict", "trace"],
+    "inter_agent": ["auto", "off", "on"],
     "life_author": ["off"],
     "managed_review_loop": ["off"],
     "meals": ["off"],

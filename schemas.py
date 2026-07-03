@@ -781,7 +781,7 @@ LIFE_PROACTIVE = {
             },
             "intent_id": {"type": "string"},
             "outbox_id": {"type": "string"},
-            "target_type": {"type": "string", "description": "user/self_journal/group. target_type=user may create an outbox when policy allows."},
+            "target_type": {"type": "string", "description": "user/self_journal/agent/group. target_type=user may create a proactive outbox; target_type=agent routes through inter_agent."},
             "target_id": {"type": "string"},
             "target_user_id": {"type": "string"},
             "trigger_event_id": {"type": "string"},

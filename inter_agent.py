@@ -8,16 +8,51 @@ LifeOps/Social ops。
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
+from collections.abc import Iterator
 from typing import Any
 
-from .canon import get_active_canon
+from .canon import ensure_control, get_active_canon
 from .db import transaction
 from .jsonutil import dumps, loads
 from .trace import new_id
 
 
 INTER_AGENT_TRUTH_LAYER = "rumor_unverified"
+INTER_AGENT_OFF_MODES = {"off", "disabled", "manual", "false", ""}
+SHAREABLE_PROACTIVE_PRIVACY_LEVELS = {"safe_to_share", "user_visible", "public", "shareable"}
+SHAREABLE_DIARY_PRIVACY_LEVELS = {"safe_to_share", "user_visible", "public", "shareable"}
+SHAREABLE_PROACTIVE_TARGET_TYPES = {"user", "self_journal"}
+SHAREABLE_PROACTIVE_STATUSES = {"generated", "queued", "sent"}
+
+
+@contextlib.contextmanager
+def _transaction_if_needed(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """在已有外层事务时复用事务，否则开启独立写事务。
+
+    输入是 LifeEngine SQLite connection；输出是可写 connection。调用方是
+    inter-agent outbox 入队、claim 和状态更新。该 helper 的作用域只限本模块，
+    用来让轴五-A 公开 API 既能被普通 worker 单独调用，也能被 heartbeat 的大事务
+    调用；失败时外层事务负责回滚，独立调用时本 helper 负责回滚。
+    """
+    if conn.in_transaction:
+        yield conn
+    else:
+        with transaction(conn):
+            yield conn
+
+
+def inter_agent_gate_enabled(control: dict[str, Any] | None) -> bool:
+    """判断跨 Agent 讲述 gate 是否允许自动运行。
+
+    输入是 owner control；输出布尔值。调用方是 heartbeat sharing runner 和
+    peer-targeted proactive routing。默认值是关闭，只有 `on`/`auto` 等非关闭 mode
+    才允许跨 owner 入队和投递，保证单 Agent 安装默认不改变行为。
+    """
+    gates = (control or {}).get("module_gates") or {}
+    mode = str(gates.get("inter_agent", "off") or "off").strip().lower()
+    return mode not in INTER_AGENT_OFF_MODES
 
 
 def _row_dict(row) -> dict[str, Any]:
@@ -156,7 +191,7 @@ def enqueue_inter_agent(conn, from_owner: Any, to_owner: Any, kind: str, payload
         raise ValueError("payload must be an object")
     if truth_layer != INTER_AGENT_TRUTH_LAYER:
         raise ValueError("inter-agent tellings must use truth_layer=rumor_unverified")
-    with transaction(conn):
+    with _transaction_if_needed(conn):
         if dedup_key:
             existing = conn.execute(
                 "SELECT * FROM inter_agent_outbox WHERE dedup_key=?",
@@ -195,7 +230,7 @@ def _claim_inter_agent_rows(conn, limit: int) -> list[dict[str, Any]]:
     条件更新为 claimed。并发调用会被 SQLite 写锁串行化，后到者不会重复投递同一行。
     """
     claimed: list[dict[str, Any]] = []
-    with transaction(conn):
+    with _transaction_if_needed(conn):
         rows = conn.execute(
             """SELECT * FROM inter_agent_outbox
                 WHERE status='queued'
@@ -230,6 +265,40 @@ def _runtime_for_conn(conn: sqlite3.Connection) -> Any:
     runtime = LifeEngineRuntime.__new__(LifeEngineRuntime)
     runtime.conn = conn
     return runtime
+
+
+def _commit_delivery_ops(conn: sqlite3.Connection, row: dict[str, Any],
+                         ops: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """通过 runtime/LifeOps 提交目标世界写入。
+
+    输入是已领取 outbox 行和 Social LifeOps；输出是 commit 摘要或 None。调用方是
+    `deliver_inter_agent`。若当前已有 heartbeat/outer LifeOps 事务，则复用同一连接
+    的 `_commit_ops_locked` savepoint；独立 worker 调用时走公开 `commit_ops`。
+    副作用始终是 LifeOps 写 B 世界，不直接写 memories/self_narrative/thoughts。
+    """
+    if not ops:
+        return None
+    to_owner_kind, to_owner_id = _owner_pair(row, prefix="to_")
+    runtime = _runtime_for_conn(conn)
+    if conn.in_transaction:
+        return runtime._commit_ops_locked(  # noqa: SLF001 - 本模块是同包 delivery 编排层
+            ops,
+            owner_kind=to_owner_kind,
+            owner_id=to_owner_id,
+            source="inter_agent_delivery",
+            session_id=None,
+            turn_id=row["id"],
+            trace=None,
+            control=ensure_control(conn, to_owner_kind, to_owner_id),
+        )
+    return runtime.commit_ops(
+        ops,
+        owner_kind=to_owner_kind,
+        owner_id=to_owner_id,
+        source="inter_agent_delivery",
+        session_id=None,
+        turn_id=row["id"],
+    )
 
 
 def _ops_for_delivery(conn, row: dict[str, Any]) -> list[dict[str, Any]]:
@@ -325,24 +394,13 @@ def deliver_inter_agent(conn, *, limit: int = 10) -> dict[str, Any]:
     memories/self_narrative，也不会把 truth_layer 升格为事实。
     """
     claimed = _claim_inter_agent_rows(conn, limit)
-    runtime = _runtime_for_conn(conn)
     delivered: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
     for row in claimed:
         try:
-            to_owner_kind, to_owner_id = _owner_pair(row, prefix="to_")
             ops = _ops_for_delivery(conn, row)
-            commit = None
-            if ops:
-                commit = runtime.commit_ops(
-                    ops,
-                    owner_kind=to_owner_kind,
-                    owner_id=to_owner_id,
-                    source="inter_agent_delivery",
-                    session_id=None,
-                    turn_id=row["id"],
-                )
-            with transaction(conn):
+            commit = _commit_delivery_ops(conn, row, ops)
+            with _transaction_if_needed(conn):
                 conn.execute(
                     """UPDATE inter_agent_outbox
                           SET status='delivered', delivered_at=datetime('now')
@@ -352,7 +410,7 @@ def deliver_inter_agent(conn, *, limit: int = 10) -> dict[str, Any]:
             delivered.append({"outbox_id": row["id"], "op_count": len(ops), "commit": commit})
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
-            with transaction(conn):
+            with _transaction_if_needed(conn):
                 conn.execute(
                     "UPDATE inter_agent_outbox SET status='failed' WHERE id=? AND status='claimed'",
                     (row["id"],),
@@ -364,4 +422,206 @@ def deliver_inter_agent(conn, *, limit: int = 10) -> dict[str, Any]:
         "claimed_count": len(claimed),
         "delivered": delivered,
         "failed": failed,
+    }
+
+
+def _shareable_recent_tellings(conn: sqlite3.Connection, from_owner: str, *,
+                               limit: int = 25, recent_hours: int = 72) -> list[dict[str, Any]]:
+    """读取当前 agent 已经可公开讲述的近期内容。
+
+    输入是来源 agent id、最大条数和近期窗口；输出是规范化 telling 列表。该函数只读
+    两个公开 surface：`proactive_intents` 中 target_type 为 `user/self_journal`、
+    intent_type 为 `idle_share` 且 privacy_level 可分享的行；以及 `diary_entries`
+    中 privacy 显式为 public/safe_to_share/user_visible/shareable 的行。它不读取
+    `thoughts`、`memories`、`agent_opinions`，也不读取 `agent_private` intent/diary。
+    """
+    window = f"-{max(1, int(recent_hours))} hours"
+    per_source_limit = max(1, int(limit))
+    tellings: list[dict[str, Any]] = []
+    proactive_rows = conn.execute(
+        f"""SELECT id, intent_type, summary, emotional_tone, importance, status,
+                  target_type, target_id, privacy_level, generated_by, created_at
+             FROM proactive_intents
+            WHERE agent_id=?
+              AND intent_type='idle_share'
+              AND status IN ({",".join("?" for _ in SHAREABLE_PROACTIVE_STATUSES)})
+              AND target_type IN ({",".join("?" for _ in SHAREABLE_PROACTIVE_TARGET_TYPES)})
+              AND COALESCE(privacy_level, 'safe_to_share') IN ({",".join("?" for _ in SHAREABLE_PROACTIVE_PRIVACY_LEVELS)})
+              AND created_at >= datetime('now', ?)
+              AND (expires_at_ts IS NULL OR expires_at_ts > CAST(strftime('%s','now') AS INTEGER))
+            ORDER BY created_at DESC
+            LIMIT ?""",
+        (
+            from_owner,
+            *sorted(SHAREABLE_PROACTIVE_STATUSES),
+            *sorted(SHAREABLE_PROACTIVE_TARGET_TYPES),
+            *sorted(SHAREABLE_PROACTIVE_PRIVACY_LEVELS),
+            window,
+            per_source_limit,
+        ),
+    ).fetchall()
+    for row in proactive_rows:
+        summary = str(row["summary"] or "").strip()
+        if not summary:
+            continue
+        telling_id = f"proactive:{row['id']}"
+        tellings.append({
+            "telling_id": telling_id,
+            "source": "proactive_intent",
+            "source_id": row["id"],
+            "content": summary,
+            "created_at": row["created_at"],
+            "payload": {
+                "source": "proactive_intent",
+                "source_id": row["id"],
+                "intent_type": row["intent_type"],
+                "summary": summary,
+                "content": summary,
+                "emotional_tone": row["emotional_tone"],
+                "importance": row["importance"],
+                "target_type": row["target_type"],
+                "privacy_level": row["privacy_level"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+            },
+        })
+
+    diary_rows = conn.execute(
+        f"""SELECT id, diary_type, date, content, privacy, created_at
+             FROM diary_entries
+            WHERE owner_kind='agent'
+              AND owner_id=?
+              AND COALESCE(privacy, 'agent_private') IN ({",".join("?" for _ in SHAREABLE_DIARY_PRIVACY_LEVELS)})
+              AND created_at >= datetime('now', ?)
+            ORDER BY created_at DESC
+            LIMIT ?""",
+        (
+            from_owner,
+            *sorted(SHAREABLE_DIARY_PRIVACY_LEVELS),
+            window,
+            per_source_limit,
+        ),
+    ).fetchall()
+    for row in diary_rows:
+        content = str(row["content"] or "").strip()
+        if not content:
+            continue
+        telling_id = f"diary:{row['id']}"
+        tellings.append({
+            "telling_id": telling_id,
+            "source": "diary_entry",
+            "source_id": row["id"],
+            "content": content,
+            "created_at": row["created_at"],
+            "payload": {
+                "source": "diary_entry",
+                "source_id": row["id"],
+                "diary_type": row["diary_type"],
+                "date": row["date"],
+                "summary": content,
+                "content": content,
+                "privacy": row["privacy"],
+                "created_at": row["created_at"],
+            },
+        })
+    tellings.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return tellings[:per_source_limit]
+
+
+def run_inter_agent_sharing_for_tick(conn: sqlite3.Connection, from_owner: Any, *,
+                                     control: dict[str, Any] | None = None,
+                                     limit: int = 25,
+                                     recent_hours: int = 72,
+                                     deliver_limit: int | None = None) -> dict[str, Any] | None:
+    """把本 agent 的公开讲述转入 active peer agents 的世界。
+
+    输入是来源 owner、当前 control、候选上限和近期窗口；输出是 sharing 摘要。调用方
+    是 heartbeat registry，也可被测试直接调用。gate `inter_agent` 关闭时返回 None，
+    让默认 tick 输出保持不新增模块段；gate 开启但无 peer/无可分享内容时只返回 no-op。
+    副作用仅为：通过 `enqueue_inter_agent` 写 outbox 账本，再调用
+    `deliver_inter_agent` 让轴五-A 用 Social LifeOps 写接收方的 `rumor_unverified`
+    和 `peer_agent`。本函数不生成新内容，不读取或转发 thoughts/memories/
+    agent_opinions/agent_private intent。
+    """
+    from_owner_kind, from_owner_id = _owner_pair(from_owner)
+    if from_owner_kind != "agent":
+        return None
+    if not inter_agent_gate_enabled(control):
+        return None
+
+    from .registry import active_agents
+
+    agents = active_agents(conn)
+    peers = [
+        agent for agent in agents
+        if not (
+            str(agent.get("owner_kind") or "") == from_owner_kind
+            and str(agent.get("owner_id") or "") == from_owner_id
+        )
+    ]
+    sources = ["proactive_intents.idle_share:user/self_journal", "diary_entries:public"]
+    if not peers:
+        return {"ok": True, "status": "skipped", "reason": "no active peers", "sources": sources}
+
+    tellings = _shareable_recent_tellings(
+        conn, from_owner_id, limit=limit, recent_hours=recent_hours,
+    )
+    if not tellings:
+        return {
+            "ok": True,
+            "status": "noop",
+            "reason": "no shareable tellings",
+            "peer_count": len(peers),
+            "sources": sources,
+        }
+
+    enqueued: list[dict[str, Any]] = []
+    existing: list[dict[str, Any]] = []
+    for peer in peers:
+        to_owner = {"owner_kind": str(peer["owner_kind"]), "owner_id": str(peer["owner_id"])}
+        for telling in tellings:
+            dedup_key = f"share:{telling['telling_id']}:{to_owner['owner_kind']}:{to_owner['owner_id']}"
+            payload = {
+                **telling["payload"],
+                "from_owner_kind": from_owner_kind,
+                "from_owner_id": from_owner_id,
+                "to_owner_kind": to_owner["owner_kind"],
+                "to_owner_id": to_owner["owner_id"],
+            }
+            outbox = enqueue_inter_agent(
+                conn,
+                (from_owner_kind, from_owner_id),
+                (to_owner["owner_kind"], to_owner["owner_id"]),
+                "telling",
+                payload,
+                dedup_key=dedup_key,
+            )
+            item = {
+                "outbox_id": outbox.get("id"),
+                "dedup_key": dedup_key,
+                "to_owner_id": to_owner["owner_id"],
+                "telling_id": telling["telling_id"],
+                "status": outbox.get("status"),
+            }
+            if outbox.get("enqueued"):
+                enqueued.append(item)
+            else:
+                existing.append(item)
+
+    pending_count = len(enqueued) + sum(1 for item in existing if item.get("status") == "queued")
+    delivery = {"ok": True, "status": "noop", "claimed_count": 0, "delivered": [], "failed": []}
+    if pending_count:
+        delivery = deliver_inter_agent(conn, limit=deliver_limit or max(10, pending_count))
+    return {
+        "ok": bool(delivery.get("ok", True)),
+        "status": "ok" if delivery.get("ok", True) else "partial",
+        "peer_count": len(peers),
+        "telling_count": len(tellings),
+        "enqueued_count": len(enqueued),
+        "existing_count": len(existing),
+        "delivered_count": len(delivery.get("delivered") or []),
+        "failed_count": len(delivery.get("failed") or []),
+        "sources": sources,
+        "enqueued": enqueued,
+        "delivery": delivery,
     }

@@ -410,6 +410,7 @@ _HEARTBEAT_MODULES: list[tuple[str, str, tuple[str, ...]]] = [
     ("venture", "_materialize_recurring_for_tick", ()),
     ("campaigns", "_run_campaigns_for_tick", ("authoring",)),
     ("world_evolution", "_run_world_evolution_for_tick", ()),
+    ("inter_agent_sharing", "_run_inter_agent_sharing_for_tick", ()),
     ("daily_rhythm", "_ensure_daily_rhythm_for_tick", ()),
     ("venture_supply", "_settle_supply_chain_for_tick", ("authoring",)),
     ("venture_opportunities", "_roll_opportunities_for_tick", ()),
@@ -1603,7 +1604,9 @@ class LifeEngineRuntime:
                 module_results: dict[str, Any] = {}
                 for out_key, method_name, extra_keys in _HEARTBEAT_MODULES:
                     runner = getattr(self, method_name)
-                    module_results[out_key] = runner(owner_kind, owner_id, control, tick_id, trace, now, *(tick_ctx[k] for k in extra_keys))
+                    result = runner(owner_kind, owner_id, control, tick_id, trace, now, *(tick_ctx[k] for k in extra_keys))
+                    if result is not None:
+                        module_results[out_key] = result
                 delayed_release = {"released_count": 0}
                 try:
                     state = get_realtime_state(self.conn, owner_kind, owner_id)
@@ -2340,6 +2343,30 @@ class LifeEngineRuntime:
             }
         except Exception as exc:
             append_audit(self.conn, owner_kind, owner_id, "world_evolution_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
+            return {"ok": False, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
+
+    def _run_inter_agent_sharing_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],
+                                          tick_id: str, trace: Trace, now: str) -> dict[str, Any] | None:
+        """运行轴五-B 的跨 Agent 公开讲述分享。
+
+        输入来自 heartbeat registry；输出在 gate 开启时进入 heartbeat output，gate
+        关闭时返回 None 以保持默认单 agent tick 输出不新增字段。副作用全部委托给
+        `inter_agent.run_inter_agent_sharing_for_tick`：只读公开 shareable surface，
+        先写 inter_agent outbox，再由轴五-A delivery 通过 Social LifeOps 写入对方
+        世界的 `rumor_unverified`。失败会写 warning audit 并让 heartbeat 标记 partial。
+        """
+        try:
+            from .inter_agent import inter_agent_gate_enabled, run_inter_agent_sharing_for_tick
+            if not inter_agent_gate_enabled(control):
+                return None
+            with trace.span("inter_agent_sharing", {"tick_id": tick_id, "owner_id": owner_id}):
+                return run_inter_agent_sharing_for_tick(
+                    self.conn,
+                    (owner_kind, owner_id),
+                    control=control,
+                )
+        except Exception as exc:
+            append_audit(self.conn, owner_kind, owner_id, "inter_agent_sharing_failed", "warning", str(exc), {"tick_id": tick_id}, trace.id)
             return {"ok": False, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
 
     def _schedule_campaign_event(self, owner_kind: str, owner_id: str, control: dict[str, Any],

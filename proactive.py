@@ -213,6 +213,193 @@ def _target_user(intent: dict[str, Any], policy: dict[str, Any] | None = None) -
     return str((policy or {}).get("default_target_user_id") or "anonymous-user")
 
 
+def _is_agent_target(intent: dict[str, Any]) -> bool:
+    """判断 proactive intent 是否指向另一个 Agent。
+
+    输入是 proactive intent dict；输出布尔值。调用方是 proactive evaluate。该判断
+    把 `target_type='agent'` 从用户 outbox 路由中分流出去，避免 peer-directed 内容
+    被误送到 user webhook/command delivery。
+    """
+    return str(intent.get("target_type") or "").strip().lower() == "agent"
+
+
+def _target_agent_active_peer(conn, agent_id: str, target_agent_id: str) -> bool:
+    """确认 target_id 是当前活跃 peer agent。
+
+    输入是来源 agent id 和目标 agent id；输出布尔值。调用方是 peer-targeted
+    proactive routing。函数只读 registry 的 active agents，不写状态；同一个 agent
+    不能把 peer intent 发给自己。
+    """
+    if not target_agent_id or target_agent_id == agent_id:
+        return False
+    try:
+        from .registry import active_agents
+        return any(str(agent.get("owner_id") or "") == target_agent_id for agent in active_agents(conn))
+    except Exception:
+        return False
+
+
+def _evaluate_agent_target_intent(conn, agent_id: str, intent: dict[str, Any], *,
+                                  control: dict[str, Any] | None,
+                                  policy: dict[str, Any],
+                                  mode: str,
+                                  manual: bool,
+                                  trace_id: str | None = None) -> dict[str, Any]:
+    """把 peer-directed proactive intent 路由到 inter-agent channel。
+
+    输入是已存在的 proactive intent、当前 control/policy 和 manual 标志；输出和普通
+    evaluate item 相同的决策摘要。副作用是更新 proactive_intents/evaluations/journal，
+    并在允许时通过 `enqueue_inter_agent` + `deliver_inter_agent` 写入轴五-A outbox
+    和目标世界 rumor。该函数不会创建 proactive_outbox，也不会写用户 delivery state。
+    """
+    from .inter_agent import (
+        SHAREABLE_PROACTIVE_PRIVACY_LEVELS,
+        deliver_inter_agent,
+        enqueue_inter_agent,
+        inter_agent_gate_enabled,
+    )
+
+    target_agent_id = str(intent.get("target_id") or "").strip()
+    score = _score_intent(intent, None)
+    decision = "none"
+    reason = ""
+    outbox = None
+    delivery = None
+    privacy = str(intent.get("privacy_level") or "safe_to_share").strip().lower()
+    if intent.get("status") in TERMINAL_INTENT_STATUSES:
+        decision, reason = "skip", f"terminal status {intent.get('status')}"
+    elif _is_expired(intent):
+        conn.execute(
+            "UPDATE proactive_intents SET status='expired', expired_at=datetime('now'), score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?",
+            (dumps(score), dumps({"decision": "expire", "reason": "expires_at passed"}), intent["id"]),
+        )
+        decision, reason = "expire", "expires_at passed"
+    elif mode == "off":
+        conn.execute(
+            "UPDATE proactive_intents SET status='suppressed', suppressed_at=datetime('now'), suppression_reason=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?",
+            ("proactive module off", dumps(score), dumps({"decision": "suppress", "reason": "proactive module off"}), intent["id"]),
+        )
+        decision, reason = "suppress", "proactive module off"
+    elif privacy not in SHAREABLE_PROACTIVE_PRIVACY_LEVELS:
+        conn.execute(
+            "UPDATE proactive_intents SET status='suppressed', suppressed_at=datetime('now'), suppression_reason=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?",
+            ("private intent cannot target agent", dumps(score), dumps({"decision": "suppress", "reason": "private intent cannot target agent"}), intent["id"]),
+        )
+        decision, reason = "suppress", "private intent cannot target agent"
+    elif not target_agent_id:
+        conn.execute(
+            "UPDATE proactive_intents SET status='suppressed', suppressed_at=datetime('now'), suppression_reason=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?",
+            ("agent target_id required", dumps(score), dumps({"decision": "suppress", "reason": "agent target_id required"}), intent["id"]),
+        )
+        decision, reason = "suppress", "agent target_id required"
+    elif not inter_agent_gate_enabled(control):
+        conn.execute(
+            "UPDATE proactive_intents SET status='queued', queued_at=COALESCE(queued_at, datetime('now')), score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?",
+            (dumps(score), dumps({"decision": "inter_agent_pending", "reason": "inter_agent gate off", "target_agent_id": target_agent_id}), intent["id"]),
+        )
+        decision, reason = "queue_pending", "inter_agent gate off"
+    elif not _target_agent_active_peer(conn, agent_id, target_agent_id):
+        conn.execute(
+            "UPDATE proactive_intents SET status='queued', queued_at=COALESCE(queued_at, datetime('now')), score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?",
+            (dumps(score), dumps({"decision": "inter_agent_pending", "reason": "target agent is not an active peer", "target_agent_id": target_agent_id}), intent["id"]),
+        )
+        decision, reason = "queue_pending", "target agent is not an active peer"
+    elif score["score"] < policy["min_score_to_queue"] and not manual:
+        conn.execute(
+            "UPDATE proactive_intents SET status='suppressed', suppressed_at=datetime('now'), suppression_reason=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?",
+            ("score below queue threshold", dumps(score), dumps({"decision": "suppress", "reason": "score below queue threshold", "policy": policy}), intent["id"]),
+        )
+        decision, reason = "suppress", "score below queue threshold"
+    elif mode == "pending_only":
+        conn.execute(
+            "UPDATE proactive_intents SET status='queued', queued_at=COALESCE(queued_at, datetime('now')), score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?",
+            (dumps(score), dumps({"decision": "pending_only", "reason": "keep pending for peer delivery", "policy": policy, "target_agent_id": target_agent_id}), intent["id"]),
+        )
+        decision, reason = "queue_pending", "pending_only keeps it pending"
+    elif mode == "manual_send" and not manual:
+        conn.execute(
+            "UPDATE proactive_intents SET status='queued', queued_at=COALESCE(queued_at, datetime('now')), score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?",
+            (dumps(score), dumps({"decision": "manual_send_pending", "reason": "manual approval required", "policy": policy, "target_agent_id": target_agent_id}), intent["id"]),
+        )
+        decision, reason = "queue_pending", "manual_send requires explicit send"
+    else:
+        summary = str(intent.get("summary") or "").strip()
+        dedup_key = f"proactive-agent:{intent['id']}:{target_agent_id}"
+        outbox = enqueue_inter_agent(
+            conn,
+            ("agent", agent_id),
+            ("agent", target_agent_id),
+            "telling",
+            {
+                "source": "proactive_intent",
+                "source_id": intent["id"],
+                "intent_type": intent.get("intent_type"),
+                "summary": summary,
+                "content": summary,
+                "emotional_tone": intent.get("emotional_tone"),
+                "importance": intent.get("importance"),
+                "target_type": "agent",
+                "target_id": target_agent_id,
+                "privacy_level": privacy,
+                "created_at": intent.get("created_at"),
+            },
+            dedup_key=dedup_key,
+        )
+        delivery = deliver_inter_agent(conn)
+        delivered_ok = bool(delivery.get("ok", True)) and not (delivery.get("failed") or [])
+        status = "sent" if delivered_ok else "queued"
+        time_col = "sent_at" if status == "sent" else "queued_at"
+        reason = "inter_agent delivered" if delivered_ok else "inter_agent delivery pending"
+        decision = "inter_agent_delivered" if delivered_ok else "inter_agent_queued"
+        conn.execute(
+            f"UPDATE proactive_intents SET status=?, {time_col}=COALESCE({time_col}, datetime('now')), score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?",
+            (
+                status,
+                dumps(score),
+                dumps({
+                    "decision": decision,
+                    "reason": reason,
+                    "policy": policy,
+                    "target_agent_id": target_agent_id,
+                    "inter_agent_outbox_id": outbox.get("id"),
+                    "dedup_key": dedup_key,
+                }),
+                intent["id"],
+            ),
+        )
+    eval_id = new_id("proeval")
+    conn.execute(
+        """INSERT INTO proactive_evaluations(id, agent_id, target_user_id, intent_id, mode, score,
+              decision, reason, policy_json, trace_id) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        (eval_id, agent_id, target_agent_id or None, intent["id"], mode, float(score["score"]), decision, reason, dumps(policy), trace_id),
+    )
+    append_journal(
+        conn,
+        "agent",
+        agent_id,
+        "proactive_intent_evaluated",
+        {
+            "intent_id": intent["id"],
+            "decision": decision,
+            "reason": reason,
+            "score": score,
+            "inter_agent_outbox_id": outbox.get("id") if isinstance(outbox, dict) else None,
+        },
+        "proactive",
+    )
+    return {
+        "evaluation_id": eval_id,
+        "intent_id": intent["id"],
+        "decision": decision,
+        "reason": reason,
+        "score": score,
+        "outbox": None,
+        "inter_agent_outbox": outbox,
+        "delivery": delivery,
+        "state": None,
+    }
+
+
 def _update_state_pending(conn, agent_id: str, user_id: str, intent_id: str, state: str) -> dict[str, Any]:
     current = ensure_proactive_state(conn, agent_id, user_id)
     pending = list(current.get("pending_intent_ids") or [])
@@ -782,6 +969,18 @@ def evaluate_proactive_intent(
         intents = list_proactive_intents(conn, agent_id, status="generated", limit=10)
     evaluated: list[dict[str, Any]] = []
     for intent in intents:
+        if _is_agent_target(intent):
+            evaluated.append(_evaluate_agent_target_intent(
+                conn,
+                agent_id,
+                intent,
+                control=control,
+                policy=policy,
+                mode=mode,
+                manual=manual,
+                trace_id=trace_id,
+            ))
+            continue
         user_id = target_user_id or _target_user(intent, policy)
         state = ensure_proactive_state(conn, agent_id, user_id, timezone_name=policy.get("timezone"))
         score = _score_intent(intent, state)
