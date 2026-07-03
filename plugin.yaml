@@ -38,6 +38,14 @@ provides_tools:
   - life_policy
   - life_webui
   - life_context
+  - life_mood
+  - life_relationship
+  - life_world
+  - life_social
+  - life_campaign
+  - life_opinion
+  - life_venture
+  - life_activity
 provides_hooks:
   - pre_gateway_dispatch
   - pre_llm_call

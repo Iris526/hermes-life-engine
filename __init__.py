@@ -18,10 +18,10 @@ from .cli import handle_cli, setup_cli_parser, slash_life
 logger = logging.getLogger(__name__)
 
 
-def register(ctx):
-    """Register LifeEngine tools, hooks, slash command, CLI command, and skill."""
-    toolset = "lifeengine"
-    for name, schema, handler, desc, emoji in [
+# Single source of truth for the tool surface: (name, schema, handler, description,
+# emoji). Pinned against plugin.yaml provides_tools by test_lifeengine_command_surface
+# so the two can't drift (the audit found plugin.yaml missing 8 registered tools).
+TOOL_REGISTRY = [
         ("life_status", schemas.LIFE_STATUS, tools.life_status, "Read LifeEngine status", "🫀"),
         ("life_interface", schemas.LIFE_INTERFACE, tools.life_interface, "Unified safe LifeEngine read/write interface catalog", "🧩"),
         ("life_context", schemas.LIFE_CONTEXT, tools.life_context, "Prompt/context slimming policy and injection trace", "🪶"),
@@ -64,7 +64,13 @@ def register(ctx):
         ("life_execution", schemas.LIFE_EXECUTION, tools.life_execution, "Narrative execution simulator and serendipity", "🎲"),
         ("life_policy", schemas.LIFE_POLICY, tools.life_policy, "Sleep/Reply/Dream policy UX configuration", "⚙️"),
         ("life_webui", schemas.LIFE_WEBUI, tools.life_webui, "LifeEngine WebUI / Observatory launch helper", "🖥️"),
-    ]:
+]
+
+
+def register(ctx):
+    """Register LifeEngine tools, hooks, slash command, CLI command, and skill."""
+    toolset = "lifeengine"
+    for name, schema, handler, desc, emoji in TOOL_REGISTRY:
         ctx.register_tool(name=name, toolset=toolset, schema=schema, handler=handler, description=desc, emoji=emoji)
 
     ctx.register_hook("pre_gateway_dispatch", hooks.pre_gateway_dispatch)
