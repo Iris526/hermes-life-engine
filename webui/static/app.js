@@ -52,6 +52,50 @@ document.addEventListener("DOMContentLoaded", () => {
   loadSnapshot();
 });
 
+// ── 四域信息架构:舞台 / 生活日志 / 世界 / 系统 ──
+// 13 个旧面板收敛为四域;每域一个二级子导航,底栏只留四个主入口。
+const DOMAINS = [
+  { id: "stage", label: "舞台", tabs: [
+      { ov: "stage", label: "舞台", icon: "🎐" },
+      { ov: "bag", label: "随身", icon: "🎒" },
+      { ov: "closet", label: "着装", icon: "👘" },
+      { ov: "collections", label: "仓库", icon: "🗄️" } ] },
+  { id: "feed", label: "生活日志", tabs: [
+      { ov: "feed", label: "日志", icon: "📖" },
+      { ov: "dreams", label: "梦境", icon: "💭" },
+      { ov: "innerlife", label: "心相", icon: "🌱" },
+      { ov: "review", label: "回顾", icon: "📋" },
+      { ov: "campaigns", label: "事变", icon: "🗺️" } ] },
+  { id: "world", label: "世界", tabs: [
+      { ov: "social", label: "世界·社会", icon: "🌐" } ] },
+  { id: "sys", label: "系统", tabs: [
+      { ov: "settings", label: "阵盘", icon: "⚙️" },
+      { ov: "trace", label: "追溯", icon: "🔎" },
+      { ov: "codex", label: "典籍", icon: "📜" } ] },
+];
+const OVERLAY_DOMAIN = {};
+DOMAINS.forEach(d => d.tabs.forEach(t => { OVERLAY_DOMAIN[t.ov] = d.id; }));
+const DOMAIN_LAST = {};
+let activeDomain = "stage";
+function domainOf(ov) { return OVERLAY_DOMAIN[ov] || "stage"; }
+
+function renderSubnav(domainId) {
+  const host = document.getElementById("subnav");
+  if (!host) return;
+  const dom = DOMAINS.find(d => d.id === domainId);
+  if (!dom || dom.tabs.length <= 1) { host.innerHTML = ""; return; }
+  host.innerHTML = dom.tabs.map(t =>
+    `<button class="subnav-tab${t.ov === activeOverlay ? " active" : ""}" data-overlay="${t.ov}">` +
+    `<span class="st-ic">${t.icon}</span>${escapeHtml(t.label)}</button>`).join("");
+  host.querySelectorAll(".subnav-tab").forEach(b => { b.onclick = () => switchOverlay(b.dataset.overlay); });
+}
+
+function switchDomain(domainId) {
+  const dom = DOMAINS.find(d => d.id === domainId);
+  if (!dom) return;
+  switchOverlay(DOMAIN_LAST[domainId] || dom.tabs[0].ov);
+}
+
 function bindEvents() {
   document.getElementById("btn-refresh").onclick = () => loadSnapshot();
   document.getElementById("btn-reload").onclick = () => reloadInPage();
@@ -63,24 +107,17 @@ function bindEvents() {
     soundBtn.classList.toggle("muted", !soundOn);
     if (soundOn) blip("open");
   };
-  // hotbar — 技能栏:槽位编号 + 1-9 快捷键
-  const hotbarBtns = Array.from(document.querySelectorAll(".hotbar-btn"));
-  hotbarBtns.forEach((btn, i) => {
-    if (i < 9 && !btn.querySelector(".hotbar-key")) {
-      const key = document.createElement("span");
-      key.className = "hotbar-key";
-      key.textContent = String(i + 1);
-      btn.appendChild(key);
-    }
-    btn.onclick = () => switchOverlay(btn.dataset.overlay);
-  });
+  // 四域导航 — 下层四个主入口 + 1-4 快捷键;二级子标签由 renderSubnav 动态生成
+  const domainBtns = Array.from(document.querySelectorAll(".domain-btn"));
+  domainBtns.forEach(btn => { btn.onclick = () => switchDomain(btn.dataset.domain); });
   document.addEventListener("keydown", (e) => {
     const tag = (e.target && e.target.tagName) || "";
     if (tag === "INPUT" || tag === "TEXTAREA" || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === "Escape") { switchOverlay("stage"); return; }
     const n = parseInt(e.key, 10);
-    if (n >= 1 && n <= hotbarBtns.length) { switchOverlay(hotbarBtns[n - 1].dataset.overlay); }
+    if (n >= 1 && n <= domainBtns.length) { switchDomain(domainBtns[n - 1].dataset.domain); }
   });
+  renderSubnav("stage");
   // 面板关闭
   document.querySelectorAll("[data-close]").forEach(btn => {
     btn.onclick = () => switchOverlay("stage");
@@ -2556,12 +2593,14 @@ function closeDrawer() { document.getElementById("detail-drawer").classList.add(
 function switchOverlay(name) {
   blip(name === "stage" ? "switch" : "open");
   activeOverlay = name;
+  activeDomain = domainOf(name);
+  DOMAIN_LAST[activeDomain] = name;
   document.querySelectorAll(".overlay-panel").forEach(p => p.classList.remove("active"));
-  document.querySelectorAll(".hotbar-btn").forEach(b => b.classList.remove("active"));
   const panel = document.getElementById(`overlay-${name}`);
   if (panel) panel.classList.add("active");
-  const btn = document.querySelector(`.hotbar-btn[data-overlay="${name}"]`);
-  if (btn) btn.classList.add("active");
+  // 四域主按钮高亮 + 当前域的二级子导航
+  document.querySelectorAll(".domain-btn").forEach(b => b.classList.toggle("active", b.dataset.domain === activeDomain));
+  renderSubnav(activeDomain);
   closeDrawer();
   // 懒加载:功法库首次打开时加载
   if (name === "codex" && !codexDocs.length) renderCodex();

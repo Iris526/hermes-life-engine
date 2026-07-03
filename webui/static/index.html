@@ -3,15 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>归明观 · 废土观星台</title>
-<link rel="stylesheet" href="/static/styles.css?v=20260622-rpg-map4">
+<title>生命观察站 · 废土观星台</title>
+<link rel="stylesheet" href="/static/styles.css?v=20260703-4domain">
 </head>
 <body>
 <div id="app">
   <!-- 加载屏 -->
   <div id="loading-screen" class="loading-screen">
     <div class="loading-sigil">◈</div>
-    <p class="loading-text">归明观·载入中</p>
+    <p class="loading-text">生命观察站·载入中</p>
     <div class="loading-bar"><div class="loading-bar-fill"></div></div>
   </div>
 
@@ -25,8 +25,8 @@
     <header class="top-bar hud-border-bottom">
       <div class="bar-left">
         <span class="logo-sigil">◈</span>
-        <span class="logo">归明观</span>
-        <span class="logo-sub">WASTELAND OBSERVATORY</span>
+        <span class="logo">生命观察站</span>
+        <span class="logo-sub">LIFE OBSERVATORY</span>
       </div>
       <div class="bar-center">
         <span id="db-selector" class="db-tag" title="LifeEngine DB">—</span>
@@ -425,51 +425,27 @@
       </div>
     </aside>
 
-    <!-- ========== 底栏 Hotbar ========== -->
+    <!-- ========== 底栏:四域导航(上层子标签 + 下层四域) ========== -->
     <footer class="hotbar hud-border-top">
-      <button class="hotbar-btn active" data-overlay="stage" title="舞台">
-        <span class="hotbar-icon">🎭</span><span class="hotbar-label">舞台</span>
-      </button>
-      <button class="hotbar-btn" data-overlay="feed" title="生活日志">
-        <span class="hotbar-icon">📖</span><span class="hotbar-label">日志</span>
-      </button>
-      <button class="hotbar-btn" data-overlay="bag" title="随身物品">
-        <span class="hotbar-icon">🎒</span><span class="hotbar-label">随身</span>
-      </button>
-      <button class="hotbar-btn" data-overlay="closet" title="着装">
-        <span class="hotbar-icon">👘</span><span class="hotbar-label">着装</span>
-      </button>
-      <button class="hotbar-btn" data-overlay="collections" title="Collection 仓库">
-        <span class="hotbar-icon">🗄️</span><span class="hotbar-label">仓库</span>
-      </button>
-      <button class="hotbar-btn" data-overlay="dreams" title="梦境">
-        <span class="hotbar-icon">💭</span><span class="hotbar-label">梦境</span>
-      </button>
-      <button class="hotbar-btn" data-overlay="campaigns" title="事变·资料片">
-        <span class="hotbar-icon">🗺️</span><span class="hotbar-label">事变</span>
-      </button>
-      <button class="hotbar-btn" data-overlay="social" title="世界·社会">
-        <span class="hotbar-icon">🌐</span><span class="hotbar-label">世界</span>
-      </button>
-      <button class="hotbar-btn" data-overlay="innerlife" title="心相·内境">
-        <span class="hotbar-icon">🌱</span><span class="hotbar-label">心相</span>
-      </button>
-      <button class="hotbar-btn" data-overlay="codex" title="功法库">
-        <span class="hotbar-icon">📜</span><span class="hotbar-label">典籍</span>
-      </button>
-      <button class="hotbar-btn" data-overlay="review" title="回顾">
-        <span class="hotbar-icon">📋</span><span class="hotbar-label">回顾</span>
-      </button>
-      <button class="hotbar-btn" data-overlay="trace" title="追溯">
-        <span class="hotbar-icon">🔎</span><span class="hotbar-label">追溯</span>
-      </button>
-      <button class="hotbar-btn" data-overlay="settings" title="设置">
-        <span class="hotbar-icon">⚙️</span><span class="hotbar-label">阵盘</span>
-      </button>
+      <div class="subnav" id="subnav"></div>
+      <div class="domainbar">
+        <button class="domain-btn active" data-domain="stage" title="舞台">
+          <span class="domain-icon">🎐</span><span class="domain-label">舞台</span><span class="domain-key">1</span>
+        </button>
+        <button class="domain-btn" data-domain="feed" title="生活日志">
+          <span class="domain-icon">📜</span><span class="domain-label">生活日志</span><span class="domain-key">2</span>
+        </button>
+        <button class="domain-btn" data-domain="world" title="世界">
+          <span class="domain-icon">🏮</span><span class="domain-label">世界</span><span class="domain-key">3</span>
+        </button>
+        <button class="domain-btn" data-domain="sys" title="系统 · 管理员区">
+          <span class="domain-icon">⚙</span><span class="domain-label">系统</span><span class="domain-key">4</span>
+        </button>
+      </div>
     </footer>
 
   </div>
 </div>
-<script src="/static/app.js?v=20260622-rpg-map4"></script>
+<script src="/static/app.js?v=20260703-4domain"></script>
 </body>
 </html>
