@@ -211,6 +211,29 @@ const FEED_KIND = {
   reflection: { cls: "reflection", label: "自省" }, rumor: { cls: "rumor", label: "坊间" },
   persona: { cls: "persona", label: "成长" }, campaign: { cls: "campaign", label: "资料片" },
 };
+// 生活日志筛选:把叙事类型归拢成几束,而不是逐 kind 罗列
+const FEED_FILTERS = [
+  { id: "all", label: "全部", kinds: null },
+  { id: "diary", label: "日记", kinds: ["diary"] },
+  { id: "dream", label: "梦", kinds: ["dream"] },
+  { id: "say", label: "她想说", kinds: ["companion"] },
+  { id: "reflect", label: "自省·成长", kinds: ["reflection", "persona"] },
+  { id: "world", label: "世相", kinds: ["serendipity", "rumor", "campaign"] },
+];
+let feedFilter = "all";
+function feedVisible(it) {
+  const f = FEED_FILTERS.find(x => x.id === feedFilter);
+  return !f || !f.kinds || f.kinds.includes(it.kind);
+}
+function renderFeedFilters() {
+  const host = document.getElementById("feed-filters");
+  if (!host) return;
+  host.innerHTML = FEED_FILTERS.map(f =>
+    `<button class="feed-filter-chip${f.id === feedFilter ? " active" : ""}" data-filter="${f.id}">${escapeHtml(f.label)}</button>`).join("");
+  host.querySelectorAll(".feed-filter-chip").forEach(b => {
+    b.onclick = () => { feedFilter = b.dataset.filter; renderFeed(); };
+  });
+}
 
 function fmtFeedTime(ts) {
   const m = String(ts || "").replace("T", " ").match(/^(\d{4})-(\d{2})-(\d{2})[ ]?(\d{2}):(\d{2})/);
@@ -235,12 +258,18 @@ async function loadFeed(before = null) {
 function renderFeed(fresh = null) {
   const list = document.getElementById("feed-list");
   if (!list) return;
+  renderFeedFilters();
   if (!feedItems.length) {
     list.innerHTML = `<div class="empty-state">她还没有留下生活痕迹。让她醒来、心跳几次，日记 · 梦 · 偶遇就会长出来。</div>`;
     return;
   }
+  const shown = feedItems.filter(feedVisible);
+  if (!shown.length) {
+    list.innerHTML = `<div class="empty-state">这一束还没有记录。换一个筛选，或让她再多过几天。</div>`;
+    return;
+  }
   let lastDay = "";
-  list.innerHTML = feedItems.map(it => {
+  list.innerHTML = shown.map(it => {
     const t = fmtFeedTime(it.ts);
     const meta = FEED_KIND[it.kind] || { cls: "misc", label: it.kind };
     let dayHead = "";
