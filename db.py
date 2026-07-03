@@ -15,7 +15,7 @@ from typing import Iterator
 from .constants import PLUGIN_VERSION, VECTOR_DIM
 from .paths import db_path
 
-_SCHEMA_VERSION = 70
+_SCHEMA_VERSION = 71
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
@@ -158,7 +158,7 @@ def migrate(conn: sqlite3.Connection) -> None:
 
     v0 -> v1 creates the original LifeEngine tables; later versions add
     receipts, truth sources, collection items, meals, goals, autonomy, proactive, execution,
-    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets, and v0.12.8 behavior-to-truth-source mapping, and v0.12.8 outfit resolver/current outfit/action-chain closure, and v0.12.9 resolver aliases/outfit presets/collection board, and v0.12.10 prompt/context slimming with progressive disclosure, and v0.18.x first-class travel routes, dynamic world conditions, social request lifecycle transitions, and conversation time arbitration.
+    doctor checks, v0.9.2 install/upgrade diagnostics, v0.9.3 FinalGate repair reports, v0.9.4 export/import/package manifests, v0.9.5 human UX / FinalGate feedback queue, v0.9.7 acceptance surfaces, v0.99 trace coverage, v0.10.0 advisory-gate consolidation, and v0.11.0 Event V2 state-transition/realtime-state tables, v0.11.1 sleep plans/sessions, and v0.11.2 ReplyGate/delayed replies/call override, v0.11.3 DreamRun/DreamAudit/DreamEntry, and v0.11.4 Sleep/Reply/Dream acceptance plus DreamAudit repair runs, and v0.11.5 sleep debt/day-state effects, delayed reply digest, and DreamAudit repair policy, and v0.11.6 Autonomy sleep-day-state integration, and v0.11.7 Execution Simulator sleep-day-state integration, and v0.11.8 Sleep/Autonomy/Execution end-to-end acceptance, and v0.11.9 Sleep/Reply/Dream real-conversation acceptance, and v0.11.10 Sleep/Reply/Dream policy UX configuration, and v0.11.11 policy acceptance/conflict/import/export, and v0.11.12 human review UX aggregation, and v0.11.13 review action application, and v0.11.14 review action policy and batch apply, and v0.11.15 review undo/rollback trace, and v0.11.16 agent-managed review loop, and v0.11.17 agent-managed review acceptance and stress hardening, and v0.11.18 managed review observability and release readiness, and v0.11.19 human-readable schedule/review/settings surface, and v0.12.6 editable collections/closet cabinets, and v0.12.8 behavior-to-truth-source mapping, and v0.12.8 outfit resolver/current outfit/action-chain closure, and v0.12.9 resolver aliases/outfit presets/collection board, and v0.12.10 prompt/context slimming with progressive disclosure, and v0.18.x first-class travel routes, dynamic world conditions, social request lifecycle transitions, conversation time arbitration, and inter-agent outbox delivery.
     """
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
     _ensure_schema_migration_table(conn)
@@ -374,6 +374,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if current < 70:
         _create_schema_v70(conn)
         _record_schema_migration(conn, 70, "rename_dream_audit_findings_to_nightly_check_findings")
+    if current < 71:
+        _create_schema_v71(conn)
+        _record_schema_migration(conn, 71, "inter_agent_outbox")
     conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
@@ -4809,3 +4812,41 @@ def _create_schema_v70(conn: sqlite3.Connection) -> None:
     existing = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if "dream_audit_findings" in existing and "nightly_check_findings" not in existing:
         conn.execute("ALTER TABLE dream_audit_findings RENAME TO nightly_check_findings")
+
+
+def _create_schema_v71(conn: sqlite3.Connection) -> None:
+    """Inter-agent durable outbox（轴五 data foundation）。
+
+    `inter_agent_outbox` 是 agent A 对 agent B 的讲述投递账本，不是 B 的生活事实
+    表。payload 只有在 delivery 阶段通过 LifeOps/Social ops 落成 B 世界中的
+    `rumor_unverified` 与 `peer_agent` 社会实体；dedup_key 负责跨 worker/重试的
+    入队幂等，status 只表达账本状态。
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS inter_agent_outbox (
+          id TEXT PRIMARY KEY,
+          from_owner_kind TEXT NOT NULL,            -- 来源 owner kind；当前轴五主要是 agent
+          from_owner_id TEXT NOT NULL,              -- 来源 agent id；delivery 会写入 evidence
+          to_owner_kind TEXT NOT NULL,              -- 目标 owner kind；通常是 agent
+          to_owner_id TEXT NOT NULL,                -- 目标 agent id；Social LifeOps 写入此 owner 世界
+          kind TEXT NOT NULL,                       -- telling/message/note 等稳定业务类别
+          payload_json TEXT NOT NULL,               -- 来源显式提供的结构化讲述；不直接当事实
+          truth_layer TEXT NOT NULL DEFAULT 'rumor_unverified',
+          status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','claimed','delivered','failed')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          claimed_at TEXT,
+          delivered_at TEXT,
+          dedup_key TEXT                            -- 非空时唯一，调用方用于重试/幂等
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_inter_agent_outbox_status ON inter_agent_outbox(status, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_inter_agent_outbox_target ON inter_agent_outbox(to_owner_kind, to_owner_id, status, created_at)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_inter_agent_outbox_dedup ON inter_agent_outbox(dedup_key) WHERE dedup_key IS NOT NULL"
+    )

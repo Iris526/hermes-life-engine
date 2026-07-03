@@ -152,6 +152,7 @@ INFRA_ADMIN_TABLES = {
     "human_review_undo_items",
     "human_review_undo_runs",
     "install_checks",
+    "inter_agent_outbox",
     "life_branches",
     "life_invariant_checks",
     "life_journal",
