@@ -65,7 +65,7 @@ from .behavior_mapping import (
     update_behavior_mapping,
     update_behavior_source,
 )
-from .db import connect, transaction, savepoint, _SCHEMA_VERSION
+from .db import connect, transaction, savepoint, _SCHEMA_VERSION, reference_table_names
 from .doctor import run_doctor
 from .dream import (
     author_dream_preview,
@@ -4125,18 +4125,11 @@ class LifeEngineRuntime:
                 except Exception as exc:
                     add("schema_migrations", "error", f"schema_migrations unavailable: {type(exc).__name__}: {exc}")
 
-                required_tables = [
-                    "controls", "canon_versions", "canon_drafts", "life_transactions", "life_ops",
-                    "life_journal", "trace_runs", "trace_spans", "commit_receipts",
-                    "resource_definitions", "resource_accounts", "resource_ledger",
-                    "events", "schedule_blocks", "wake_jobs", "truth_source_reads",
-                    "goals", "autonomy_decisions", "proactive_intents", "proactive_outbox",
-                    "proactive_evaluations", "proactive_deliveries", "agent_user_proactive_state",
-                    "execution_decisions", "serendipity_events", "memory_vec", "life_invariant_checks", "schema_migrations", "install_checks", "final_gate_reports", "final_gate_feedback_queue", "trace_coverage_reports", "event_state_transitions", "schedule_block_state_transitions", "action_state_transitions", "agent_realtime_state", "agent_state_snapshots", "dream_runs", "dream_audit_findings", "dream_entries", "dream_repair_runs",
-    "sleep_day_states", "sleep_recovery_plans", "delayed_reply_digests", "dream_repair_policies",
-                ]
+                # Derived from the schema (db.reference_table_names) so this never
+                # drifts — it used to be a hand-maintained list parallel to doctor.py's.
+                required_tables = reference_table_names()
                 existing = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','virtual table')").fetchall()}
-                missing = [t for t in required_tables if t not in existing]
+                missing = sorted(required_tables - existing)
                 add("required_tables", "ok" if not missing else "error", "all required tables present" if not missing else f"missing: {', '.join(missing)}", missing=missing if include_samples else missing[:3])
 
                 state = control.get("engine_state")

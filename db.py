@@ -47,6 +47,38 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+_reference_tables_cache: set[str] | None = None
+
+
+def reference_table_names() -> set[str]:
+    """Canonical set of table names a fresh, fully-migrated DB contains.
+
+    Derived once per process by migrating a throwaway in-memory DB, so the
+    doctor's required-table check tracks the schema automatically instead of a
+    hand-maintained list (the audit found three parallel lists, one stuck at
+    v39). Best-effort: returns an empty set if a reference DB can't be built, so
+    the check degrades to lenient rather than crashing doctor.
+    """
+    global _reference_tables_cache
+    if _reference_tables_cache is None:
+        try:
+            ref = sqlite3.connect(":memory:")
+            try:
+                _load_sqlite_vec(ref)
+                migrate(ref)
+                _reference_tables_cache = {
+                    r[0]
+                    for r in ref.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                    ).fetchall()
+                }
+            finally:
+                ref.close()
+        except Exception:
+            _reference_tables_cache = set()
+    return _reference_tables_cache
+
+
 @contextlib.contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     """Run a serializing SQLite transaction.

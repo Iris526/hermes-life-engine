@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .db import _SCHEMA_VERSION
+from .db import _SCHEMA_VERSION, reference_table_names
 from .lifecycle import EVENT_TRANSITIONS, SCHEDULE_BLOCK_TRANSITIONS
 from .trace import append_audit, verify_journal_hash_chain
 
@@ -18,18 +18,8 @@ class ChecksDict(dict):
         return iter(self.values())
 
 
-REQUIRED_TABLES = {
-    "controls", "canon_versions", "canon_drafts", "life_transactions", "life_ops",
-    "life_journal", "trace_runs", "trace_spans", "commit_receipts", "commit_receipt_facts",
-    "resource_definitions", "resource_accounts", "resource_ledger", "events", "schedule_blocks",
-    "wake_jobs", "truth_source_reads", "goals", "autonomy_decisions",
-    "proactive_intents", "execution_decisions", "serendipity_events", "memory_vec", "schema_migrations", "install_checks", "final_gate_reports", "final_gate_feedback_queue", "trace_coverage_reports",
-    "event_state_transitions", "schedule_block_state_transitions", "action_state_transitions", "agent_realtime_state", "agent_state_snapshots", "sleep_plans", "sleep_sessions", "sleep_interruptions", "sleep_doctor_findings", "sleep_session_state_transitions",
-    "reply_gate_decisions", "delayed_replies", "call_overrides", "reply_gate_recoveries",
-    "dream_runs", "dream_audit_findings", "dream_entries", "dream_repair_runs",
-    "sleep_day_states", "sleep_recovery_plans", "delayed_reply_digests", "dream_repair_policies",
-    "human_review_runs", "human_review_items", "life_required_setting_checks",
-}
+# REQUIRED_TABLES is derived from the schema via db.reference_table_names() — a
+# hand-maintained list drifted (this one had stalled at v39). See the required_tables check below.
 
 
 def _check(ok: bool, message: str = "", severity: str = "error", **data: Any) -> dict[str, Any]:
@@ -118,7 +108,7 @@ def run_doctor(conn, owner_kind: str, owner_id: str, *, write_audit: bool = True
     checks["schema_version"] = _check(user_version == _SCHEMA_VERSION, f"user_version={user_version}, expected={_SCHEMA_VERSION}", current=user_version, expected=_SCHEMA_VERSION)
 
     names = _table_names(conn)
-    missing = sorted(REQUIRED_TABLES - names)
+    missing = sorted(reference_table_names() - names)
     checks["required_tables"] = _check(not missing, "all required tables present" if not missing else f"missing: {', '.join(missing)}", missing=missing)
 
     if "life_journal" in names:
