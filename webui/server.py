@@ -234,6 +234,16 @@ def create_app(life_dir: str | None = None) -> FastAPI:
     def campaigns(owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
         return {"items": state.reader().campaigns(owner_kind or state.owner_kind, owner_id or state.owner_id)}
 
+    @app.get("/api/goals")
+    def goals(owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
+        """读取当前 owner 的目标 read model，供 Observatory 的目标面板消费。"""
+        return state.reader().goals(owner_kind or state.owner_kind, owner_id or state.owner_id)
+
+    @app.get("/api/rhythm")
+    def rhythm(date: str | None = None, owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
+        """读取当前 owner 的每日节律 read model，未传 date 时使用最新可用日期。"""
+        return state.reader().daily_rhythm(owner_kind or state.owner_kind, owner_id or state.owner_id, date=date)
+
     @app.get("/api/feed")
     def feed(owner_kind: str | None = None, owner_id: str | None = None,
              before: str | None = None, limit: int = 40) -> dict[str, Any]:

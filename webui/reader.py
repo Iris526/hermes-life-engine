@@ -932,6 +932,169 @@ class LifeEngineReader:
                 r["current_phase_title"] = phases[cp].get("title") if 0 <= cp < len(phases) else None
             return rows
 
+    def goals(self, owner_kind: str, owner_id: str, limit: int = 40) -> dict[str, Any]:
+        """读取 WebUI 的目标面板 read model。
+
+        输入是 owner 与可选目标上限；输出是稳定的 goals/milestones/progress 嵌套
+        结构，供 Observatory 展示“她在追的事”。调用方式为 WebUI reader/endpoints
+        同步只读调用；副作用仅限读取 SQLite。缺表、缺行或查询失败时降级为空列表，
+        不改变 runtime 目标写入逻辑，也不暴露 engine 内部的完整目标表字段。
+        """
+        with self._connect() as conn:
+            if not self._table_exists(conn, "goals"):
+                return {"goals": []}
+            goal_rows = self._all(
+                conn,
+                """SELECT id, title, status, goal_type, priority, created_at, updated_at
+                   FROM goals
+                   WHERE owner_kind=? AND owner_id=?
+                   ORDER BY CASE
+                              WHEN COALESCE(status, 'active') IN ('active','open','in_progress','planned') THEN 0
+                              ELSE 1
+                            END,
+                            priority DESC,
+                            updated_at DESC,
+                            created_at DESC
+                   LIMIT ?""",
+                (owner_kind, owner_id, int(limit)),
+            )
+            if not goal_rows:
+                return {"goals": []}
+
+            milestones_by_goal: dict[str, list[dict[str, Any]]] = {}
+            if self._table_exists(conn, "goal_milestones"):
+                for row in self._all(
+                    conn,
+                    """SELECT id, goal_id, title, status, due_at, completed_at
+                       FROM goal_milestones
+                       WHERE owner_kind=? AND owner_id=?
+                       ORDER BY CASE WHEN COALESCE(status, 'planned') IN ('done','completed') THEN 1 ELSE 0 END,
+                                COALESCE(due_at_ts, strftime('%s', due_at), strftime('%s', created_at)),
+                                created_at""",
+                    (owner_kind, owner_id),
+                ):
+                    item = {
+                        "id": row.get("id"),
+                        "title": row.get("title"),
+                        "done": str(row.get("status") or "").lower() in {"done", "completed"} or bool(row.get("completed_at")),
+                        "target_date": row.get("due_at"),
+                    }
+                    milestones_by_goal.setdefault(str(row.get("goal_id")), []).append(item)
+
+            progress_by_goal: dict[str, list[dict[str, Any]]] = {}
+            if self._table_exists(conn, "goal_progress_entries"):
+                for row in self._all(
+                    conn,
+                    """SELECT id, goal_id, reason, delta, created_at
+                       FROM goal_progress_entries
+                       WHERE owner_kind=? AND owner_id=?
+                       ORDER BY created_at DESC, rowid DESC""",
+                    (owner_kind, owner_id),
+                ):
+                    goal_id = str(row.get("goal_id"))
+                    bucket = progress_by_goal.setdefault(goal_id, [])
+                    if len(bucket) >= 8:
+                        continue
+                    bucket.append({
+                        "id": row.get("id"),
+                        "note": row.get("reason"),
+                        "delta": row.get("delta"),
+                        "created_at": row.get("created_at"),
+                    })
+
+            goals = []
+            for row in goal_rows:
+                goal_id = str(row.get("id"))
+                goals.append({
+                    "id": row.get("id"),
+                    "title": row.get("title"),
+                    "status": row.get("status"),
+                    "kind": row.get("goal_type"),
+                    "priority": row.get("priority"),
+                    "created_at": row.get("created_at"),
+                    "milestones": milestones_by_goal.get(goal_id, []),
+                    "progress": progress_by_goal.get(goal_id, []),
+                })
+            return {"goals": goals}
+
+    def daily_rhythm(self, owner_kind: str, owner_id: str, date: str | None = None) -> dict[str, Any]:
+        """读取 WebUI 的每日节律 read model。
+
+        输入是 owner 与可选 YYYY-MM-DD 日期；未指定日期时读取库中最新可用日期。
+        输出只包含 date 与按开始时间排序的节律 item，供 Observatory 展示日常节奏。
+        调用方式为 WebUI reader/endpoints 同步只读调用；副作用仅限读取 SQLite。
+        `life_rhythm_items` 或可选 run 表缺失、无匹配行或查询失败时返回空 items，
+        保持旧库和空库不会 500。
+        """
+        with self._connect() as conn:
+            if not self._table_exists(conn, "life_rhythm_items"):
+                return {"date": date, "items": []}
+
+            has_runs = self._table_exists(conn, "life_rhythm_runs")
+            if date is None:
+                if has_runs:
+                    row = self._first(
+                        conn,
+                        """SELECT COALESCE(substr(i.start, 1, 10), r.date_key) AS date_key
+                           FROM life_rhythm_items i
+                           LEFT JOIN life_rhythm_runs r ON r.id=i.run_id
+                           WHERE i.owner_kind=? AND i.owner_id=?
+                             AND COALESCE(substr(i.start, 1, 10), r.date_key) IS NOT NULL
+                           ORDER BY date_key DESC
+                           LIMIT 1""",
+                        (owner_kind, owner_id),
+                    )
+                else:
+                    row = self._first(
+                        conn,
+                        """SELECT substr(start, 1, 10) AS date_key
+                           FROM life_rhythm_items
+                           WHERE owner_kind=? AND owner_id=? AND start IS NOT NULL
+                           ORDER BY date_key DESC
+                           LIMIT 1""",
+                        (owner_kind, owner_id),
+                    )
+                date = (row or {}).get("date_key")
+
+            if date is None:
+                return {"date": None, "items": []}
+
+            if has_runs:
+                rows = self._all(
+                    conn,
+                    """SELECT i.id, i.title, i.start, i.end, i.category, i.activity_domain,
+                              i.status, i.payload_json
+                       FROM life_rhythm_items i
+                       LEFT JOIN life_rhythm_runs r ON r.id=i.run_id
+                       WHERE i.owner_kind=? AND i.owner_id=?
+                         AND COALESCE(substr(i.start, 1, 10), r.date_key)=?
+                       ORDER BY i.start, i.end, i.created_at""",
+                    (owner_kind, owner_id, date),
+                )
+            else:
+                rows = self._all(
+                    conn,
+                    """SELECT id, title, start, end, category, activity_domain, status, payload_json
+                       FROM life_rhythm_items
+                       WHERE owner_kind=? AND owner_id=? AND substr(start, 1, 10)=?
+                       ORDER BY start, end, created_at""",
+                    (owner_kind, owner_id, date),
+                )
+
+            items = []
+            for row in rows:
+                payload = _safe_json(row.get("payload_json"), {}) or {}
+                items.append({
+                    "id": row.get("id"),
+                    "title": row.get("title"),
+                    "start": row.get("start"),
+                    "end": row.get("end"),
+                    "kind": row.get("category") or row.get("activity_domain"),
+                    "status": row.get("status"),
+                    "note": payload.get("note") or payload.get("description") or payload.get("summary"),
+                })
+            return {"date": date, "items": items}
+
     def inner_life(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
         """v0.18 心相: her current self-narrative + the opinions she holds."""
         with self._connect() as conn:
