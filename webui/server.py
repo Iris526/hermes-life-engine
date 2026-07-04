@@ -274,6 +274,23 @@ def create_app(life_dir: str | None = None) -> FastAPI:
         return state.reader().life_feed(owner_kind or state.owner_kind, owner_id or state.owner_id,
                                         before=before, limit=max(1, min(int(limit), 100)))
 
+    @app.get("/api/changefeed")
+    def changefeed(since: int = 0, limit: int = 200,
+                   owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
+        """读取 life_journal rowid 增量，供前端做 targeted 动效。
+
+        输入来自查询参数：since 是上一 cursor，limit 是本次最多事件数；limit=0
+        只 prime 当前最大 cursor，不返回历史事件。owner 参数缺省时沿用 WebUI
+        当前 selected owner。输出保持 `{cursor, events}`，不改变 `/api/snapshot`
+        合同。副作用只读 SQLite；旧库缺 journal 时 reader 会降级为空增量。
+        """
+        return state.reader().journal_changefeed(
+            owner_kind or state.owner_kind,
+            owner_id or state.owner_id,
+            since_rowid=max(0, int(since or 0)),
+            limit=max(0, min(int(limit if limit is not None else 200), 10000)),
+        )
+
     @app.get("/api/inner_life")
     def inner_life(owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
         return state.reader().inner_life(owner_kind or state.owner_kind, owner_id or state.owner_id)

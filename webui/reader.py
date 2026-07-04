@@ -67,6 +67,91 @@ def _rowdict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+def _first_payload_value(payload: Any, keys: Iterable[str]) -> Any:
+    """在 journal payload 的一层嵌套里寻找展示用 id。
+
+    输入是 `life_journal.payload_json` 解码后的对象和候选字段名；输出是第一个
+    非空值。调用方是 WebUI changefeed 的轻量分类器；函数只读内存，不解释业务
+    语义。它只展开 LifeOps journal 常见的 `payload` / `result` 一层，避免把
+    任意 JSON 当成通用搜索索引。
+    """
+    wanted = set(keys)
+    queue = [payload]
+    seen = 0
+    while queue and seen < 8:
+        seen += 1
+        item = queue.pop(0)
+        if not isinstance(item, dict):
+            continue
+        for key in wanted:
+            value = item.get(key)
+            if value not in (None, ""):
+                return value
+        for child_key in ("payload", "result", "definition", "account"):
+            child = item.get(child_key)
+            if isinstance(child, dict):
+                queue.append(child)
+    return None
+
+
+def _short_summary(value: Any, limit: int = 72) -> str | None:
+    """把 payload 中便宜可得的文本收敛成 changefeed 短标签。
+
+    输入是任意 payload 字段；输出是最多 `limit` 字符的字符串或 None。调用方是
+    `journal_changefeed`，只用于前端 tooltip/调试展示，不参与业务判断。失败或
+    空值直接返回 None，保证旧库与脏数据不会让 WebUI 500。
+    """
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _journal_change_hint(entry_type: str, payload: Any) -> dict[str, str | None]:
+    """把 append-only journal entry 映射成 WebUI 动效提示。
+
+    输入是 `life_journal.entry_type` 与解析后的 payload；输出只包含 category、
+    ref_id 和 summary。调用方是 `/api/changefeed`。这是显示层提示，不是业务
+    权威分类：只覆盖资源、feed、主动传讯和事件四个小集合，未知一律归 `other`。
+    函数不访问数据库、不改变 payload；缺字段时返回可降级的空 ref/summary。
+    """
+    et = str(entry_type or "").lower()
+
+    # 资源类优先级最高，因为资源 journal 也可能带 event_id；前端需要资源 key 来
+    # 精准 pulse 对应条，而不是把它误当作普通事件。
+    if et.startswith("resource_") or _first_payload_value(payload, ("resource_key", "ledger_id")):
+        ref = _first_payload_value(payload, ("resource_key", "key"))
+        delta = _first_payload_value(payload, ("delta",))
+        summary = _short_summary(f"{ref} {delta:+g}" if ref and isinstance(delta, (int, float)) else (ref or _first_payload_value(payload, ("display_name",))))
+        return {"category": "resource", "ref_id": _short_summary(ref), "summary": summary}
+
+    feed_map = (
+        ("diary", "diary", ("diary_id", "id", "date")),
+        ("dream", "dream", ("dream_entry_id", "dream_id", "entry_id", "dream_run_id")),
+        ("serendipity", "serendipity", ("serendipity_id", "event_id")),
+        ("reflection", "reflection", ("reflection_id", "memory_id", "target_id")),
+    )
+    for marker, category, ref_keys in feed_map:
+        if marker in et:
+            ref = _first_payload_value(payload, ref_keys)
+            summary = _first_payload_value(payload, ("summary", "title", "narrative", "content", "date"))
+            return {"category": category, "ref_id": _short_summary(ref), "summary": _short_summary(summary)}
+
+    if et.startswith("proactive_") or _first_payload_value(payload, ("intent_id", "outbox_id")):
+        ref = _first_payload_value(payload, ("intent_id", "outbox_id"))
+        summary = _first_payload_value(payload, ("summary", "draft_text", "message_text"))
+        return {"category": "proactive", "ref_id": _short_summary(ref), "summary": _short_summary(summary)}
+
+    if et.startswith("event_") or _first_payload_value(payload, ("event_id",)):
+        ref = _first_payload_value(payload, ("event_id",))
+        summary = _first_payload_value(payload, ("title", "summary", "reason"))
+        return {"category": "event", "ref_id": _short_summary(ref), "summary": _short_summary(summary)}
+
+    return {"category": "other", "ref_id": None, "summary": _short_summary(_first_payload_value(payload, ("summary", "title", "reason")))}
+
+
 def resolve_lifeengine_db(path: str | os.PathLike[str] | None = None) -> Path:
     """Resolve a user-selected LifeEngine directory or DB path."""
     if path:
@@ -1352,6 +1437,65 @@ class LifeEngineReader:
             # query drifted and failed every build, blanking the trace panel. Use
             # the real linkage columns (transaction_id/op_id).
             return self._all(conn, "SELECT id, owner_kind, owner_id, entry_type, source, transaction_id, op_id, created_at FROM life_journal ORDER BY created_at DESC LIMIT ?", (limit,))
+
+
+    def journal_changefeed(self, owner_kind: str, owner_id: str, since_rowid: int = 0, limit: int = 200) -> dict[str, Any]:
+        """读取当前 owner 的 life_journal rowid 增量流。
+
+        输入是 WebUI 观察的 owner、上次 cursor(rowid) 和本次读取上限；输出为
+        `{cursor, events}`，供 `/api/changefeed` 与前端 SSE snapshot handler 使用。
+        `limit=0` 是首屏/切换 owner 的 cursor-only prime：只返回当前最大 rowid，
+        不返回历史事件。调用方式是只读 SQLite 轮询；副作用无。旧库没有
+        `life_journal` 或表结构缺少关键列时返回空增量，保证 WebUI 降级为原有
+        snapshot 刷新而不是 500。
+        """
+        since = max(0, int(since_rowid or 0))
+        requested_limit = int(limit if limit is not None else 200)
+        with self._connect() as conn:
+            if not self._table_exists(conn, "life_journal"):
+                return {"cursor": since, "events": []}
+            cols = self._columns(conn, "life_journal")
+            required = {"owner_kind", "owner_id", "entry_type", "source", "created_at"}
+            if not required.issubset(cols):
+                return {"cursor": since, "events": []}
+            if requested_limit <= 0:
+                row = self._first(
+                    conn,
+                    "SELECT MAX(rowid) AS cursor FROM life_journal WHERE owner_kind=? AND owner_id=?",
+                    (owner_kind, owner_id),
+                )
+                return {"cursor": max(since, int((row or {}).get("cursor") or 0)), "events": []}
+            capped_limit = min(requested_limit, 10000)
+            payload_expr = "payload_json" if "payload_json" in cols else "NULL AS payload_json"
+            rows = self._all(
+                conn,
+                f"""SELECT rowid, entry_type, source, created_at, {payload_expr}
+                    FROM life_journal
+                    WHERE owner_kind=? AND owner_id=? AND rowid > ?
+                    ORDER BY rowid ASC
+                    LIMIT ?""",
+                (owner_kind, owner_id, since, capped_limit),
+            )
+        events: list[dict[str, Any]] = []
+        cursor = since
+        for row in rows:
+            rowid = int(row.get("rowid") or 0)
+            cursor = max(cursor, rowid)
+            payload = _safe_json(row.get("payload_json"), {}) or {}
+            hint = _journal_change_hint(str(row.get("entry_type") or ""), payload)
+            event = {
+                "rowid": rowid,
+                "entry_type": row.get("entry_type"),
+                "source": row.get("source"),
+                "created_at": row.get("created_at"),
+                "category": hint["category"],
+            }
+            if hint.get("ref_id"):
+                event["ref_id"] = hint["ref_id"]
+            if hint.get("summary"):
+                event["summary"] = hint["summary"]
+            events.append(event)
+        return {"cursor": cursor, "events": events}
 
 
     def event_detail(self, event_id: str) -> dict[str, Any]:

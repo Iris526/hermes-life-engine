@@ -16,6 +16,16 @@ let soundOn = true;
 let audioCtx = null;
 let switchingOwner = false;
 
+// life_journal 增量 cursor。作用域是当前页面 + 当前 observed owner；数据来自
+// /api/changefeed，只用于 targeted 动效。首次加载和切换 owner 时只推进 cursor，
+// 不播放历史动效，避免把旧生活记录误当成刚发生的变化。
+let lastJournalCursor = 0;
+let journalCursorPrimed = false;
+let journalCursorOwnerKey = "";
+let changefeedInFlight = false;
+const CHANGEFEED_LIMIT = 200;
+const CHANGEFEED_PRIME_LIMIT = 0;
+
 // WebUI 只读 read model 缓存。作用域是当前浏览器页面生命周期；数据来自 /api/goals 与
 // /api/rhythm，仅用于渲染新增面板与舞台节奏条，刷新或重新打开面板时可被最新响应替换。
 let goalsData = null;
@@ -190,6 +200,7 @@ async function loadSnapshot(options = {}) {
     document.getElementById("loading-screen").classList.add("hidden");
     document.getElementById("main-layout").classList.remove("hidden");
     render();
+    await primeJournalCursor({ force: options.force });
     connectSSE();
   } catch (err) {
     console.error("loadSnapshot error:", err);
@@ -232,6 +243,128 @@ async function loadAgentRoster(options = {}) {
     agentRoster = Array.isArray(data) ? data : (Array.isArray(data?.agents) ? data.agents : []);
   } catch {
     agentRoster = [];
+  }
+}
+
+function observedOwnerParams() {
+  const owner = snapshotData?.owner || {};
+  return {
+    owner_kind: owner.owner_kind || "agent",
+    owner_id: owner.owner_id || "",
+  };
+}
+
+function observedOwnerKey() {
+  const owner = observedOwnerParams();
+  return `${owner.owner_kind}:${owner.owner_id}`;
+}
+
+// 拉取当前 observed owner 的 journal changefeed。输入是 since cursor 与读取上限；
+// 输出为后端 `{cursor, events}`。调用方是首屏 prime 与 SSE snapshot handler；
+// 副作用只有网络读取。失败由调用方吞掉，让 UI 保持旧 snapshot 行为。
+async function fetchJournalChangefeed(since, limit = CHANGEFEED_LIMIT, options = {}) {
+  const owner = observedOwnerParams();
+  const res = await fetch(apiUrl("/api/changefeed", {
+    ...owner,
+    since: Math.max(0, Number(since) || 0),
+    limit,
+  }, options.force));
+  if (!res.ok) throw new Error("changefeed fetch failed");
+  return await res.json();
+}
+
+// 首次加载或切换 owner 后只用 limit=0 推进到当前最大 cursor，不播放历史动效。
+// 输入可传 force 让页面内重载时绕过缓存；输出为空。调用方是 loadSnapshot。若
+// 旧库没有 journal，后端会返回空 events 和原 cursor，本函数仍标记 primed。
+async function primeJournalCursor(options = {}) {
+  if (!snapshotData) return;
+  const key = observedOwnerKey();
+  if (journalCursorPrimed && journalCursorOwnerKey === key) return;
+  try {
+    const data = await fetchJournalChangefeed(0, CHANGEFEED_PRIME_LIMIT, options);
+    if (observedOwnerKey() !== key) return;
+    lastJournalCursor = Math.max(0, Number(data?.cursor) || 0);
+    journalCursorOwnerKey = key;
+    journalCursorPrimed = true;
+  } catch {}
+}
+
+function resetJournalCursorForOwner() {
+  lastJournalCursor = 0;
+  journalCursorPrimed = false;
+  journalCursorOwnerKey = observedOwnerKey();
+  changefeedInFlight = false;
+}
+
+function prefersReducedMotion() {
+  try {
+    return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch {
+    return false;
+  }
+}
+
+function pulseElements(elements, className) {
+  if (prefersReducedMotion()) return;
+  elements.filter(Boolean).forEach(el => {
+    el.classList.remove(className);
+    void el.offsetWidth;
+    el.classList.add(className);
+    window.setTimeout(() => el.classList.remove(className), 950);
+  });
+}
+
+function resourceElements(resourceKey) {
+  const key = String(resourceKey || "");
+  if (!key) return [];
+  return Array.from(document.querySelectorAll("[data-resource-key]"))
+    .filter(el => el.dataset.resourceKey === key);
+}
+
+function pulseResource(resourceKey) {
+  pulseElements(resourceElements(resourceKey), "rsc-pulse");
+}
+
+function pulseProactiveArea() {
+  const bubble = document.getElementById("speech-bubble");
+  const list = document.getElementById("proactive-list");
+  const targets = [];
+  if (bubble && !bubble.classList.contains("hidden")) targets.push(bubble);
+  if (list && list.children.length) targets.push(list);
+  pulseElements(targets, "proactive-pulse");
+}
+
+function applyJournalAnimationHint(event) {
+  const category = String(event?.category || "");
+  if (category === "resource") {
+    pulseResource(event?.ref_id);
+  } else if (category === "proactive") {
+    pulseProactiveArea();
+  }
+}
+
+// SSE snapshot 命中后读取 journal 增量并播放 targeted 动效。输入为空；输出 Promise。
+// 调用方是 connectSSE 的 snapshot handler。它只消费当前 owner 的 changefeed，feed
+// 类事件不在这里动画，仍交给 refreshFeedLive() 的 id-diff 淡入，避免双重动效。
+async function processJournalChangefeed() {
+  if (!snapshotData || changefeedInFlight) return;
+  const key = observedOwnerKey();
+  if (!journalCursorPrimed || journalCursorOwnerKey !== key) {
+    await primeJournalCursor();
+    return;
+  }
+  changefeedInFlight = true;
+  try {
+    const data = await fetchJournalChangefeed(lastJournalCursor, CHANGEFEED_LIMIT, { force: true });
+    if (observedOwnerKey() !== key) return;
+    const events = Array.isArray(data?.events) ? data.events : [];
+    events.forEach(applyJournalAnimationHint);
+    lastJournalCursor = Math.max(lastJournalCursor, Number(data?.cursor) || lastJournalCursor);
+    journalCursorOwnerKey = key;
+    journalCursorPrimed = true;
+  } catch {
+  } finally {
+    changefeedInFlight = false;
   }
 }
 
@@ -378,6 +511,7 @@ function connectSSE() {
           snapshotData = data;
           collectionsData = data;
           render();
+          processJournalChangefeed();
           refreshFeedLive();
         }
       } catch {}
@@ -548,7 +682,7 @@ function renderSidebar() {
       ? Math.max(0, Math.min(100, ((r.current_value - (r.min_value||0)) / (r.max_value - (r.min_value||0))) * 100))
       : 50;
     const cls = pct < 25 ? "low" : pct > 75 ? "high" : "";
-    return `<div class="vital-bar">
+    return `<div class="vital-bar" data-resource-key="${escapeHtml(r.resource_key || "")}">
       <div class="vital-bar-head"><span class="name">${escapeHtml(r.display_name || r.resource_key)}</span><span class="num">${formatNum(r.current_value)}</span></div>
       <div class="vital-bar-track"><div class="vital-bar-fill ${cls}" style="width:${pct}%"></div></div>
     </div>`;
@@ -557,7 +691,7 @@ function renderSidebar() {
   // 货币/物资
   const currencies = resources.filter(r => !["energy", "mood", "fatigue"].includes(r.resource_key));
   document.getElementById("currency-stats").innerHTML = currencies.map(r =>
-    `<div class="currency-item"><span class="ckey">${escapeHtml(r.display_name || r.resource_key)}</span><span class="cval">${formatNum(r.current_value)}${r.unit ? " " + escapeHtml(r.unit) : ""}</span></div>`
+    `<div class="currency-item" data-resource-key="${escapeHtml(r.resource_key || "")}"><span class="ckey">${escapeHtml(r.display_name || r.resource_key)}</span><span class="cval">${formatNum(r.current_value)}${r.unit ? " " + escapeHtml(r.unit) : ""}</span></div>`
   ).join("") || '<div class="empty-state">还没有财物 · 她开始营生后这里会记账</div>';
 
   // 睡眠指标
@@ -745,7 +879,7 @@ function renderStage() {
       const min = r.min_value != null ? r.min_value : 0;
       const max = r.max_value != null ? r.max_value : 100;
       const pct = max > min ? Math.max(0, Math.min(100, (r.current_value - min) / (max - min) * 100)) : 50;
-      return `<div class="v-orb ${key}" title="${r.display_name || key}: ${formatNum(r.current_value)}"><div class="fill" style="height:${pct}%"></div><span class="glyph">${glyph}</span></div>`;
+      return `<div class="v-orb ${key}" data-resource-key="${escapeHtml(key)}" title="${escapeHtml(r.display_name || key)}: ${formatNum(r.current_value)}"><div class="fill" style="height:${pct}%"></div><span class="glyph">${glyph}</span></div>`;
     }).join("");
   }
 
@@ -2946,6 +3080,7 @@ function switchOverlay(name) {
 function resetOwnerScopedCaches() {
   feedItems = [];
   feedCursor = null;
+  resetJournalCursorForOwner();
   goalsData = null;
   goalsLoading = false;
   rhythmData = null;
