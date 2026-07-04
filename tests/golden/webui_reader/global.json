@@ -21,7 +21,7 @@
       "life_dir": "<hermes_home>/lifeengine",
       "mtime": "<ts>",
       "schema_version": 71,
-      "size_bytes": 5255168,
+      "size_bytes": "<size>",
       "tables": [
         "action_state_transitions",
         "actions",
@@ -220,7 +220,7 @@
     "life_dir": "<hermes_home>/lifeengine",
     "mtime": "<ts>",
     "schema_version": 71,
-    "size_bytes": 5255168,
+    "size_bytes": "<size>",
     "tables": [
       "action_state_transitions",
       "actions",
@@ -835,7 +835,7 @@
         "relative_path": "AGENTS.md",
         "root_label": "Hermes Profile",
         "root_path": "<hermes_home>",
-        "size_bytes": 60
+        "size_bytes": "<size>"
       }
     ],
     "roots": [
@@ -854,7 +854,7 @@
     "modified_at": "<ts>",
     "name": "AGENTS.md",
     "path": "<hermes_home>/AGENTS.md",
-    "size_bytes": 60
+    "size_bytes": "<size>"
   },
   "direct_agents_default_selected": [
     {
@@ -893,7 +893,7 @@
     "life_dir": "<hermes_home>/lifeengine",
     "mtime": "<ts>",
     "schema_version": 71,
-    "size_bytes": 5255168,
+    "size_bytes": "<size>",
     "tables": [
       "action_state_transitions",
       "actions",
@@ -1306,7 +1306,7 @@
         "relative_path": "AGENTS.md",
         "root_label": "Hermes Profile",
         "root_path": "<hermes_home>",
-        "size_bytes": 60
+        "size_bytes": "<size>"
       }
     ],
     "roots": [
@@ -1325,7 +1325,7 @@
     "modified_at": "<ts>",
     "name": "AGENTS.md",
     "path": "<hermes_home>/AGENTS.md",
-    "size_bytes": 60
+    "size_bytes": "<size>"
   },
   "direct_workspace_roots": [
     {

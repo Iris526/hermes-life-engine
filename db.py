@@ -1,8 +1,9 @@
-"""SQLite + sqlite-vec storage for LifeEngine.
+"""SQLite storage for LifeEngine, with optional sqlite-vec memory extension.
 
-LifeEngine is intentionally local-first and embedded. sqlite-vec is a required
-runtime dependency: every connection loads it and the schema uses vec0 virtual
-tables for memory recall.
+LifeEngine is intentionally local-first and embedded. The schema still carries
+the `memory_vec` vec0 table for hosts that register a real embedding model, so
+connections load sqlite-vec. Default memory recall is honest FTS-only and never
+builds pseudo semantic vectors.
 """
 
 from __future__ import annotations

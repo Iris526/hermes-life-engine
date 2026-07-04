@@ -19,7 +19,7 @@ from typing import Any
 
 from .constants import PLUGIN_VERSION
 from .db import _SCHEMA_VERSION
-from .embeddings import embed_text, serialize_embedding
+from .embeddings import embed_text, has_embedder, serialize_embedding
 from .jsonutil import dumps
 from .paths import db_path, exports_dir, hermes_home
 from .trace import append_audit, new_id
@@ -35,6 +35,24 @@ def _sqlite_vec_info(conn: sqlite3.Connection) -> dict[str, Any]:
         return {"ok": True, "sqlite_version": sqlite_version, "sqlite_vec_version": vec_version}
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    """判断维护命令当前可否访问指定表或虚表。
+
+    输入是连接和表名；输出为布尔值。调用方是 memory index rebuild/verify，用于让
+    旧库、损坏索引或已禁用的可选向量表走 warning/降级，而不是让维护命令崩溃。
+    函数只读取 sqlite_master，没有写入副作用。
+    """
+    try:
+        return bool(
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name=? AND type IN ('table','virtual table') LIMIT 1",
+                (table_name,),
+            ).fetchone()
+        )
+    except Exception:
+        return False
 
 
 def migration_history(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -117,34 +135,68 @@ def list_backups(conn: sqlite3.Connection, owner_kind: str, owner_id: str, *, li
 
 
 def rebuild_memory_indexes(conn: sqlite3.Connection, owner_kind: str, owner_id: str) -> dict[str, Any]:
-    """Rebuild FTS5 and sqlite-vec memory indexes for a workspace."""
+    """重建 memory 的诚实检索索引。
+
+    输入是 owner；输出是重建统计。调用方是 life_upgrade 的 rebuild_memory/rebuild_indexes。
+    副作用是按 owner 清理并重建 `memory_fts`，同时清理该 owner 的 `memory_vec` 旧行；
+    只有宿主注册真实 embedder 时才重新写入向量。默认无 embedder 时，维护命令会把
+    旧向量清空并保持 FTS-only。
+    """
     rows = conn.execute(
         "SELECT rowid, id, content FROM memories WHERE owner_kind=? AND owner_id=? ORDER BY rowid",
         (owner_kind, owner_id),
     ).fetchall()
     rowids = [int(r["rowid"]) for r in rows]
+    fts_available = _table_exists(conn, "memory_fts")
+    vec_available = _table_exists(conn, "memory_vec")
+    vector_enabled = has_embedder()
     for rowid in rowids:
-        conn.execute("DELETE FROM memory_fts WHERE memory_rowid=?", (rowid,))
-        conn.execute("DELETE FROM memory_vec WHERE rowid=?", (rowid,))
+        if fts_available:
+            conn.execute("DELETE FROM memory_fts WHERE memory_rowid=?", (rowid,))
+        if vec_available:
+            conn.execute("DELETE FROM memory_vec WHERE rowid=?", (rowid,))
+    fts_indexed = 0
+    vec_indexed = 0
+    vector_errors = 0
     for r in rows:
         rowid = int(r["rowid"])
         content = r["content"]
-        conn.execute(
-            "INSERT INTO memory_fts(memory_rowid, owner_kind, owner_id, content) VALUES(?,?,?,?)",
-            (rowid, owner_kind, owner_id, content),
-        )
-        conn.execute(
-            "INSERT INTO memory_vec(rowid, embedding) VALUES(?, ?)",
-            (rowid, serialize_embedding(embed_text(content))),
-        )
-    out = {"ok": True, "rebuilt_memories": len(rows)}
+        if fts_available:
+            conn.execute(
+                "INSERT INTO memory_fts(memory_rowid, owner_kind, owner_id, content) VALUES(?,?,?,?)",
+                (rowid, owner_kind, owner_id, content),
+            )
+            fts_indexed += 1
+        if vector_enabled and vec_available:
+            try:
+                vector = embed_text(content)
+                if vector is not None:
+                    conn.execute(
+                        "INSERT INTO memory_vec(rowid, embedding) VALUES(?, ?)",
+                        (rowid, serialize_embedding(vector)),
+                    )
+                    vec_indexed += 1
+            except Exception:
+                vector_errors += 1
+    ok = fts_available and (not vector_enabled or (vec_available and vector_errors == 0))
+    out = {
+        "ok": ok,
+        "status": "ok" if ok else "warning",
+        "rebuilt_memories": len(rows),
+        "fts_indexed": fts_indexed,
+        "vec_indexed": vec_indexed,
+        "vector_errors": vector_errors,
+        "vector_mode": "registered" if vector_enabled else "disabled",
+        "memory_fts_available": fts_available,
+        "memory_vec_available": vec_available,
+    }
     run_id = new_id("maint")
     conn.execute(
         "INSERT INTO maintenance_runs(id, owner_kind, owner_id, action, status, output_json) VALUES(?,?,?,?,?,?)",
-        (run_id, owner_kind, owner_id, "rebuild_memory_indexes", "ok", dumps(out)),
+        (run_id, owner_kind, owner_id, "rebuild_memory_indexes", out["status"], dumps(out)),
     )
     out["maintenance_run_id"] = run_id
-    append_audit(conn, owner_kind, owner_id, "life_rebuild_memory_indexes", "info", f"Rebuilt {len(rows)} memory indexes", out)
+    append_audit(conn, owner_kind, owner_id, "life_rebuild_memory_indexes", "info" if ok else "warning", f"Rebuilt {len(rows)} memory indexes", out)
     return out
 
 
@@ -445,22 +497,40 @@ def stage_restore_plan(conn: sqlite3.Connection, owner_kind: str, owner_id: str,
 
 
 def verify_memory_indexes(conn: sqlite3.Connection, owner_kind: str, owner_id: str) -> dict[str, Any]:
+    """校验 memory 的 FTS 索引，以及可选真实向量索引。
+
+    输入是 owner；输出是索引覆盖统计。调用方是 life_upgrade 的 verify_memory。
+    默认没有宿主 embedder 时，`memory_vec` 不再是必需索引，不会因为缺少向量行判
+    warning；若宿主启用真实 embedder，则会校验该 owner 的向量行覆盖。
+    """
     memories = conn.execute("SELECT rowid FROM memories WHERE owner_kind=? AND owner_id=?", (owner_kind, owner_id)).fetchall()
     mem_rowids = {int(r["rowid"]) for r in memories}
-    fts_rows = conn.execute("SELECT memory_rowid FROM memory_fts WHERE owner_kind=? AND owner_id=?", (owner_kind, owner_id)).fetchall()
-    fts_rowids = {int(r["memory_rowid"]) for r in fts_rows}
-    vec_rows = conn.execute("SELECT rowid FROM memory_vec").fetchall()
-    vec_rowids = {int(r["rowid"]) for r in vec_rows if int(r["rowid"]) in mem_rowids}
-    missing_fts = sorted(mem_rowids - fts_rowids)
-    missing_vec = sorted(mem_rowids - vec_rowids)
-    extra_fts = sorted(fts_rowids - mem_rowids)
-    ok = not missing_fts and not missing_vec and not extra_fts
+    fts_available = _table_exists(conn, "memory_fts")
+    vec_available = _table_exists(conn, "memory_vec")
+    vector_enabled = has_embedder()
+    fts_rowids: set[int] = set()
+    vec_rowids: set[int] = set()
+    if fts_available:
+        fts_rows = conn.execute("SELECT memory_rowid FROM memory_fts WHERE owner_kind=? AND owner_id=?", (owner_kind, owner_id)).fetchall()
+        fts_rowids = {int(r["memory_rowid"]) for r in fts_rows}
+    if vec_available:
+        vec_rows = conn.execute("SELECT rowid FROM memory_vec").fetchall()
+        vec_rowids = {int(r["rowid"]) for r in vec_rows if int(r["rowid"]) in mem_rowids}
+    missing_fts = sorted(mem_rowids - fts_rowids) if fts_available else sorted(mem_rowids)
+    missing_vec = sorted(mem_rowids - vec_rowids) if (vector_enabled and vec_available) else []
+    extra_fts = sorted(fts_rowids - mem_rowids) if fts_available else []
+    vector_ok = (not vector_enabled) or (vec_available and not missing_vec)
+    ok = fts_available and vector_ok and not missing_fts and not extra_fts
     out = {
         "ok": ok,
         "status": "ok" if ok else "warning",
         "memory_count": len(mem_rowids),
         "fts_count": len(fts_rowids),
         "vec_count": len(vec_rowids),
+        "vector_mode": "registered" if vector_enabled else "disabled",
+        "vector_index_required": bool(vector_enabled),
+        "memory_fts_available": fts_available,
+        "memory_vec_available": vec_available,
         "missing_fts": missing_fts[:50],
         "missing_vec": missing_vec[:50],
         "extra_fts": extra_fts[:50],

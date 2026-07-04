@@ -350,10 +350,13 @@ def _normalize(value: Any, id_map: dict[str, str], replacements: tuple[tuple[str
 
     输入是任意 JSON-like 值、id 映射、路径替换表和当前位置；输出是 normalized 值。
     调用方是 golden capture 写入与比较。副作用仅为 id_map 记录首次出现顺序；函数
-    不删除字段、不排序 list、不合并对象，因此字段增删、值漂移和列表重排都会出现在
-    后续 diff 中。
+    不删除字段、不排序 list、不合并对象；仅把 `size_bytes` 这类 SQLite/文件系统
+    分配相关的易变字节数收敛为 `<size>`，因此其它字段增删、值漂移和列表重排都会
+    出现在后续 diff 中。
     """
     key = path[-1] if path else ""
+    if key == "size_bytes":
+        return "<size>"
     if isinstance(value, dict):
         return {str(k): _normalize(v, id_map, replacements, (*path, str(k))) for k, v in value.items()}
     if isinstance(value, list):

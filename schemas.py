@@ -232,7 +232,7 @@ LIFE_EVENT = {
 
 LIFE_MEMORY = {
     "name": "life_memory",
-    "description": "Remember or search LifeEngine memory. Uses structured memory + FTS5 + sqlite-vec.",
+    "description": "Remember or search LifeEngine memory. Default retrieval is structured memory + FTS5 BM25; sqlite-vec is used only when the host registers a real embedding model.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1033,7 +1033,7 @@ LIFE_DOCTOR = {
 
 LIFE_UPGRADE = {
     "name": "life_upgrade",
-    "description": "Install/upgrade/maintenance helper: check schema migrations, create DB backups, export/import/stage-restore profile archives, package checksums, rebuild/verify memory FTS/sqlite-vec indexes, and test generated heartbeat cron script. Does not create life events.",
+    "description": "Install/upgrade/maintenance helper: check schema migrations, create DB backups, export/import/stage-restore profile archives, package checksums, rebuild/verify memory FTS indexes and optional real-embedding sqlite-vec indexes, and test generated heartbeat cron script. Does not create life events.",
     "parameters": {
         "type": "object",
         "properties": {

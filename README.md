@@ -1,11 +1,11 @@
 # LifeEngine Hermes Plugin v0.18.0
 
-LifeEngine is an embedded, SQLite/sqlite-vec based Agent life runtime for Hermes.
+LifeEngine is an embedded SQLite Agent life runtime for Hermes; sqlite-vec is present for optional host-provided real embeddings, while default memory search is FTS5 BM25.
 
 This release adds the **生成式内心生活 (LifeAuthor) layer** on top of the deterministic life substrate: authored dreams, companion follow-ups, cross-week campaigns, and reflection-driven opinions/self-narrative. It also includes a Social World slot layer for world-specific entities, affiliations, reputation, evaluations, and rumors. Resource accounting, schedule execution, sleep, venture/recurring activity settlement, review, trace, and receipts remain deterministic and auditable.
 
 - Plugin version: `0.18.0`
-- sqlite-vec: required by LifeEngine runtime
+- sqlite-vec: loaded by the current schema; `memory_vec` is populated/used only after the host registers a real embedding model
 - Integration: Hermes directory plugin; no core-loop fork
 - Authoring boundary: host-model calls are prepared outside SQLite write transactions; LifeOps only commits already-authored content or deterministic fallbacks.
 - Social World boundary: LifeEngine stores generic social slots and ledgers; concrete worldviews define what each entity kind, reputation axis, evaluation axis, and rumor channel means.

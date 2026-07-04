@@ -2474,7 +2474,7 @@
       "life_dir": "<hermes_home>/lifeengine",
       "mtime": "<ts>",
       "schema_version": 71,
-      "size_bytes": 5255168,
+      "size_bytes": "<size>",
       "tables": [
         "action_state_transitions",
         "actions",
@@ -4955,7 +4955,7 @@
           "relative_path": "AGENTS.md",
           "root_label": "Hermes Profile",
           "root_path": "<hermes_home>",
-          "size_bytes": 60
+          "size_bytes": "<size>"
         }
       ],
       "roots": [

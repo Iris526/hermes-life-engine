@@ -42,7 +42,7 @@ TOOL_REGISTRY = [
         ("life_dream", schemas.LIFE_DREAM, tools.life_dream, "DreamRun, the nightly engine check (housekeeping, never surfaced in the dream), dream entries, and wake-share intents", "💭"),
         ("life_reply", schemas.LIFE_REPLY, tools.life_reply, "ReplyGate, delayed replies, and message release", "📨"),
         ("life_call", schemas.LIFE_CALL, tools.life_call, "Emergency call override for sleep/uninterruptible states", "📞"),
-        ("life_memory", schemas.LIFE_MEMORY, tools.life_memory, "Structured/FTS/vector memory", "🧠"),
+        ("life_memory", schemas.LIFE_MEMORY, tools.life_memory, "Structured/FTS memory; optional real-vector memory", "🧠"),
         ("life_tick", schemas.LIFE_TICK, tools.life_tick, "Manual heartbeat tick", "💓"),
         ("life_diary", schemas.LIFE_DIARY, tools.life_diary, "Diary entries from committed life", "📓"),
         ("life_trace", schemas.LIFE_TRACE, tools.life_trace, "Trace, journal, audit inspection", "🔎"),
