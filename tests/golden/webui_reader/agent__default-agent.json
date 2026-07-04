@@ -6537,7 +6537,7 @@
     "lore": [],
     "map": {
       "actor": {
-        "label": "明灯",
+        "label": "凛",
         "source": "current_location",
         "status": "unknown"
       },

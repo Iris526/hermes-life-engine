@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .canon import get_active_canon
 from .jsonutil import dumps, loads, pretty
 from .receipts import canonical_fact_texts, claim_matches_evidence, receipt_facts_for_turn
 from .trace import new_id
@@ -222,6 +223,7 @@ def evaluate_final_response(conn, owner_kind: str, owner_id: str, response_text:
     turn_texts = [str(f.get("claim_text") or f.get("claim") or "") for f in turn_facts]
     canonical_texts = canonical_fact_texts(conn, owner_kind, owner_id)
     evidence_texts = turn_texts + canonical_texts
+    canon = get_active_canon(conn, owner_kind, owner_id)
     supported: list[dict[str, Any]] = []
     unsupported: list[dict[str, Any]] = []
     advisory: list[dict[str, Any]] = []
@@ -229,7 +231,7 @@ def evaluate_final_response(conn, owner_kind: str, owner_id: str, response_text:
         claim = item["claim"]
         category = item.get("category")
         severity = item.get("severity", "soft")
-        matched = claim_matches_evidence(claim, evidence_texts)
+        matched = claim_matches_evidence(claim, evidence_texts, canon=canon)
         row = {"claim": claim, "category": category, "severity": severity}
         if matched:
             row["match"] = "receipt_or_canonical"

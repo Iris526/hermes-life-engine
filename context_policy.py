@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from .canon import canon_context_intent_keywords
 from .jsonutil import dumps
 from .trace import new_id
 
@@ -73,7 +74,7 @@ INTENT_KEYWORDS = {
     "dream": ["梦", "梦境", "dream"],
     "review": ["review", "待办", "提醒", "处理", "审核", "inbox"],
     "config": ["设定", "世界观", "人设", "canon", "config", "timezone", "天气", "货币"],
-    "resource": ["资源", "钱", "灵铢", "精力", "疲劳", "库存", "账本", "resource"],
+    "resource": ["资源", "钱", "精力", "疲劳", "库存", "账本", "resource"],
     "goal": ["目标", "计划", "推进", "goal", "arc"],
     "world": ["世界", "世界观", "地图", "城池", "地点", "区域", "背景", "lore", "world", "map", "city", "place"],
     "social": ["声望", "评价", "流言", "势力", "社交", "关系网", "social", "reputation", "rumor"],
@@ -110,11 +111,22 @@ class ContextPolicy:
         return cls(mode=mode, budget_chars=budget, progressive=(mode != "debug"), include_raw=(mode == "debug"))
 
 
-def infer_turn_domains(user_message: str | None) -> list[str]:
+def infer_turn_domains(user_message: str | None, *, canon: dict[str, Any] | None = None) -> list[str]:
+    """根据用户消息和 Canon/skin 关键词推断需要注入的上下文域。
+
+    输入是本轮用户消息与可选 active Canon；输出是最多五个 domain 名。调用方是
+    `render_progressive_context` 和测试。函数只读内存；角色/世界关键词只从
+    Canon.context.intent_keywords 或 active skin 追加，未传 Canon 时仅使用通用词。
+    """
     text = (user_message or "").lower()
     domains: list[str] = []
+    skin_keywords = canon_context_intent_keywords(canon)
     for domain, words in INTENT_KEYWORDS.items():
-        if any(w.lower() in text for w in words):
+        merged_words = list(words)
+        for word in skin_keywords.get(domain, []):
+            if word not in merged_words:
+                merged_words.append(word)
+        if any(w.lower() in text for w in merged_words):
             domains.append(domain)
     if not domains:
         # Most turns need only a small state capsule.  Details are retrieved by tools.
@@ -302,7 +314,7 @@ def _section_for_domain(domain: str, data: dict[str, Any]) -> dict[str, Any]:
 
 def render_progressive_context(data: dict[str, Any], user_message: str | None, control: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]]:
     policy = ContextPolicy.from_control(control)
-    domains = infer_turn_domains(user_message)
+    domains = infer_turn_domains(user_message, canon=data.get("_canon") if isinstance(data.get("_canon"), dict) else None)
     gates = (control or {}).get("module_gates") or {}
     work_compact = is_work_compact_platform(_platform_from_data(data))
     context_profile = "work_compact" if work_compact else "agent_life"

@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .canon import canon_timezone
 from .constants import DEFAULT_USER_ID
 from .jsonutil import dumps, loads
 from .time_utils import parse_datetime
@@ -529,13 +530,9 @@ def interaction_time_context(conn, owner_kind: str, owner_id: str, *, session_id
 
 
 def _tz_from_canon(canon: dict[str, Any] | None) -> tuple[ZoneInfo, str]:
-    data = canon or {}
-    name = (
-        ((data.get("schedule_rules") or {}).get("timezone"))
-        or (((data.get("truth_sources") or {}).get("bindings") or {}).get("time") or {}).get("timezone")
-    )
+    name = canon_timezone(canon, default="UTC")
     try:
-        return ZoneInfo(str(name or "UTC")), str(name or "UTC")
+        return ZoneInfo(name), name
     except Exception:
         return ZoneInfo("UTC"), "UTC"
 

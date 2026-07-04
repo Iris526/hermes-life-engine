@@ -152,7 +152,7 @@ DEFAULT_COLLECTION_PRESETS: dict[str, dict[str, Any]] = {
     },
     "supply_cabinet": {
         "name": "随身物品柜",
-        "description": "日常消耗品、法器、工具、委托物资：符纸、线香、朱砂墨、铜铃、结界仪等。",
+        "description": "日常消耗品、工具、委托或工作物资，用于记录可携带、可消耗或需维护的物品。",
         "entry_image_rule": {
             "subject": "supply_or_tool_item",
             "views": [
@@ -803,4 +803,3 @@ def render_outfit(plan: dict[str, Any], picks: dict[str, Any]) -> str:
     lines.append(f"场合：{plan.get('occasion')}")
     lines.append("说明：只从已入库集合中选择；缺失项不会凭空生成，会提示补充或清洗/维护。")
     return "\n".join(lines)
-

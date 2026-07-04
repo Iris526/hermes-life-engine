@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .. import world_model as _engine_world_model
+from ..canon import canon_identity_name, canon_timezone
 from ..persona import get_persona as _engine_get_persona
 from ..resources import list_resources as _engine_list_resources
 from ..social_world import (
@@ -820,14 +821,26 @@ class LifeEngineReader:
 
     def world_model(self, owner_kind: str, owner_id: str, limit: int = 80,
                     current_location: dict[str, Any] | None = None,
-                    actor_label: str | None = "明灯") -> dict[str, Any]:
+                    actor_label: str | None = None) -> dict[str, Any]:
         """读取结构化世界本体给 WebUI 使用。
 
         输入是 owner、条数上限和可选当前 location；输出按档案、区域、地点、知识条目、
         势力影响和 map 分组。函数只读 SQLite，不解释世界观文本含义；地图坐标和地形
-        来自 profile.rules.map、region.traits.map、place.coordinates，明灯位置只从
+        来自 profile.rules.map、region.traits.map、place.coordinates，主体位置只从
         当前事件 location 的结构化地点引用或唯一地点名解析。
         """
+        resolved_actor_label = actor_label
+        if not resolved_actor_label:
+            canon = {}
+            with self._connect() as conn:
+                if self._table_exists(conn, "canon_versions"):
+                    row = self._first(
+                        conn,
+                        "SELECT data_json FROM canon_versions WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY version DESC LIMIT 1",
+                        (owner_kind, owner_id),
+                    )
+                    canon = _safe_json((row or {}).get("data_json"), {}) or {}
+            resolved_actor_label = canon_identity_name(canon, default="角色")
         empty = {
             "profiles": [],
             "regions": [],
@@ -837,7 +850,7 @@ class LifeEngineReader:
             "routes": [],
             "conditions": [],
             "chronicle_events": [],
-            "map": _engine_world_model.map_state([], [], [], current_location=current_location, actor_label=actor_label),
+            "map": _engine_world_model.map_state([], [], [], current_location=current_location, actor_label=resolved_actor_label),
             "counts": {
                 "profiles": 0,
                 "regions": 0,
@@ -963,7 +976,7 @@ class LifeEngineReader:
             world_map = _engine_world_model.map_state(
                 profiles, regions, places, routes, conditions,
                 current_location=current_location,
-                actor_label=actor_label or "明灯",
+                actor_label=resolved_actor_label,
             )
             return {
                 "profiles": profiles,
@@ -1046,11 +1059,7 @@ class LifeEngineReader:
             if self._table_exists(conn, "canon_versions"):
                 row = self._first(conn, "SELECT data_json FROM canon_versions WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY version DESC LIMIT 1", (owner_kind, owner_id))
                 canon = _safe_json((row or {}).get("data_json"), {}) or {}
-                tz_name = (
-                    ((canon.get("schedule_rules") or {}).get("timezone"))
-                    or (((canon.get("truth_sources") or {}).get("bindings") or {}).get("time") or {}).get("timezone")
-                    or "UTC"
-                )
+                tz_name = canon_timezone(canon, default="UTC")
         try:
             from zoneinfo import ZoneInfo
             local = _now().astimezone(ZoneInfo(tz_name))
@@ -1081,7 +1090,7 @@ class LifeEngineReader:
                 canon = _safe_json((row or {}).get("data_json"), {}) or {}
                 m = canon.get("meals") or {}
                 times = m.get("times") or times
-                tz_name = (m.get("timezone") or (canon.get("schedule_rules") or {}).get("timezone") or tz_name)
+                tz_name = m.get("timezone") or canon_timezone(canon, default=tz_name)
             cols = self._columns(conn, "meal_records")
             try:
                 from zoneinfo import ZoneInfo
@@ -1997,7 +2006,7 @@ class LifeEngineReader:
         world_model = self.world_model(
             owner_kind, owner_id, limit=80,
             current_location=(current or {}).get("location") if current else None,
-            actor_label=identity.get("name") or "明灯",
+            actor_label=identity.get("name"),
         )
         social_world = self.social_world(owner_kind, owner_id, limit=80)
         sprite = map_avatar_state(state, current, sleep_day, review, delayed)

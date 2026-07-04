@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any
 
-from .canon import get_active_canon
+from .canon import canon_skin_name as _shared_canon_skin_name, get_active_canon
 from .jsonutil import dumps, loads
 from .skins import DEFAULT_LEGACY_LIVING_SKIN, get_canon_skin
 from .trace import append_audit, append_journal, new_id
@@ -24,7 +24,7 @@ def _norm_tz(v: Any) -> str | None:
     if not isinstance(v, str) or not v.strip():
         return None
     text = v.strip()
-    aliases = {"JST": "Asia/Tokyo", "CST_CN": "Asia/Shanghai", "UTC+9": "Asia/Tokyo"}
+    aliases = {"CST_CN": "Asia/Shanghai"}
     return aliases.get(text, text)
 
 
@@ -87,7 +87,7 @@ def canon_consistency_check(conn, owner_kind: str, owner_id: str, *, persist: bo
         if authority in {"user_current_location", "external_tool"} and not (weather.get("location") or weather.get("parameters") or weather.get("source_location") or weather.get("fallback")):
             issue("weather_location_ambiguous", "info", "天气真相源缺少地点/回退说明", "天气绑定到了真实来源，但没有明确 location / user binding / fallback。", "例如：location=user_current_location，fallback=unknown。", ["truth_sources.bindings.weather"])
         if authority in {"narrative_simulator", "random_weather"} and not (weather.get("rules") or weather.get("mode")):
-            issue("weather_virtual_rule_missing", "info", "虚拟天气缺少规则", "天气使用叙事/随机模拟，但没有 mode 或 rules。", "例如：mode=random_local 或 rules=符合第七城季节。", ["truth_sources.bindings.weather"])
+            issue("weather_virtual_rule_missing", "info", "虚拟天气缺少规则", "天气使用叙事/随机模拟，但没有 mode 或 rules。", "例如：mode=random_local 或 rules=符合当前世界季节。", ["truth_sources.bindings.weather"])
 
     # Look for old delete markers or likely stale keys.
     stale = []
@@ -174,12 +174,7 @@ def _canon_skin_name(canon: dict[str, Any] | None, preset: str | None = None) ->
     """
     if isinstance(preset, str) and preset.strip():
         return preset.strip()
-    data = canon if isinstance(canon, dict) else {}
-    living = _canon_living(data)
-    for value in (living.get("skin"), living.get("preset"), data.get("skin")):
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
+    return _shared_canon_skin_name(canon)
 
 
 def _skin_data(canon: dict[str, Any] | None, preset: str | None = None) -> dict[str, Any]:
@@ -272,7 +267,23 @@ def supply_items(preset: str | None = None, *, canon: dict[str, Any] | None = No
 
 
 def _time_for(date_key: str, hhmm: str, tz: str) -> str:
-    return f"{date_key}T{hhmm}:00+09:00" if tz == "Asia/Tokyo" else f"{date_key}T{hhmm}:00"
+    """按 Canon 时区把日期和 HH:MM 物化为 rhythm 时间字符串。
+
+    输入是日期、模板时间和 IANA 时区名；输出是 LifeOps 现有可接受的 ISO-like
+    时间。调用方是 living rhythm 与抽象目标分解；函数不写状态。UTC 沿用旧的
+    无 offset 形式，其它有效时区用 ZoneInfo 计算 offset，避免在引擎逻辑里写死
+    任一角色时区。
+    """
+    if str(tz or "").upper() == "UTC":
+        return f"{date_key}T{hhmm}:00"
+    try:
+        local = datetime.fromisoformat(f"{date_key}T{hhmm}:00").replace(tzinfo=ZoneInfo(str(tz)))
+        offset = local.strftime("%z")
+        if offset:
+            return f"{date_key}T{hhmm}:00{offset[:3]}:{offset[3:]}"
+    except Exception:
+        pass
+    return f"{date_key}T{hhmm}:00"
 
 
 def _template_time(value: Any, date_key: str, tz: str) -> str | None:
@@ -290,7 +301,7 @@ def _template_time(value: Any, date_key: str, tz: str) -> str | None:
     return _time_for(date_key, text, tz)
 
 
-def rhythm_templates(date_key: str | None = None, tz: str = "Asia/Tokyo", preset: str | None = None,
+def rhythm_templates(date_key: str | None = None, tz: str = "UTC", preset: str | None = None,
                      *, canon: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """从 active Canon 物化当天 living rhythm 模板。
 
@@ -336,7 +347,7 @@ def rhythm_proactive_summary(preset: str | None = None, *, canon: dict[str, Any]
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def abstract_goal_children(date_key: str | None = None, tz: str = "Asia/Tokyo", preset: str | None = None,
+def abstract_goal_children(date_key: str | None = None, tz: str = "UTC", preset: str | None = None,
                            *, canon: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """从 Canon rhythm 模板拆出抽象目标子事件。
 

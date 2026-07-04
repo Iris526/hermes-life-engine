@@ -46,7 +46,7 @@ def check_required_settings(conn, owner_kind: str, owner_id: str, canon: dict[st
     item("worldview", _has_any(worldview, "raw_world_description", "world_binding", "worldType", "world_type", "physicalRules"),
          "世界观", "需要知道 Agent 生活在哪种世界。", "例如：你生活在现实世界，和我同城；或者生活在虚拟海边小城。")
     item("time", bool(bindings.get("time") or bindings.get("clock") or (canon.get("schedule_rules") or {}).get("timezone")),
-         "时间设定", "需要确定时间、时区、时间流速。", "例如：时间使用 Asia/Tokyo，和真实时间同步。")
+         "时间设定", "需要确定时间、时区、时间流速。", "例如：时间使用 UTC 或你的本地 IANA 时区，和真实时间同步。")
     weather = bindings.get("weather") or {}
     item("weather", bool(weather and weather.get("authority")),
          "天气设定", "需要知道天气来源。", "例如：天气跟用户所在地一致；或使用随机虚拟天气。")
@@ -110,7 +110,7 @@ def required_settings_spec() -> dict[str, Any]:
         "identity": {
             "title": "人设 / 身份",
             "required": True,
-            "examples": ["你叫澪，是 23 岁，住在和我同城。", "你是虚拟第七城的符咒修补师。"],
+            "examples": ["你叫澪，是 23 岁，住在和我同城。", "你是虚拟海边小城的修理师。"],
             "paths": ["identity.name", "identity.selfDescription", "identity.occupation", "identity.homeLocationPolicy"],
         },
         "worldview": {
@@ -185,12 +185,12 @@ def default_setting_patch(kind: str = "balanced") -> dict[str, Any]:
         },
         "truth_sources": {
             "bindings": {
-                "time": {"domain": "time", "authority": "system_clock", "timezone": "Asia/Tokyo", "fallback": "unknown"},
+                "time": {"domain": "time", "authority": "system_clock", "timezone": "UTC", "fallback": "unknown"},
                 "weather": {"domain": "weather", "authority": weather_authority, "freshness_ttl_minutes": 120, "fallback": "unknown"},
                 "currency": {"domain": "currency", "authority": "fixed_setting", "value": "JPY"},
             }
         },
-        "schedule_rules": {"timezone": "Asia/Tokyo"},
+        "schedule_rules": {"timezone": "UTC"},
         "sleep": {"target_minutes": 450, "core_sleep_required": True, "allow_all_nighter": True, "interruptible_by_call": True},
         "resources": {
             "definitions": {

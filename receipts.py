@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .canon import canon_evidence_object_groups
 from .jsonutil import dumps, loads
 from .trace import new_id
 
@@ -402,10 +403,26 @@ _OBJECT_GROUPS = {
     "food": ["饭", "咖喱", "茶", "咖啡", "面包", "早餐", "午餐", "晚餐", "甜水", "外卖"],
     "clothing": ["裙", "裙子", "衣服", "外套", "鞋", "包", "衣柜"],
     "money": ["钱", "钱包", "日元", "收入", "报酬", "余额", "预算", "花了", "支出"],
-    "work_item": ["委托", "单子", "节点", "符纸", "朱砂", "铃铛", "结果缝", "雨棚巷", "第七城"],
+    "work_item": ["委托", "单子", "节点", "结果"],
     "study_item": ["考试", "教材", "章节", "模拟题", "笔记"],
-    "place": ["巴黎", "商场", "学校", "公司", "家里", "雨棚巷"],
+    "place": ["商场", "学校", "公司", "家里"],
 }
+
+
+def _object_groups_for(canon: dict[str, Any] | None = None) -> dict[str, list[str]]:
+    """合并通用 evidence 对象组和 Canon/skin 词包。
+
+    输入是可选 active Canon；输出是 claim/evidence matcher 使用的对象组。
+    调用方是 `claim_matches_evidence`。函数只读内存；未传 Canon 或 Canon 无
+    evidence 词包时只返回通用组，不提供任何角色默认。
+    """
+    merged = {key: list(values) for key, values in _OBJECT_GROUPS.items()}
+    for key, values in canon_evidence_object_groups(canon).items():
+        bucket = merged.setdefault(key, [])
+        for value in values:
+            if value not in bucket:
+                bucket.append(value)
+    return merged
 
 
 def _tokens(text: str) -> set[str]:
@@ -434,7 +451,7 @@ def _groups(text: str, group_map: dict[str, list[str]]) -> set[str]:
     return out
 
 
-def claim_matches_evidence(claim: str, evidence_texts: list[str]) -> bool:
+def claim_matches_evidence(claim: str, evidence_texts: list[str], *, canon: dict[str, Any] | None = None) -> bool:
     """Conservative semantic evidence matcher.
 
     v0.99+ rule: token overlap alone is not enough, because Chinese claims can
@@ -447,7 +464,8 @@ def claim_matches_evidence(claim: str, evidence_texts: list[str]) -> bool:
         return True
     claim_tokens = _tokens(claim_norm)
     claim_actions = _groups(claim_norm, _ACTION_GROUPS)
-    claim_objects = _groups(claim_norm, _OBJECT_GROUPS)
+    object_groups = _object_groups_for(canon)
+    claim_objects = _groups(claim_norm, object_groups)
     if not claim_tokens and not claim_actions:
         return False
     for text in evidence_texts:
@@ -457,7 +475,7 @@ def claim_matches_evidence(claim: str, evidence_texts: list[str]) -> bool:
         if claim_norm in text_norm or text_norm in claim_norm:
             return True
         ev_actions = _groups(text_norm, _ACTION_GROUPS)
-        ev_objects = _groups(text_norm, _OBJECT_GROUPS)
+        ev_objects = _groups(text_norm, object_groups)
         overlap = claim_tokens & _tokens(text_norm)
         if claim_actions:
             if not (claim_actions & ev_actions):

@@ -10,7 +10,7 @@ from .constants import DEFAULT_AGENT_ID, DEFAULT_CANON_TEMPLATE, DEFAULT_MODULE_
 from .jsonutil import dumps, loads
 from .trace import append_journal, new_id
 from .migration import record_canon_migration
-from .skins import DEFAULT_LEGACY_LIVING_SKIN
+from .skins import DEFAULT_LEGACY_LIVING_SKIN, get_canon_skin
 
 
 def owner_key(owner_kind: str, owner_id: str) -> tuple[str, str]:
@@ -90,6 +90,199 @@ def get_active_canon(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
     data = loads(row[0], {})
     merged = deepcopy(DEFAULT_CANON_TEMPLATE)
     _deep_update(merged, data)
+    return merged
+
+
+def canon_skin_name(canon: dict[str, Any] | None) -> str | None:
+    """读取 Canon 明确声明的角色 skin 名。
+
+    输入是 active Canon 或 Canon-like dict；输出是 living.skin / living.preset /
+    顶层 skin 中第一个非空名称。调用方是需要读取角色内容包的 engine 模块。
+    函数只读内存，不写数据库；缺失、未知或非 dict 时返回 None，避免把任何
+    skin 当成 universal default。
+    """
+    data = canon if isinstance(canon, dict) else {}
+    living = data.get("living") if isinstance(data.get("living"), dict) else {}
+    for value in (living.get("skin"), living.get("preset"), data.get("skin")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def active_canon_skin(canon: dict[str, Any] | None) -> dict[str, Any]:
+    """读取当前 Canon 指向的 skin 数据。
+
+    输入是 active Canon；输出是 skin 深拷贝或空 dict。调用方包括时区、
+    evidence、context 和 proactive 称呼读取。函数不写状态、不回退默认 skin；
+    未声明或未知 skin 时返回空 dict，让非默认 agent 保持角色无关。
+    """
+    return get_canon_skin(canon_skin_name(canon))
+
+
+def _canon_timezone_value(value: Any) -> str | None:
+    """规范化 Canon 中的时区字符串。
+
+    输入是任意字段值；输出为非空时区字符串或 None。调用方是 `canon_timezone`。
+    函数只处理 IANA/UTC 风格字符串和少量通用别名，不校验 ZoneInfo 是否存在；
+    无效值交给实际使用处降级。
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    aliases = {"CST_CN": "Asia/Shanghai"}
+    return aliases.get(text, text)
+
+
+def canon_timezone(canon: dict[str, Any] | None, *, default: str = "UTC") -> str:
+    """按 Canon/skin 解析 Agent 本地时区。
+
+    输入是 active Canon 和中性默认时区；输出是非空时区名。调用方是 runtime、
+    schedule、conversation、WebUI reader 和 proactive 策略。读取顺序是：
+    显式 living.timezone、active skin 的 living.timezone、旧 Canon 的
+    truth_sources.bindings.time/clock、schedule_rules.timezone，最后才是 `default`。
+    这样 DEFAULT_CANON_TEMPLATE 可保持中性 UTC，而默认角色 agent 仍由
+    skin 获得自己的本地时区。函数无副作用；字段缺失或空值时降级为中性默认。
+    """
+    data = canon if isinstance(canon, dict) else {}
+    living = data.get("living") if isinstance(data.get("living"), dict) else {}
+    for value in (living.get("timezone"), living.get("time_zone")):
+        tz = _canon_timezone_value(value)
+        if tz:
+            return tz
+    skin = active_canon_skin(data)
+    skin_living = skin.get("living") if isinstance(skin.get("living"), dict) else {}
+    for value in (skin_living.get("timezone"), skin_living.get("time_zone")):
+        tz = _canon_timezone_value(value)
+        if tz:
+            return tz
+    truth = data.get("truth_sources") if isinstance(data.get("truth_sources"), dict) else {}
+    bindings = truth.get("bindings") if isinstance(truth.get("bindings"), dict) else {}
+    time_binding = bindings.get("time") or bindings.get("clock") or {}
+    if isinstance(time_binding, dict):
+        for key in ("timezone", "tz", "value"):
+            tz = _canon_timezone_value(time_binding.get(key))
+            if tz:
+                return tz
+    rules = data.get("schedule_rules") if isinstance(data.get("schedule_rules"), dict) else {}
+    for value in (rules.get("timezone"), rules.get("time_zone")):
+        tz = _canon_timezone_value(value)
+        if tz:
+            return tz
+    return default
+
+
+def canon_companion_address_terms(canon: dict[str, Any] | None) -> tuple[str, ...]:
+    """读取 proactive/companion 可识别的称呼词。
+
+    输入是 active Canon；输出是去重后的称呼词 tuple。调用方是 proactive fallback
+    与 companion authoring 之外的轻量文本保护。词源只允许 Canon companion 块和
+    active skin companion 块；缺失时返回空 tuple。函数无副作用，不提供角色默认。
+    """
+    data = canon if isinstance(canon, dict) else {}
+    terms: list[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str) and value.strip():
+            terms.append(value.strip())
+        elif isinstance(value, list):
+            for item in value:
+                add(item)
+
+    companion = data.get("companion") if isinstance(data.get("companion"), dict) else {}
+    add(companion.get("address_term"))
+    add(companion.get("address_terms"))
+    skin = active_canon_skin(data)
+    skin_companion = skin.get("companion") if isinstance(skin.get("companion"), dict) else {}
+    add(skin_companion.get("address_term"))
+    add(skin_companion.get("address_terms"))
+    return tuple(dict.fromkeys(terms))
+
+
+def canon_identity_name(canon: dict[str, Any] | None, *, default: str = "角色") -> str:
+    """读取当前主体用于展示的名称。
+
+    输入是 active Canon 和中性默认名；输出是 Canon identity.name/display_name、
+    active skin identity.name/display_name，或 `default`。调用方是 runtime/WebUI
+    的 actor label 兜底。函数只读内存；未声明 skin 的 Canon 不会获得任何角色名。
+    """
+    data = canon if isinstance(canon, dict) else {}
+    identity = data.get("identity") if isinstance(data.get("identity"), dict) else {}
+    for value in (identity.get("name"), identity.get("display_name")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    skin = active_canon_skin(data)
+    skin_identity = skin.get("identity") if isinstance(skin.get("identity"), dict) else {}
+    for value in (skin_identity.get("name"), skin_identity.get("display_name")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return default
+
+
+def canon_evidence_object_groups(canon: dict[str, Any] | None) -> dict[str, list[str]]:
+    """读取 evidence matcher 的角色/世界对象词包。
+
+    输入是 active Canon；输出为 object group 到关键词列表的映射。调用方是
+    receipts/final gate 的证据匹配器。词源是 active skin.evidence.object_groups
+    与 Canon.evidence.object_groups；Canon 自定义词会追加到 skin 词后。缺失时
+    返回空 dict，让 matcher 只使用通用词。函数只读内存，不写状态。
+    """
+    data = canon if isinstance(canon, dict) else {}
+    merged: dict[str, list[str]] = {}
+
+    def add_groups(groups: Any) -> None:
+        if not isinstance(groups, dict):
+            return
+        for key, values in groups.items():
+            if isinstance(values, str):
+                raw_values = [values]
+            elif isinstance(values, list):
+                raw_values = values
+            else:
+                continue
+            bucket = merged.setdefault(str(key), [])
+            for item in raw_values:
+                if isinstance(item, str) and item.strip() and item.strip() not in bucket:
+                    bucket.append(item.strip())
+
+    skin = active_canon_skin(data)
+    skin_evidence = skin.get("evidence") if isinstance(skin.get("evidence"), dict) else {}
+    add_groups(skin_evidence.get("object_groups"))
+    evidence = data.get("evidence") if isinstance(data.get("evidence"), dict) else {}
+    add_groups(evidence.get("object_groups"))
+    return merged
+
+
+def canon_context_intent_keywords(canon: dict[str, Any] | None) -> dict[str, list[str]]:
+    """读取 context policy 的角色/世界路由关键词。
+
+    输入是 active Canon；输出为 domain 到关键词列表的映射。调用方是
+    context_policy 的 turn-domain 推断。词源是 active skin.context.intent_keywords
+    与 Canon.context.intent_keywords；缺失时返回空 dict。函数无副作用，避免
+    非默认 agent 继承任何 guimingguan 词。
+    """
+    data = canon if isinstance(canon, dict) else {}
+    merged: dict[str, list[str]] = {}
+
+    def add_keywords(groups: Any) -> None:
+        if not isinstance(groups, dict):
+            return
+        for key, values in groups.items():
+            if isinstance(values, str):
+                raw_values = [values]
+            elif isinstance(values, list):
+                raw_values = values
+            else:
+                continue
+            bucket = merged.setdefault(str(key), [])
+            for item in raw_values:
+                if isinstance(item, str) and item.strip() and item.strip() not in bucket:
+                    bucket.append(item.strip())
+
+    skin = active_canon_skin(data)
+    skin_context = skin.get("context") if isinstance(skin.get("context"), dict) else {}
+    add_keywords(skin_context.get("intent_keywords"))
+    context = data.get("context") if isinstance(data.get("context"), dict) else {}
+    add_keywords(context.get("intent_keywords"))
     return merged
 
 

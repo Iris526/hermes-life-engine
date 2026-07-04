@@ -170,7 +170,7 @@ DEFAULT_CANON_TEMPLATE = {
     },
     "truth_sources": {
         "bindings": {
-            "time": {"domain": "time", "authority": "system_clock", "timezone": "Asia/Tokyo", "time_flow": "real_time"},
+            "time": {"domain": "time", "authority": "system_clock", "timezone": "UTC", "time_flow": "real_time"},
             "weather": {"domain": "weather", "authority": "narrative_simulator", "mode": "random_local", "freshness_ttl_minutes": 120, "fallback": "narrative_generate"},
         }
     },
@@ -182,7 +182,7 @@ DEFAULT_CANON_TEMPLATE = {
             "sleep_debt_minutes": {"display_name": "Sleep debt", "resource_class": "vital", "unit": "minutes", "min": 0, "initial": 0},
         }
     },
-    "schedule_rules": {"timezone": "Asia/Tokyo"},
+    "schedule_rules": {"timezone": "UTC"},
     "meals": {
         "enabled": True,
         "needs_food": True,

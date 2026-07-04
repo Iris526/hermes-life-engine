@@ -27,6 +27,7 @@ from .autonomy import (
 from .canon import (
     append_setup_statement,
     begin_setup,
+    canon_identity_name,
     commit_draft,
     ensure_control,
     get_active_canon,
@@ -1718,7 +1719,7 @@ class LifeEngineRuntime:
             from .time_utils import parse_datetime
 
             canon = self._living_canon(owner_kind, owner_id, control)
-            tz_name = _tz_from_canon(canon) or "Asia/Tokyo"
+            tz_name = _tz_from_canon(canon) or "UTC"
             preset = living_preset_name(canon)
             now_dt = parse_datetime(now)
             if now_dt is None:
@@ -3250,6 +3251,8 @@ class LifeEngineRuntime:
             with transaction(self.conn):
                 summary = _world.summary(self.conn, owner_kind, owner_id, limit=int(payload.get("limit", 100)))
                 if payload.get("location") or payload.get("actor_label"):
+                    canon = self._living_canon(owner_kind, owner_id)
+                    actor_label = payload.get("actor_label") or canon_identity_name(canon)
                     summary["map"] = _world.map_state(
                         summary.get("profiles") or [],
                         summary.get("regions") or [],
@@ -3257,7 +3260,7 @@ class LifeEngineRuntime:
                         summary.get("routes") or [],
                         summary.get("conditions") or [],
                         current_location=payload.get("location"),
-                        actor_label=payload.get("actor_label") or "明灯",
+                        actor_label=actor_label,
                     )
                 return {"ok": True, "world_map": summary.get("map") or {}}
         if action_l in {"context", "effective_context", "scene_context"}:
@@ -4740,7 +4743,7 @@ class LifeEngineRuntime:
                 return cleanup_stale_events(self.conn, owner_kind, owner_id, cutoff_ts=payload.get("cutoff_ts"), mode=payload.get("mode") or "safe", limit=int(payload.get("limit", 100)))
 
         with transaction(self.conn):
-            canon = get_active_canon(self.conn, owner_kind, owner_id)
+            canon = self._living_canon(owner_kind, owner_id)
             period = payload.get("period") or action or "today"
             if period in {"list", "view", "show"}:
                 period = payload.get("period") or "today"
@@ -4880,7 +4883,7 @@ class LifeEngineRuntime:
             requested_preset = str(payload.get("preset")).strip() if payload.get("preset") else None
             preset = living_preset_name(canon, requested_preset)
             date_key = payload.get("date") or payload.get("date_key")
-            tz = payload.get("timezone") or "Asia/Tokyo"
+            tz = payload.get("timezone") or _tz_from_canon(canon) or "UTC"
             templates = rhythm_templates(date_key=date_key, tz=tz, preset=requested_preset, canon=canon)
             event_ids: list[str] = []
             block_ids: list[str] = []
@@ -4953,7 +4956,7 @@ class LifeEngineRuntime:
                 return {"ok": False, "error": "abstract event has no linked goal"}
             canon = self._living_canon(owner_kind, owner_id)
             requested_preset = str(payload.get("preset")).strip() if payload.get("preset") else None
-            children = abstract_goal_children(date_key=payload.get("date"), tz=payload.get("timezone") or "Asia/Tokyo", preset=requested_preset, canon=canon)
+            children = abstract_goal_children(date_key=payload.get("date"), tz=payload.get("timezone") or _tz_from_canon(canon) or "UTC", preset=requested_preset, canon=canon)
             commit = self.commit_ops([{"type": "DECOMPOSE_EVENT", "payload": {"parent_event_id": event["id"], "goal_id": goal_id, "children": children, "decomposition_type": "life_rhythm", "strategy": "concrete_daily_children", "source": "life_rhythm_decomposer", "link_children_to_goal": True}}], owner_kind, owner_id, "life_rhythm_decomposer", session_id, turn_id)
             rendered = "抽象目标事件已分解为具体日常\n==============================\n" + "\n".join([f"- {c['title']}" for c in children])
             return {"ok": True, "parent_event_id": event["id"], "goal_id": goal_id, "commit": commit, "rendered": rendered}
@@ -5542,6 +5545,7 @@ class LifeEngineRuntime:
                 if social_world:
                     inner_life = {k: v for k, v in inner_life.items() if k != "social_world"}
                 context_data = {
+                    "_canon": canon,
                     "owner_scope": scope.__dict__,
                     "engine_state": control["engine_state"],
                     "canon_version": control.get("active_canon_version"),

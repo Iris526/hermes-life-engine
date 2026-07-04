@@ -17,6 +17,7 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any
 
+from .canon import canon_companion_address_terms, canon_timezone
 from . import life_author
 from .jsonutil import dumps, loads
 from .trace import append_audit, append_journal, new_id
@@ -103,9 +104,9 @@ def _now_iso() -> str:
 
 def _zoneinfo(timezone_name: str | None = None) -> ZoneInfo:
     try:
-        return ZoneInfo(str(timezone_name or "Asia/Shanghai"))
+        return ZoneInfo(str(timezone_name or "UTC"))
     except Exception:
-        return ZoneInfo("Asia/Shanghai")
+        return ZoneInfo("UTC")
 
 
 def _date_key(timezone_name: str | None = None, now: datetime | None = None) -> str:
@@ -114,9 +115,9 @@ def _date_key(timezone_name: str | None = None, now: datetime | None = None) -> 
 
 def _policy_timezone(conn, agent_id: str) -> str:
     try:
-        return str(_gate_policy(None, _get_canon_policy(conn, agent_id)).get("timezone") or "Asia/Shanghai")
+        return str(_gate_policy(None, _get_canon_policy(conn, agent_id)).get("timezone") or "UTC")
     except Exception:
-        return "Asia/Shanghai"
+        return "UTC"
 
 
 def _as_dict(row) -> dict[str, Any] | None:
@@ -140,15 +141,29 @@ def _as_dict(row) -> dict[str, Any] | None:
     return d
 
 
-def _get_canon_policy(conn, agent_id: str) -> dict[str, Any]:
+def _active_canon_data(conn, agent_id: str) -> dict[str, Any]:
+    """读取 proactive 需要的 active Canon 原始数据。
+
+    输入是 SQLite 连接和 agent_id；输出是 active Canon dict 或空 dict。调用方是
+    policy、fallback 称呼和时区读取。函数只读数据库；无 active Canon 时返回空，
+    上层会使用中性默认。
+    """
     row = conn.execute(
         "SELECT data_json FROM canon_versions WHERE owner_kind='agent' AND owner_id=? AND status='active' ORDER BY version DESC LIMIT 1",
         (agent_id,),
     ).fetchone()
     if not row:
         return {}
-    data = loads(row["data_json"], {}) or {}
-    return data.get("proactive") or {}
+    return loads(row["data_json"], {}) or {}
+
+
+def _get_canon_policy(conn, agent_id: str) -> dict[str, Any]:
+    data = _active_canon_data(conn, agent_id)
+    policy = dict(data.get("proactive") or {})
+    quiet_hours = policy.get("quiet_hours") if isinstance(policy.get("quiet_hours"), dict) else {}
+    if not policy.get("timezone") and not quiet_hours.get("timezone"):
+        policy["timezone"] = canon_timezone(data, default="UTC")
+    return policy
 
 
 def _gate_policy(control: dict[str, Any] | None, canon_policy: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -164,7 +179,7 @@ def _gate_policy(control: dict[str, Any] | None, canon_policy: dict[str, Any] | 
         "min_score_to_auto_send": int(canon_policy.get("min_score_to_auto_send", 75)),
         "cooldown_minutes": int(canon_policy.get("cooldown_minutes", 180)),
         "quiet_hours": canon_policy.get("quiet_hours") or {},
-        "timezone": canon_policy.get("timezone") or (canon_policy.get("quiet_hours") or {}).get("timezone") or "Asia/Shanghai",
+        "timezone": canon_policy.get("timezone") or (canon_policy.get("quiet_hours") or {}).get("timezone") or "UTC",
         "default_target_user_id": canon_policy.get("default_target_user_id") or "anonymous-user",
     }
 
@@ -576,11 +591,11 @@ def quiet_hours_status(policy: dict[str, Any], *, now: datetime | None = None) -
     """
     qh = policy.get("quiet_hours") or {}
     if not isinstance(qh, dict) or not qh.get("start") or not qh.get("end"):
-        return {"active": False, "timezone": str(policy.get("timezone") or "Asia/Shanghai"), "next_allowed_at": None}
+        return {"active": False, "timezone": str(policy.get("timezone") or "UTC"), "next_allowed_at": None}
     # Use the user's/agent's local clock for quiet hours. Earlier versions used
     # UTC here, so QQ bedtime (e.g. 02:46 Asia/Shanghai) could be misread as
     # daytime and an idle push would slip through right after “晚安”.
-    tz_name = str(policy.get("timezone") or qh.get("timezone") or "Asia/Shanghai")
+    tz_name = str(policy.get("timezone") or qh.get("timezone") or "UTC")
     try:
         tz = ZoneInfo(tz_name)
     except Exception:
@@ -725,7 +740,7 @@ def _usable_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any
     return msg
 
 
-def _fallback_outbox_text(intent: dict[str, Any]) -> str:
+def _fallback_outbox_text(intent: dict[str, Any], *, address_terms: tuple[str, ...] = ()) -> str:
     """生成无模型时的主动消息兜底文案。
 
     作用域限定在 proactive evaluate 的 outbox 创建流程；调用方是
@@ -741,7 +756,8 @@ def _fallback_outbox_text(intent: dict[str, Any]) -> str:
     summary = summary.replace("资源不足", "手头有点不够")
     summary = summary.replace("重新规划", "重新盘算一下")
     summary = summary.replace("完成了以下", "刚做完一点事")
-    if not any(token in summary for token in ("我", "这边", "咱", "师兄")):
+    grounded_tokens = ("我", "这边", "咱") + tuple(term for term in address_terms if term)
+    if not any(token in summary for token in grounded_tokens):
         summary = f"我这边{summary}"
     summary = _trim_message_text(summary)
     if len(summary) > _OUTBOX_MAX_CHARS:
@@ -962,6 +978,7 @@ def evaluate_proactive_intent(
     """
     canon_policy = _get_canon_policy(conn, agent_id)
     policy = _gate_policy(control, canon_policy)
+    address_terms = canon_companion_address_terms(_active_canon_data(conn, agent_id))
     mode = policy["mode"]
     if intent_id:
         intents = [get_proactive_intent(conn, intent_id)]
@@ -1040,10 +1057,10 @@ def evaluate_proactive_intent(
                     or (_author_outbox_text(conn, agent_id, user_id, intent, trace_id=trace_id) if allow_authoring else None)
                 )
                 if not msg:
-                    fallback = _fallback_outbox_text(intent)
+                    fallback = _fallback_outbox_text(intent, address_terms=address_terms)
                     msg = _usable_outbox_text(conn, agent_id, user_id, intent, fallback, source="fallback", trace_id=trace_id)
                 if not msg:
-                    fallback_reason = _outbox_rejection_reason(_fallback_outbox_text(intent)) or "unusable"
+                    fallback_reason = _outbox_rejection_reason(_fallback_outbox_text(intent, address_terms=address_terms)) or "unusable"
                     reason = f"fallback outbox text rejected: {fallback_reason}"
                     conn.execute(
                         "UPDATE proactive_intents SET status='suppressed', suppressed_at=datetime('now'), suppression_reason=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?",

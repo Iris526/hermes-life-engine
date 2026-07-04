@@ -11,18 +11,34 @@ DEFAULT_LEGACY_LIVING_SKIN = "guimingguan"
 
 
 # Canon skin 数据结构：表示一套可选角色内容包，承载 living 节律、资源、供给物资、
-# 社会世界默认槽和陪伴称呼。
+# 社会世界默认槽、陪伴称呼、时区和 evidence/context 关键词。
 # 作用域仅限 Canon 明确引用的角色 skin；生命周期随代码版本发布，读取方不得把它
 # 当作 universal default 写入 DEFAULT_CANON_TEMPLATE；业务调用方是 living 层和
 # 默认 agent 兼容迁移路径；约束是所有角色文案只能放在这里或用户 Canon 中。
 # 字段约定：resources.definitions 是 init_resources 的 RESOURCE_DEFINE 来源；
 # living.supplies 是后续 collection bootstrap 可消费的供给物资；living.rhythm_templates
 # 用 start_time/end_time 按当天日期物化；living.rhythm_proactive_summary 只有声明时才
-# 允许 runtime 创建 rhythm summary，不存在时不得生成通用替代角色文案；social_slots
-# 只在 active Canon 指向本 skin 时由社会投影写入；companion.address_term 只作为
-# idle prompt 和去重的可选称呼来源，不是全局称呼。
+# 允许 runtime 创建 rhythm summary，不存在时不得生成通用替代角色文案；living.timezone
+# 是旧默认 agent 的地域时间设定；social_slots 只在 active Canon 指向本 skin
+# 时由社会投影写入；companion.address_term 只作为 idle prompt、outbox fallback
+# 和去重的可选称呼来源，不是全局称呼；evidence/context 关键词只在 active Canon
+# 指向本 skin 时参与匹配或路由。
 CANON_SKINS: dict[str, dict[str, Any]] = {
     "guimingguan": {
+        "identity": {
+            "name": "明灯",
+        },
+        "evidence": {
+            "object_groups": {
+                "work_item": ["符纸", "朱砂", "铃铛", "结果缝", "雨棚巷", "第七城"],
+                "place": ["巴黎", "雨棚巷"],
+            },
+        },
+        "context": {
+            "intent_keywords": {
+                "resource": ["灵铢"],
+            },
+        },
         "resources": {
             "definitions": [
                 {"key": "money.lingzhu", "display_name": "灵铢", "resource_class": "currency", "unit": "枚", "min_value": 0, "max_value": None, "initial": 120},
@@ -34,6 +50,7 @@ CANON_SKINS: dict[str, dict[str, Any]] = {
             ],
         },
         "living": {
+            "timezone": "Asia/Tokyo",
             "supplies": [
                 {"name": "符纸", "quantity": 24, "attributes": {"category": "daily_supply", "is_consumable": True, "material": "黄纸朱砂", "purpose": "净符和小委托"}},
                 {"name": "朱砂墨", "quantity": 1, "attributes": {"category": "daily_supply", "is_consumable": True, "material": "朱砂", "purpose": "画符"}},

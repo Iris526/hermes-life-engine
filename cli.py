@@ -33,7 +33,7 @@ def setup_cli_parser(parser: argparse.ArgumentParser) -> None:
     p_living.add_argument("text", nargs="*", help="Optional note text or additional args")
     p_living.add_argument("--preset", default=None)
     p_living.add_argument("--date")
-    p_living.add_argument("--timezone", default="Asia/Tokyo")
+    p_living.add_argument("--timezone", default=None)
     p_living.add_argument("--event-id")
     p_living.add_argument("--limit", type=int, default=20)
 

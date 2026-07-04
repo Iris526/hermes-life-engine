@@ -5,7 +5,10 @@ import os
 import shutil
 
 
-RESIDUE_TERMS = ("灵铢", "归明观", "符纸", "朱砂", "香案", "净符", "晨巡")
+RESIDUE_TERMS = (
+    "灵铢", "归明观", "符纸", "朱砂", "香案", "净符", "晨巡",
+    "雨棚巷", "第七城", "师兄", "明灯", "Asia/Tokyo", "Asia-Tokyo",
+)
 SOCIAL_SLOT_RESIDUE_TERMS = ("道观", "宫观", "香客", "主顾", "香客口碑")
 
 
@@ -124,6 +127,15 @@ def _idle_prompt(rt, owner_id: str) -> str:
 
 def test_default_agent_keeps_legacy_living_skin(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(fresh_home(tmp_path)))
+    from lifeengine.canon import (
+        canon_companion_address_terms,
+        canon_context_intent_keywords,
+        canon_evidence_object_groups,
+        canon_timezone,
+    )
+    from lifeengine.context_policy import infer_turn_domains
+    from lifeengine.proactive import _fallback_outbox_text
+    from lifeengine.receipts import claim_matches_evidence
     from lifeengine.runtime import LifeEngineRuntime
 
     rt = LifeEngineRuntime()
@@ -131,6 +143,15 @@ def test_default_agent_keeps_legacy_living_skin(monkeypatch, tmp_path):
         rt.setup("测试 Agent，heartbeat 要能自己补齐当天生活节奏。")
         committed = rt.commit_canon()["canon"]
         assert committed["data"]["living"]["skin"] == "guimingguan"
+        assert canon_timezone(committed["data"]) == "Asia/Tokyo"
+        assert "符纸" in canon_evidence_object_groups(committed["data"])["work_item"]
+        assert "灵铢" in canon_context_intent_keywords(committed["data"])["resource"]
+        assert infer_turn_domains("灵铢还够吗？", canon=committed["data"]) == ["resource"]
+        assert claim_matches_evidence("我处理了符纸。", ["完成了朱砂准备"], canon=committed["data"])
+        assert _fallback_outbox_text(
+            {"summary": "师兄刚才提到的事"},
+            address_terms=canon_companion_address_terms(committed["data"]),
+        ) == "师兄刚才提到的事。"
 
         resources = rt.living("init_resources")
         assert "money.lingzhu" in resources["resource_keys"]
@@ -174,10 +195,20 @@ def test_default_agent_keeps_legacy_living_skin(monkeypatch, tmp_path):
 
 def test_modern_canon_without_living_skin_has_no_character_residue(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(fresh_home(tmp_path)))
-    from lifeengine.canon import get_active_canon
+    from lifeengine.canon import (
+        canon_companion_address_terms,
+        canon_context_intent_keywords,
+        canon_evidence_object_groups,
+        canon_timezone,
+        get_active_canon,
+    )
     from lifeengine.constants import DEFAULT_CANON_TEMPLATE
+    from lifeengine.context_policy import infer_turn_domains
     from lifeengine.living import supply_items
+    from lifeengine.proactive import _fallback_outbox_text
+    from lifeengine.receipts import claim_matches_evidence
     from lifeengine.runtime import LifeEngineRuntime
+    from lifeengine.schedule_view import _tz_from_canon
 
     rt = LifeEngineRuntime()
     owner_id = "modern-illustrator"
@@ -192,6 +223,14 @@ def test_modern_canon_without_living_skin_has_no_character_residue(monkeypatch, 
         rhythm = rt.living("day_rhythm", owner_id=owner_id, date="2030-01-02")
         canon = get_active_canon(rt.conn, "agent", owner_id)
         supplies = supply_items(canon=canon)
+        assert canon_timezone(canon) == "UTC"
+        assert _tz_from_canon(canon) == "UTC"
+        assert canon_evidence_object_groups(canon) == {}
+        assert canon_context_intent_keywords(canon) == {}
+        assert canon_companion_address_terms(canon) == ()
+        assert infer_turn_domains("灵铢还够吗？", canon=canon) == []
+        assert not claim_matches_evidence("我处理了符纸。", ["完成了朱砂准备"], canon=canon)
+        assert _fallback_outbox_text({"summary": "师兄提醒的事"}).startswith("我这边")
 
         rows = rt.conn.execute(
             "SELECT title, payload_json FROM life_rhythm_items WHERE owner_kind='agent' AND owner_id=? ORDER BY start",
@@ -243,6 +282,9 @@ def test_modern_canon_without_living_skin_has_no_character_residue(monkeypatch, 
         assert "师兄" not in modern_prompt
         assert "可以自然叫他" not in modern_prompt
 
+        world_map = rt.world("map", owner_id=owner_id, location={"name": "独立创意市集"})["world_map"]
+        assert (world_map.get("actor") or {}).get("label") == "凛"
+
         produced = {
             "resource_rendered": resources["rendered"],
             "resource_state": resource_state,
@@ -250,6 +292,8 @@ def test_modern_canon_without_living_skin_has_no_character_residue(monkeypatch, 
             "rhythm_items": [dict(row) for row in rows],
             "supplies": supplies,
             "proactive_summaries": [row["summary"] for row in proactive_rows],
+            "world_map": world_map,
+            "timezone": canon_timezone(canon),
         }
         assert rhythm["event_ids"] == []
         assert supplies == []

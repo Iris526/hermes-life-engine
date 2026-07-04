@@ -284,7 +284,7 @@
       "iso": "<now>",
       "label": "<now>",
       "phase": "<now>",
-      "timezone": "Asia/Tokyo"
+      "timezone": "Asia/Shanghai"
     },
     "collections": {
       "board": [],
@@ -1567,7 +1567,7 @@
     "lore": [],
     "map": {
       "actor": {
-        "label": "明灯",
+        "label": "青",
         "source": "current_location",
         "status": "unknown"
       },
@@ -1630,7 +1630,7 @@
     "iso": "<now>",
     "label": "<now>",
     "phase": "<now>",
-    "timezone": "Asia/Tokyo"
+    "timezone": "Asia/Shanghai"
   },
   "direct_collections": {
     "board": [],

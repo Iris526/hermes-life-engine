@@ -3578,9 +3578,9 @@ def _create_schema_v47(conn: sqlite3.Connection) -> None:
 
     # Mapping of old resource keys to collection item names and attributes.
     RESOURCE_TO_ITEM = {
-        "supplies.talisman_paper": {"name": "符纸", "attributes": {"category": "daily_supply", "is_consumable": True, "material": "黄纸朱砂", "purpose": "净符"}},
-        "supplies.incense": {"name": "线香", "attributes": {"category": "daily_supply", "is_consumable": True, "material": "檀香", "purpose": "供奉"}},
-        "tools.barrier_meter_condition": {"name": "小型结界仪", "attributes": {"category": "tool", "is_consumable": False, "material": "金属/灵子回路", "purpose": "结界检测"}},
+        "supplies.talisman_paper": {"name": "Legacy consumable supply", "attributes": {"category": "daily_supply", "is_consumable": True, "material": "legacy_material", "purpose": "migrated_supply"}},
+        "supplies.incense": {"name": "Legacy daily supply", "attributes": {"category": "daily_supply", "is_consumable": True, "material": "legacy_material", "purpose": "migrated_supply"}},
+        "tools.barrier_meter_condition": {"name": "Legacy inspection tool", "attributes": {"category": "tool", "is_consumable": False, "material": "legacy_material", "purpose": "migrated_tool"}},
         "wardrobe.clean_outfits": None,  # skip, not a real item
     }
 
@@ -4414,7 +4414,7 @@ def _create_schema_v63(conn: sqlite3.Connection) -> None:
           owner_kind TEXT NOT NULL,
           owner_id TEXT NOT NULL,
           key TEXT NOT NULL,                        -- 稳定地图区域 key；供事件/地点/lore 引用
-          name TEXT NOT NULL,                       -- 区域显示名，如第七城/东市/雨棚巷
+          name TEXT NOT NULL,                       -- 区域显示名，如城市/街区/地点名称
           region_type TEXT NOT NULL DEFAULT 'region', -- continent/city/district/street/custom
           parent_region_id TEXT,                    -- 父区域 id；结构化地图层级
           summary TEXT,

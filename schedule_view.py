@@ -19,11 +19,12 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any
 
+from .canon import canon_timezone
 from .jsonutil import loads
 from .time_utils import parse_datetime
 
 
-DEFAULT_TZ = "Asia/Tokyo"
+DEFAULT_TZ = "UTC"
 ACTIVE_BLOCK_STATUSES = {"planned", "locked", "ready", "in_progress"}
 DONE_BLOCK_STATUSES = {"completed", "cancelled", "missed", "skipped", "released", "rescheduled"}
 ACTIVE_EVENT_STATUSES = {"planned", "scheduled", "ready", "in_progress", "partial", "postponed", "rescheduled"}
@@ -81,20 +82,13 @@ CATEGORY_LABELS = {
 
 
 def _tz_from_canon(canon: dict[str, Any] | None) -> str:
-    if not isinstance(canon, dict):
-        return DEFAULT_TZ
-    truth = canon.get("truth_sources") or {}
-    bindings = truth.get("bindings") or {}
-    time_binding = bindings.get("time") or bindings.get("clock") or {}
-    for key in ("timezone", "tz", "value"):
-        val = time_binding.get(key) if isinstance(time_binding, dict) else None
-        if isinstance(val, str) and val:
-            if val.upper() == "JST":
-                return "Asia/Tokyo"
-            return val
-    rules = canon.get("schedule_rules") or {}
-    val = rules.get("timezone") or rules.get("time_zone")
-    return str(val) if val else DEFAULT_TZ
+    """读取日程视图使用的本地时区。
+
+    输入是 active Canon；输出是时区名。调用方是 schedule read-model 和 runtime。
+    解析逻辑统一委托给 `canon_timezone`，确保 guimingguan 的东京时区只来自 skin，
+    未声明 skin 的 Canon 使用中性 UTC 默认。
+    """
+    return canon_timezone(canon, default=DEFAULT_TZ)
 
 
 def _day_bounds(day: str | None = None, *, period: str = "today", tz_name: str = DEFAULT_TZ) -> tuple[int, int, str, str]:

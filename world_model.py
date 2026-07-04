@@ -624,14 +624,14 @@ def _map_conditions(conditions: list[dict[str, Any]] | None,
 
 def _actor_marker(markers: list[dict[str, Any]], current_location: dict[str, Any] | None,
                   actor_label: str | None) -> dict[str, Any]:
-    """根据当前事件 location 生成明灯位置标记。
+    """根据当前事件 location 生成主体位置标记。
 
     输入是地图 markers 和当前事件/状态 location；输出位于某个地点上的 actor 标记，
     或 status=unknown 的空标记。调用方是 map_state 和 WebUI reader。这里只使用
     结构化 world_place_id/key 或唯一名称匹配，不根据文本猜位置。
     """
     loc = current_location if isinstance(current_location, dict) else {}
-    label = actor_label or "明灯"
+    label = actor_label or "角色"
     marker = None
     if loc.get("world_place_id"):
         marker = next((m for m in markers if m.get("id") == loc.get("world_place_id")), None)
@@ -659,12 +659,12 @@ def map_state(profiles: list[dict[str, Any]], regions: list[dict[str, Any]], pla
               routes: list[dict[str, Any]] | None = None,
               conditions: list[dict[str, Any]] | None = None,
               *, current_location: dict[str, Any] | None = None,
-              actor_label: str | None = "明灯") -> dict[str, Any]:
+              actor_label: str | None = None) -> dict[str, Any]:
     """生成结构化世界地图。
 
     输入是已解码的世界档案、区域、地点，以及可选当前 location；输出是 WebUI 和
     context 可共享的地图对象，包括画布、视口能力、网格、图片资源、图片图层、地形
-    层、路线、区域形状、地点/建筑标记、动态状态和明灯当前位置标记。函数不写
+    层、路线、区域形状、地点/建筑标记、动态状态和主体当前位置标记。函数不写
     数据库；地形、坐标、图片引用和交互能力来自结构字段：
     profile.rules.map、region.traits.map、place.coordinates，以及可选的一等
     world_routes/world_conditions 记录。
