@@ -133,10 +133,10 @@ def test_server_asset_preview_keeps_original_and_generates_thumbnail(tmp_path, m
 def test_webui_refactor_assets_and_human_layout_exist():
     root = Path(__file__).resolve().parents[1]
     assets = root / "webui" / "static" / "assets"
-    assert (assets / "agent-cover.jpg").exists()
-    assert (assets / "sprite-idle.png").exists()
-    assert (assets / "sprite-sleep.png").exists()
-    assert (assets / "sprite-dream.png").exists()
+    assert (assets / "default-agent-reference.jpg").exists()
+    assert (assets / "sprite-idle.webp").exists()
+    assert (assets / "sprite-sleep.webp").exists()
+    assert (assets / "sprite-dream.webp").exists()
     html = (root / "webui" / "static" / "index.html").read_text(encoding="utf-8")
     css = (root / "webui" / "static" / "styles.css").read_text(encoding="utf-8")
     js = (root / "webui" / "static" / "app.js").read_text(encoding="utf-8")
