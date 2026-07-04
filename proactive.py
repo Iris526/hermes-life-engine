@@ -19,6 +19,7 @@ from typing import Any
 
 from .canon import canon_companion_address_terms, canon_timezone
 from . import life_author
+from .conversation import temporal_gate, temporal_grounding
 from .jsonutil import dumps, loads
 from .trace import append_audit, append_journal, new_id
 from .time_utils import parse_datetime, to_epoch
@@ -55,6 +56,13 @@ _OUTBOX_SYSTEM_PHRASES = (
     "处理完成",
 )
 _OUTBOX_MAX_CHARS = 90
+_TEMPORAL_REF_WINDOW_KEYS = (
+    "temporal_ref_window",
+    "ref_window",
+    "time_window",
+    "canon_window",
+    "window_key",
+)
 # LifeAuthor 为 outbox 生成最终消息时使用的结构化输出合同。调用方只读取
 # message_text 写入 proactive_outbox.draft_text，emotional_tone 仅供审计和
 # 后续扩展，不改变当前发送状态机。
@@ -164,6 +172,82 @@ def _get_canon_policy(conn, agent_id: str) -> dict[str, Any]:
     if not policy.get("timezone") and not quiet_hours.get("timezone"):
         policy["timezone"] = canon_timezone(data, default="UTC")
     return policy
+
+
+def _delivery_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """归并 proactive intent 的投递策略与时间窗口引用。
+
+    输入是创建主动意图时的 payload；输出是可持久化到
+    `proactive_intents.delivery_policy_json` 的 dict。调用方是
+    `create_proactive_intent()`。函数只读内存、不访问数据库；它把顶层
+    `ref_window`/`temporal_ref_window` 等通用窗口引用并入 delivery_policy，避免
+    调用方必须知道底层存储字段。字段含义保持通用，不解释任何餐名或固定小时。
+    """
+    policy = dict(payload.get("delivery_policy") or {})
+    for key in _TEMPORAL_REF_WINDOW_KEYS:
+        if key not in policy and payload.get(key) is not None:
+            policy[key] = payload.get(key)
+    return policy
+
+
+def _intent_ref_window(intent: dict[str, Any]) -> str | dict[str, Any] | None:
+    """读取主动意图声明的 Canon 日内窗口引用。
+
+    输入是已解码的 proactive intent；输出是窗口 key 或窗口 fact dict。调用方是
+    proactive authoring/evaluate 的时间门控。函数只检查 delivery_policy 中的通用
+    字段和可选 nested temporal_gate，不按 intent_type、summary 或餐名猜测，避免把
+    “晚饭”示例写死成策略。
+    """
+    policy = intent.get("delivery_policy") if isinstance(intent.get("delivery_policy"), dict) else {}
+    for key in _TEMPORAL_REF_WINDOW_KEYS:
+        value = policy.get(key)
+        if value is not None:
+            return value
+    gate = policy.get("temporal_gate")
+    if isinstance(gate, dict):
+        for key in _TEMPORAL_REF_WINDOW_KEYS:
+            value = gate.get(key)
+            if value is not None:
+                return value
+    return None
+
+
+def _time_facts_from_authoring(authoring_now: dict[str, Any] | None) -> dict[str, Any] | None:
+    """从 heartbeat authoring_now 兼容块中取出原始 temporal facts。
+
+    输入是 `prepare_heartbeat_authoring` 传来的上下文字段；输出是与 reply path
+    `data["time"]` 同形的 dict 或 None。调用方是 proactive 事务外 authoring，
+    用同一份精确 phase/relation/minutes 做确定性门控。函数无副作用。
+    """
+    if not isinstance(authoring_now, dict):
+        return None
+    raw = authoring_now.get("time")
+    if isinstance(raw, dict):
+        return raw
+    if authoring_now.get("today_windows") is not None or authoring_now.get("phase_label") is not None:
+        return authoring_now
+    return None
+
+
+def temporal_gate_for_intent(conn, agent_id: str, intent: dict[str, Any], *,
+                             grounding: dict[str, Any] | None = None,
+                             kind: str = "proactive_outreach") -> dict[str, Any] | None:
+    """为一条主动意图计算可复用的时间适配门控。
+
+    输入是数据库连接、agent_id、已解码 intent 和可选 `temporal_grounding` 事实；
+    输出是 `conversation.temporal_gate()` 的决策 dict，或在 intent 未声明窗口时返回
+    None。调用方包括 heartbeat 事务外 outbox authoring、runtime 显式 evaluate
+    预生成、事务内 evaluate 和测试。函数只在缺少传入 facts 时读取 active Canon 与
+    conversation 时间事实，不访问模型、不写数据库；同一 facts 和同一窗口引用必定
+    返回同一决策。
+    """
+    ref_window = _intent_ref_window(intent)
+    if ref_window is None:
+        return None
+    facts = grounding
+    if not isinstance(facts, dict) or not facts:
+        facts = temporal_grounding(conn, "agent", agent_id, canon=_active_canon_data(conn, agent_id))
+    return temporal_gate(facts, f"{kind}:{intent.get('intent_type') or ''}", ref_window=ref_window)
 
 
 def _gate_policy(control: dict[str, Any] | None, canon_policy: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -512,7 +596,7 @@ def create_proactive_intent(conn, agent_id: str, **payload: Any) -> dict[str, An
             int(payload.get("relationship_relevance", 50)),
             payload.get("privacy_level", "safe_to_share"),
             payload.get("status", "generated"),
-            dumps(payload.get("delivery_policy", {})),
+            dumps(_delivery_policy_from_payload(payload)),
             expires_at,
             expires_at_ts,
             payload.get("generated_by", payload.get("source", "life_commit")),
@@ -769,7 +853,8 @@ def _fallback_outbox_text(intent: dict[str, Any], *, address_terms: tuple[str, .
 
 def _author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any], *,
                         trace_id: str | None = None,
-                        authoring_now: dict[str, Any] | None = None) -> str | None:
+                        authoring_now: dict[str, Any] | None = None,
+                        temporal_gate_decision: dict[str, Any] | None = None) -> str | None:
     """把主动意图改写成符合角色语气的可发送消息。
 
     输入是已通过策略、隐私和节奏检查的 proactive intent；输出是一条将
@@ -777,7 +862,9 @@ def _author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any
     预算耗尽、模型返回无效时返回 ``None``。调用方式是同步 best-effort：
     它只请求 LifeAuthor 生成内容，不修改资源账本、不提交事务、不绕过现有
     发送策略；失败由调用方使用确定性兜底，用户可见影响是语气退回保守模板。
-    `authoring_now` 是 heartbeat 预生成层提供的结构化时间事实，空值时不进入上下文。
+    `authoring_now` 是 heartbeat 预生成层提供的结构化时间事实，空值时不进入上下文；
+    `temporal_gate_decision` 是纯代码门控的结构化事实结论，只作为 DATA 进入 context，
+    不通过 prompt 行为指令实现拦截。
     """
     context = {
         "主动意图": {
@@ -804,6 +891,8 @@ def _author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any
     }
     if authoring_now:
         context["authoring_now"] = authoring_now
+    if temporal_gate_decision:
+        context["temporal_gate"] = temporal_gate_decision
     instructions = (
         "你准备主动给对方发一条消息。请把上下文里的主动意图改写成你本人会发出的"
         "一句短消息：自然、有性格、有一点当下的情绪，但不要表演腔，也不要像系统播报。"
@@ -831,7 +920,8 @@ def _author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any
 
 def author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any], *,
                        trace_id: str | None = None,
-                       authoring_now: dict[str, Any] | None = None) -> str | None:
+                       authoring_now: dict[str, Any] | None = None,
+                       temporal_gate_decision: dict[str, Any] | None = None) -> str | None:
     """在 LifeOps 写事务外生成 proactive outbox 最终文案。
 
     输入是已经存在的 proactive intent 和目标 user id；输出是一条可直接写入
@@ -839,11 +929,13 @@ def author_outbox_text(conn, agent_id: str, user_id: str, intent: dict[str, Any]
     调用方是 runtime 的 proactive evaluate 预处理和测试；副作用仅限 LifeAuthor
     调用审计，不改变 intent/outbox 状态。事务内 evaluate 会优先使用该 draft_text，
     并在缺失时回退确定性模板。`authoring_now` 只由 heartbeat 事务外路径传入，
-    作为事实上下文，不改变无 host fallback。
+    作为事实上下文，不改变无 host fallback；`temporal_gate_decision` 用于把已通过
+    gate 的 orientation/minutes 事实交给 authoring，不承担策略决策。
     """
     return _author_outbox_text(
         conn, agent_id, user_id, intent, trace_id=trace_id,
         authoring_now=authoring_now,
+        temporal_gate_decision=temporal_gate_decision,
     )
 
 
@@ -934,6 +1026,7 @@ def prepare_auto_send_outbox_authoring(conn, agent_id: str, control: dict[str, A
     时间块，只传给 LifeAuthor context。
     """
     drafts: dict[str, str] = {}
+    time_facts = _time_facts_from_authoring(authoring_now)
     for item in _auto_send_authoring_candidates(conn, agent_id, control, limit=limit):
         intent = item.get("intent") if isinstance(item, dict) else None
         if not isinstance(intent, dict):
@@ -943,9 +1036,13 @@ def prepare_auto_send_outbox_authoring(conn, agent_id: str, control: dict[str, A
         if not intent_id or not user_id:
             continue
         try:
+            gate = temporal_gate_for_intent(conn, agent_id, intent, grounding=time_facts)
+            if gate and gate.get("suppress"):
+                continue
             draft = author_outbox_text(
                 conn, agent_id, user_id, intent, trace_id=trace_id,
                 authoring_now=authoring_now,
+                temporal_gate_decision=gate,
             )
         except Exception:
             draft = None
@@ -966,6 +1063,7 @@ def evaluate_proactive_intent(
     draft_text: str | None = None,
     draft_texts_by_intent_id: dict[str, str] | None = None,
     allow_authoring: bool = True,
+    temporal_grounding_facts: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """评估 proactive intent 并按策略排队或生成 outbox。
 
@@ -975,6 +1073,8 @@ def evaluate_proactive_intent(
     文案映射。输出是逐 intent 的评估决策和可选 outbox。副作用是更新 intent/state、
     写 proactive_evaluations/journal/outbox；失败由外层事务回滚。该函数保留旧的
     `allow_authoring=True` 兼容直接模块调用，但 runtime 的 LifeOps 路径会传 false。
+    `temporal_grounding_facts` 是 heartbeat/reply 同源的精确时间事实；声明 Canon
+    窗口引用的 intent 会先走纯代码 temporal gate，避免不合时宜的主动内容继续生成。
     """
     canon_policy = _get_canon_policy(conn, agent_id)
     policy = _gate_policy(control, canon_policy)
@@ -1001,6 +1101,9 @@ def evaluate_proactive_intent(
         user_id = target_user_id or _target_user(intent, policy)
         state = ensure_proactive_state(conn, agent_id, user_id, timezone_name=policy.get("timezone"))
         score = _score_intent(intent, state)
+        temporal_decision = temporal_gate_for_intent(
+            conn, agent_id, intent, grounding=temporal_grounding_facts,
+        )
         decision = "none"
         reason = ""
         outbox = None
@@ -1018,6 +1121,24 @@ def evaluate_proactive_intent(
             conn.execute("UPDATE proactive_intents SET status='suppressed', suppressed_at=datetime('now'), suppression_reason=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?", ("agent_private cannot target user", dumps(score), dumps({"decision": "suppress", "reason": "agent_private cannot target user"}), intent["id"]))
             _update_state_pending(conn, agent_id, user_id, intent["id"], "suppressed_by_policy")
             decision, reason = "suppress", "agent_private cannot target user"
+        elif temporal_decision and temporal_decision.get("suppress"):
+            reason = str(temporal_decision.get("reason") or "temporal gate suppressed")
+            conn.execute(
+                "UPDATE proactive_intents SET status='suppressed', suppressed_at=datetime('now'), suppression_reason=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?",
+                (
+                    reason,
+                    dumps(score),
+                    dumps({
+                        "decision": "suppress",
+                        "reason": reason,
+                        "policy": policy,
+                        "temporal_gate": temporal_decision,
+                    }),
+                    intent["id"],
+                ),
+            )
+            _update_state_pending(conn, agent_id, user_id, intent["id"], "suppressed_by_policy")
+            decision = "suppress"
         elif score["score"] < policy["min_score_to_queue"] and not manual:
             conn.execute("UPDATE proactive_intents SET status='suppressed', suppressed_at=datetime('now'), suppression_reason=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?", ("score below queue threshold", dumps(score), dumps({"decision": "suppress", "reason": "score below queue threshold", "policy": policy}), intent["id"]))
             _update_state_pending(conn, agent_id, user_id, intent["id"], "suppressed_by_policy")
@@ -1054,7 +1175,13 @@ def evaluate_proactive_intent(
                 candidate_draft = draft_text if draft_text is not None else mapped_draft
                 msg = (
                     _usable_outbox_text(conn, agent_id, user_id, intent, candidate_draft, source="provided_draft", trace_id=trace_id)
-                    or (_author_outbox_text(conn, agent_id, user_id, intent, trace_id=trace_id) if allow_authoring else None)
+                    or (
+                        _author_outbox_text(
+                            conn, agent_id, user_id, intent, trace_id=trace_id,
+                            temporal_gate_decision=temporal_decision,
+                        )
+                        if allow_authoring else None
+                    )
                 )
                 if not msg:
                     fallback = _fallback_outbox_text(intent, address_terms=address_terms)
@@ -1070,7 +1197,10 @@ def evaluate_proactive_intent(
                     decision = "suppress"
                 else:
                     outbox = _create_outbox(conn, agent_id, user_id, intent, msg, status="queued", delivery_channel="hermes")
-                    conn.execute("UPDATE proactive_intents SET status='queued', queued_at=COALESCE(queued_at, datetime('now')), result_outbox_id=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?", (outbox.get("id"), dumps(score), dumps({"decision": "outbox_queued", "reason": "delivery allowed", "policy": policy}), intent["id"]))
+                    decision_payload = {"decision": "outbox_queued", "reason": "delivery allowed", "policy": policy}
+                    if temporal_decision:
+                        decision_payload["temporal_gate"] = temporal_decision
+                    conn.execute("UPDATE proactive_intents SET status='queued', queued_at=COALESCE(queued_at, datetime('now')), result_outbox_id=?, score_json=?, decision_json=?, updated_at=datetime('now') WHERE id=?", (outbox.get("id"), dumps(score), dumps(decision_payload), intent["id"]))
                     _update_state_pending(conn, agent_id, user_id, intent["id"], "waiting_for_user_reply")
                     decision, reason = "outbox_queued", "delivery allowed"
         eval_id = new_id("proeval")
@@ -1079,8 +1209,14 @@ def evaluate_proactive_intent(
                   decision, reason, policy_json, trace_id) VALUES(?,?,?,?,?,?,?,?,?,?)""",
             (eval_id, agent_id, user_id, intent["id"], mode, float(score["score"]), decision, reason, dumps(policy), trace_id),
         )
-        append_journal(conn, "agent", agent_id, "proactive_intent_evaluated", {"intent_id": intent["id"], "decision": decision, "reason": reason, "score": score, "outbox_id": outbox.get("id") if outbox else None}, "proactive")
-        evaluated.append({"evaluation_id": eval_id, "intent_id": intent["id"], "decision": decision, "reason": reason, "score": score, "outbox": outbox, "state": ensure_proactive_state(conn, agent_id, user_id, timezone_name=policy.get("timezone"))})
+        journal_payload = {"intent_id": intent["id"], "decision": decision, "reason": reason, "score": score, "outbox_id": outbox.get("id") if outbox else None}
+        if temporal_decision:
+            journal_payload["temporal_gate"] = temporal_decision
+        append_journal(conn, "agent", agent_id, "proactive_intent_evaluated", journal_payload, "proactive")
+        evaluated_item = {"evaluation_id": eval_id, "intent_id": intent["id"], "decision": decision, "reason": reason, "score": score, "outbox": outbox, "state": ensure_proactive_state(conn, agent_id, user_id, timezone_name=policy.get("timezone"))}
+        if temporal_decision:
+            evaluated_item["temporal_gate"] = temporal_decision
+        evaluated.append(evaluated_item)
     return {"evaluated": evaluated, "policy": policy}
 
 
@@ -1118,6 +1254,7 @@ def reconsider_waiting_proactive_intents(
     limit: int = 10,
     allow_authoring: bool = False,
     draft_texts_by_intent_id: dict[str, str] | None = None,
+    temporal_grounding_facts: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """重评已经越过临时等待条件的 queued 主动意图。
 
@@ -1126,7 +1263,8 @@ def reconsider_waiting_proactive_intents(
     会先运行这里，再评估新的 generated intent。`draft_texts_by_intent_id` 是事务外
     LifeAuthor 预生成的内存映射；命中时传给普通 evaluate 路径，缺失时保留原有
     `_fallback_outbox_text` 降级。副作用是通过 evaluate 写 evaluation/outbox/state，
-    本函数自身不访问模型，也不绕过 auto_send gate。
+    本函数自身不访问模型，也不绕过 auto_send gate；`temporal_grounding_facts`
+    会原样传给 evaluate，使旧 queued intent 也使用同一时刻的 deterministic gate。
     """
     canon_policy = _get_canon_policy(conn, agent_id)
     policy = _gate_policy(control, canon_policy)
@@ -1159,6 +1297,7 @@ def reconsider_waiting_proactive_intents(
             trace_id=trace_id,
             draft_text=drafts.get(str(intent.get("id") or "")),
             allow_authoring=allow_authoring,
+            temporal_grounding_facts=temporal_grounding_facts,
         )
         item = (out.get("evaluated") or [{}])[0]
         reconsidered.append({

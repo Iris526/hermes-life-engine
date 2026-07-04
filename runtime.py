@@ -226,6 +226,7 @@ from .proactive import (
     proactive_lifecycle_status,
     reconsider_waiting_proactive_intents,
     suppress_intent,
+    temporal_gate_for_intent,
     ensure_proactive_state,
 )
 from .receipts import create_commit_receipt
@@ -819,7 +820,7 @@ class LifeEngineRuntime:
         elif op_type == "CREATE_PROACTIVE_INTENT":
             return create_proactive_intent(self.conn, owner_id, source=payload.get("source") or source, **{k: v for k, v in payload.items() if k != "source"})
         elif op_type == "EVALUATE_PROACTIVE_INTENT":
-            return evaluate_proactive_intent(self.conn, owner_id, payload.get("intent_id"), control=ensure_control(self.conn, "agent", owner_id), target_user_id=payload.get("target_user_id"), manual=bool(payload.get("manual", False)), trace_id=payload.get("trace_id"), draft_text=payload.get("draft_text"), draft_texts_by_intent_id=payload.get("draft_texts_by_intent_id"), allow_authoring=bool(payload.get("allow_authoring", False)))
+            return evaluate_proactive_intent(self.conn, owner_id, payload.get("intent_id"), control=ensure_control(self.conn, "agent", owner_id), target_user_id=payload.get("target_user_id"), manual=bool(payload.get("manual", False)), trace_id=payload.get("trace_id"), draft_text=payload.get("draft_text"), draft_texts_by_intent_id=payload.get("draft_texts_by_intent_id"), allow_authoring=bool(payload.get("allow_authoring", False)), temporal_grounding_facts=payload.get("temporal_grounding_facts"))
         elif op_type == "RECONSIDER_WAITING_PROACTIVE_INTENTS":
             return reconsider_waiting_proactive_intents(
                 self.conn,
@@ -829,6 +830,7 @@ class LifeEngineRuntime:
                 limit=int(payload.get("limit", 10)),
                 allow_authoring=bool(payload.get("allow_authoring", False)),
                 draft_texts_by_intent_id=payload.get("draft_texts_by_intent_id"),
+                temporal_grounding_facts=payload.get("temporal_grounding_facts"),
             )
         elif op_type == "MARK_PROACTIVE_SENT":
             return mark_outbox_sent(self.conn, owner_id, payload["outbox_id"], result=payload.get("result") or {}, manual=bool(payload.get("manual", True)))
@@ -2853,12 +2855,15 @@ class LifeEngineRuntime:
         drafts = (authoring or {}).get("proactive_outbox_drafts") or {}
         if not isinstance(drafts, dict):
             drafts = {}
+        temporal_facts = (authoring or {}).get("time") if isinstance(authoring, dict) else None
+        if not isinstance(temporal_facts, dict):
+            temporal_facts = None
         try:
             with trace.span("proactive_evaluate", {"mode": mode}):
                 commit = self._commit_ops_locked([
                     {"type": "EXPIRE_PROACTIVE_INTENTS", "payload": {}},
-                    {"type": "RECONSIDER_WAITING_PROACTIVE_INTENTS", "payload": {"trace_id": trace.id, "allow_authoring": False, "draft_texts_by_intent_id": drafts}},
-                    {"type": "EVALUATE_PROACTIVE_INTENT", "payload": {"manual": False, "trace_id": trace.id, "allow_authoring": False, "draft_texts_by_intent_id": drafts}},
+                    {"type": "RECONSIDER_WAITING_PROACTIVE_INTENTS", "payload": {"trace_id": trace.id, "allow_authoring": False, "draft_texts_by_intent_id": drafts, "temporal_grounding_facts": temporal_facts}},
+                    {"type": "EVALUATE_PROACTIVE_INTENT", "payload": {"manual": False, "trace_id": trace.id, "allow_authoring": False, "draft_texts_by_intent_id": drafts, "temporal_grounding_facts": temporal_facts}},
                 ], owner_kind, owner_id, "proactive_heartbeat", session_id=None, turn_id=tick_id, trace=trace, control=control)
             return {"commit": commit}
         except Exception as exc:
@@ -2884,10 +2889,14 @@ class LifeEngineRuntime:
             return {"generated": None, "reason": "companion off"}
         try:
             from . import companion
+            temporal_facts = (authoring or {}).get("time") if isinstance(authoring, dict) else None
+            if not isinstance(temporal_facts, dict):
+                temporal_facts = None
             with trace.span("companion_generate", {"tick_id": tick_id}):
                 intent = companion.maybe_generate_companion_intent(
                     self.conn, owner_id, control=control, now=now, trace_id=trace.id,
                     authored=(authoring or {}).get("companion"), allow_authoring=False,
+                    temporal_grounding_facts=temporal_facts,
                 )
             return {"generated": intent.get("id") if intent else None,
                     "intent_type": intent.get("intent_type") if intent else None}
@@ -3808,7 +3817,23 @@ class LifeEngineRuntime:
                     if can_reach_outbox and p.get("intent_id"):
                         intent = get_proactive_intent(self.conn, p["intent_id"])
                         target_user_id = p.get("target_user_id") or intent.get("target_id") or DEFAULT_USER_ID
-                        draft = author_outbox_text(self.conn, owner_id, str(target_user_id), intent, trace_id=p.get("trace_id"))
+                        temporal_decision = temporal_gate_for_intent(
+                            self.conn,
+                            owner_id,
+                            intent,
+                            grounding=p.get("temporal_grounding_facts"),
+                        )
+                        if temporal_decision and temporal_decision.get("suppress"):
+                            draft = None
+                        else:
+                            draft = author_outbox_text(
+                                self.conn,
+                                owner_id,
+                                str(target_user_id),
+                                intent,
+                                trace_id=p.get("trace_id"),
+                                temporal_gate_decision=temporal_decision,
+                            )
                         if draft:
                             p["draft_text"] = draft
                 except Exception:

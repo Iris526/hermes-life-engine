@@ -42,6 +42,8 @@ def _authoring_now_grounding(conn, owner_kind: str, owner_id: str, *,
         compact = _compact_time(raw, minimal=True)
         if not compact:
             return {}
+        # 兼容旧 authoring_now 的扁平字段，同时把 reply path 同名的完整
+        # data["time"] 事实原样嵌进去，供主动生成链路做程序化门控。
         if raw.get("timezone") is not None:
             compact["timezone"] = raw.get("timezone")
         if raw.get("phase_label") is not None:
@@ -54,6 +56,7 @@ def _authoring_now_grounding(conn, owner_kind: str, owner_id: str, *,
             }
         else:
             compact["since_last_exchange"] = None
+        compact["time"] = raw
         return compact
     except Exception:
         return {}
@@ -235,6 +238,7 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
         "dreams_by_sleep_plan_id": {},
         "proactive_outbox_drafts": {},
         "authoring_now": {},
+        "time": {},
     }
     if owner_kind != "agent" or control.get("engine_state") != "active":
         return package
@@ -244,6 +248,7 @@ def prepare_heartbeat_authoring(conn, owner_kind: str, owner_id: str, control: d
         return package
     authoring_now = _authoring_now_grounding(conn, owner_kind, owner_id, now=now)
     package["authoring_now"] = authoring_now
+    package["time"] = authoring_now.get("time") if isinstance(authoring_now, dict) else {}
     try:
         package["autonomy_goal_step"] = autonomy.author_goal_step_for_tick(
             conn, owner_kind, owner_id, control, tick_id=tick_id,

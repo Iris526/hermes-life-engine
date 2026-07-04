@@ -34,6 +34,7 @@ _DAY_PHASES = [
     (23, "late_night", "深夜"),
 ]
 _WEEKDAY_ZH = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+_LATE_TEMPORAL_PHASES = {"late_night", "small_hours"}
 
 
 @dataclass(frozen=True)
@@ -601,6 +602,81 @@ def _today_windows(conn, owner_kind: str, owner_id: str, canon: dict[str, Any] |
             "recorded_today": st != "pending",
         })
     return out
+
+
+def _temporal_window_from_ref(grounding: dict[str, Any] | None,
+                              ref_window: str | dict[str, Any] | None) -> dict[str, Any] | None:
+    """从时间事实里解析一个被主动内容引用的日内窗口。
+
+    输入是 `temporal_grounding()` 返回的事实块和调用方提供的窗口引用；输出是
+    `today_windows` 中对应的窗口事实，找不到时返回调用方传入的完整窗口 dict 或
+    None。调用方是 `temporal_gate()`；函数纯内存计算、无数据库副作用。窗口解析
+    只看稳定 key/relation/minutes 事实，不解释早餐、晚饭等业务名称，保证后续门控
+    对任何 Canon 日内窗口通用。
+    """
+    if ref_window is None:
+        return None
+    windows = (grounding or {}).get("today_windows") or []
+    key: str | None = None
+    if isinstance(ref_window, str):
+        key = ref_window
+    elif isinstance(ref_window, dict):
+        for key_name in ("key", "window_key", "ref_window", "temporal_ref_window"):
+            value = ref_window.get(key_name)
+            if value:
+                key = str(value)
+                break
+    if key:
+        for window in windows:
+            if isinstance(window, dict) and str(window.get("key") or "") == key:
+                return dict(window)
+    if isinstance(ref_window, dict) and ref_window.get("relation"):
+        return dict(ref_window)
+    return None
+
+
+def temporal_gate(grounding: dict[str, Any] | None, kind: str,
+                  ref_window: str | dict[str, Any] | None = None) -> dict[str, Any]:
+    """对 Agent 主动发起内容做确定性时间适配门控。
+
+    输入是 `temporal_grounding()` 的精确事实、主动内容种类和可选 Canon 日内窗口引用；
+    输出是纯 dict 决策：`suppress` 表示是否应在生成/发送前拦截，`reason` 是稳定原因码，
+    `orientation` 是给后续 authoring 使用的事实朝向（past/present/future），`ref_window`
+    保留命中的窗口精确 relation/minutes。调用方包括 proactive outbox、companion idle
+    outreach 和测试；函数不读写数据库、不访问模型、不猜测餐名或小时，完全由传入事实决定。
+    失败和缺窗口时默认 allow，避免把未知内容误杀。
+    """
+    facts = grounding or {}
+    window = _temporal_window_from_ref(facts, ref_window)
+    phase = facts.get("phase")
+    phase_label = facts.get("phase_label")
+    decision: dict[str, Any] = {
+        "kind": str(kind or ""),
+        "suppress": False,
+        "reason": "no_ref_window" if ref_window is None else None,
+        "orientation": "present",
+        "phase": phase,
+        "phase_label": phase_label,
+        "ref_window": window,
+    }
+    if ref_window is not None and not window:
+        decision["reason"] = "ref_window_not_found"
+        return decision
+
+    relation = str((window or {}).get("relation") or "")
+    if relation == "passed":
+        decision["orientation"] = "past"
+    elif relation == "upcoming":
+        decision["orientation"] = "future"
+    elif relation == "in_window":
+        decision["orientation"] = "present"
+
+    if relation == "passed" and phase in _LATE_TEMPORAL_PHASES:
+        decision["suppress"] = True
+        decision["reason"] = "passed_window_in_late_phase"
+    else:
+        decision["reason"] = decision["reason"] or "allowed"
+    return decision
 
 
 def temporal_grounding(conn, owner_kind: str, owner_id: str, *, canon: dict[str, Any] | None = None,

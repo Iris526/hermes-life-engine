@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 from . import life_author
 from . import relationship as rel
 from .canon import get_active_canon
+from .conversation import temporal_gate
 from .emotion import current_mood, mood_band
 from .jsonutil import loads
 from .living import _skin_data
@@ -62,6 +63,58 @@ _DEFAULT_POLICY: dict[str, Any] = {
     "default_user_id": None,
     "timezone": "Asia/Shanghai",
 }
+
+
+def _time_facts_from_authoring(authoring_now: dict[str, Any] | None) -> dict[str, Any] | None:
+    """从 heartbeat authoring_now 中读取原始时间事实。
+
+    输入是 `prepare_heartbeat_authoring` 传入的兼容上下文；输出是 reply path
+    `data["time"]` 同形 dict 或 None。调用方是 companion 的事务外/事务内
+    deterministic gate。函数只读内存，不访问模型或数据库。
+    """
+    if not isinstance(authoring_now, dict):
+        return None
+    raw = authoring_now.get("time")
+    if isinstance(raw, dict):
+        return raw
+    if authoring_now.get("today_windows") is not None or authoring_now.get("phase_label") is not None:
+        return authoring_now
+    return None
+
+
+def _candidate_ref_window(candidate: dict[str, Any] | None,
+                          package: dict[str, Any] | None = None) -> str | dict[str, Any] | None:
+    """读取 companion 候选显式声明的 Canon 日内窗口引用。
+
+    输入是 `_candidate()` 的候选和可选事务外 authored 包；输出是窗口 key/fact 或
+    None。当前 idle/follow-up 候选默认不声明窗口，因此不会被误杀；未来若某个
+    companion 候选要围绕任意 Canon window 发起内容，只需填入通用 ref_window 字段，
+    这里不会按餐名或 intent_type 特判。
+    """
+    for source in (candidate, package):
+        if not isinstance(source, dict):
+            continue
+        for key in ("temporal_ref_window", "ref_window", "time_window", "canon_window", "window_key"):
+            value = source.get(key)
+            if value is not None:
+                return value
+    return None
+
+
+def _companion_temporal_gate(candidate: dict[str, Any] | None,
+                             grounding: dict[str, Any] | None,
+                             package: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """为 companion 主动候选计算纯代码时间门控。
+
+    输入是候选、`temporal_grounding` facts 和可选 authored 包；输出是
+    `conversation.temporal_gate()` 决策或 None。调用方在 LifeAuthor 生成前和
+    intent 落库前各检查一次；无窗口引用时不改变现有 idle/follow-up 行为。
+    """
+    ref_window = _candidate_ref_window(candidate, package)
+    if ref_window is None:
+        return None
+    kind = str((candidate or {}).get("kind") or "companion")
+    return temporal_gate(grounding or {}, f"companion:{kind}", ref_window=ref_window)
 
 _LINE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -482,6 +535,9 @@ def author_companion_for_tick(conn, agent_id: str, *, control: dict[str, Any] | 
         cand = _candidate(conn, agent_id, control=control, user_id=user_id, now=now)
         if not cand:
             return None
+        gate = _companion_temporal_gate(cand, _time_facts_from_authoring(authoring_now))
+        if gate and gate.get("suppress"):
+            return None
         if cand["kind"] == "ask_about_user":
             parsed = _author_followup_line(
                 conn, agent_id, cand["user_id"], cand["note"], now=now,
@@ -497,7 +553,13 @@ def author_companion_for_tick(conn, agent_id: str, *, control: dict[str, Any] | 
         parsed = _sanitize_parsed_line(conn, agent_id, cand["kind"], parsed, user_id=cand["user_id"], now=now, trace_id=trace_id)
         if not parsed or not str(parsed.get("summary") or "").strip():
             return None
-        return {"kind": cand["kind"], "user_id": cand["user_id"], "note_id": note_id, "parsed": parsed}
+        package = {"kind": cand["kind"], "user_id": cand["user_id"], "note_id": note_id, "parsed": parsed}
+        if gate:
+            package["temporal_gate"] = gate
+        for ref_key in ("temporal_ref_window", "ref_window", "time_window", "canon_window", "window_key"):
+            if cand.get(ref_key) is not None:
+                package[ref_key] = cand.get(ref_key)
+        return package
     except Exception:
         return None
 
@@ -506,7 +568,8 @@ def maybe_generate_companion_intent(conn, agent_id: str, *, control: dict[str, A
                                     user_id: str | None = None, now: str | None = None,
                                     trace_id: str | None = None,
                                     authored: dict[str, Any] | None = None,
-                                    allow_authoring: bool = True) -> dict[str, Any] | None:
+                                    allow_authoring: bool = True,
+                                    temporal_grounding_facts: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """创建至多一条陪伴主动意图。
 
     输入来自 heartbeat 或工具层；`authored` 是事务外预生成的短期内存包，
@@ -514,10 +577,15 @@ def maybe_generate_companion_intent(conn, agent_id: str, *, control: dict[str, A
     或 `None`。副作用是写 proactive_intents，并在 follow-up 成功创建后标记对应
     relationship note 已回访；所有失败都降级为 `None`，避免陪伴链路 destabilise
     heartbeat。函数会在落库前重新检查节奏和候选 note，保证幂等与不刷屏。
+    `temporal_grounding_facts` 只用于显式窗口引用的纯代码 gate，不通过 prompt 指令
+    改写模型行为。
     """
     try:
         cand = _candidate(conn, agent_id, control=control, user_id=user_id, now=now)
         if not cand:
+            return None
+        gate = _companion_temporal_gate(cand, temporal_grounding_facts, authored)
+        if gate and gate.get("suppress"):
             return None
         package = authored
         if package is not None:
