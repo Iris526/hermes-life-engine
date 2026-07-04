@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+import ast
+import importlib
+import inspect
 import re
 from pathlib import Path
 
@@ -267,6 +270,7 @@ TABLE_EXISTS_RE = re.compile(
 HELPER_TABLE_ARG_RE = re.compile(
     r"\b_?q\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\s*(?:,|\))"
 )
+ENGINE_SURFACE_REGISTRY = "SURFACED_VIA_ENGINE"
 
 
 def _schema_tables(tmp_path: Path, monkeypatch) -> set[str]:
@@ -290,18 +294,102 @@ def _schema_tables(tmp_path: Path, monkeypatch) -> set[str]:
         rt.close()
 
 
-def _reader_referenced_tables(schema_tables: set[str]) -> set[str]:
-    """静态扫描 reader.py，提取 WebUI read layer 明确提到的 schema 表。
+def _engine_surface_registry(source: str) -> dict[str, str]:
+    """读取 reader.py 中显式声明的 engine read-model 覆盖表。
 
-    输入是动态 schema 表集合；输出是 reader SQL、_table_exists guard 和本地查询
-    helper 参数中出现的表名。调用方是合同测试。函数只读源码文件，不执行 reader。
+    输入是 reader.py 源码；输出为 table -> dotted engine function。调用方是
+    schema 合同测试的静态扫描。函数不执行 reader，只解析字面量注册表；注册表缺失
+    或格式错误时直接断言失败，避免 SQL 迁移后靠隐式约定绕过覆盖检查。
     """
-    source = READER_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(READER_PATH))
+    registry_node: ast.AST | None = None
+    for node in tree.body:
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.target.id == ENGINE_SURFACE_REGISTRY:
+                registry_node = node.value
+                break
+        if isinstance(node, ast.Assign):
+            if any(isinstance(target, ast.Name) and target.id == ENGINE_SURFACE_REGISTRY for target in node.targets):
+                registry_node = node.value
+                break
+    if registry_node is None:
+        return {}
+    raw = ast.literal_eval(registry_node)
+    assert isinstance(raw, dict), f"{ENGINE_SURFACE_REGISTRY} must be a literal dict"
+    registry = {str(table): str(dotted) for table, dotted in raw.items()}
+    bad = {
+        table: dotted
+        for table, dotted in registry.items()
+        if not table.strip() or "." not in dotted
+    }
+    assert not bad, f"{ENGINE_SURFACE_REGISTRY} entries must be table -> dotted function path: {bad}"
+    return registry
+
+
+def _source_referenced_tables(source: str, schema_tables: set[str]) -> set[str]:
+    """从一段源码中提取直接 SQL 提到的当前 schema 表。
+
+    输入是函数或 reader 源码以及动态 schema 表集合；输出是 SQL/guard/helper
+    识别到的表名交集。调用方同时用于 reader.py 和注册的 engine read-model 函数。
+    它只认真实源码引用，不读取 allow-list，保证新生活表仍需被显式 surfacing。
+    """
     names: set[str] = set()
     for pattern in (SQL_TABLE_RE, DELETE_TABLE_RE):
         names.update(match.group(2) for match in pattern.finditer(source))
     names.update(match.group(1) for match in TABLE_EXISTS_RE.finditer(source))
     names.update(match.group(1) for match in HELPER_TABLE_ARG_RE.finditer(source))
+    return names & schema_tables
+
+
+def _resolve_engine_function(dotted_path: str):
+    """把注册表中的 dotted path 解析为真实 engine read-model 函数。
+
+    输入是形如 `lifeengine.world_model.list_profiles` 的路径；输出是可 inspect 的
+    函数对象。调用方是合同测试。解析失败直接断言失败，使无效注册不会静默变成
+    surfaced。
+    """
+    module_name, _, attr = dotted_path.rpartition(".")
+    assert module_name and attr, f"Invalid engine read-model path: {dotted_path}"
+    module = importlib.import_module(module_name)
+    fn = getattr(module, attr, None)
+    assert callable(fn), f"Engine read-model is not callable: {dotted_path}"
+    return fn
+
+
+def _engine_referenced_tables(registry: dict[str, str], schema_tables: set[str]) -> set[str]:
+    """扫描注册的 engine read-model 函数源码，返回它们实际读取的表。
+
+    输入是 reader 的 table -> engine function 注册表和动态 schema 表集合；输出是
+    这些函数源码中直接 SQL 读取到的 schema 表。调用方是 reader 覆盖扫描。每个
+    注册项都必须指向会读取该表的函数，否则断言失败；这让注册表是可审计的合同，
+    不是把 missing 表涂绿的橡皮章。
+    """
+    out: set[str] = set()
+    mismatches: dict[str, str] = {}
+    for table, dotted_path in registry.items():
+        fn = _resolve_engine_function(dotted_path)
+        source = inspect.getsource(fn)
+        function_tables = _source_referenced_tables(source, schema_tables)
+        if table not in function_tables:
+            mismatches[table] = f"{dotted_path} reads {_format_names(function_tables)}"
+        out.update(function_tables)
+    assert not mismatches, (
+        f"{ENGINE_SURFACE_REGISTRY} claims tables that are not read by their engine functions: {mismatches}"
+    )
+    return out
+
+
+def _reader_referenced_tables(schema_tables: set[str]) -> set[str]:
+    """静态扫描 reader.py，提取 WebUI read layer 明确提到的 schema 表。
+
+    输入是动态 schema 表集合；输出是 reader SQL、_table_exists guard、本地查询
+    helper 参数和显式注册的 engine read-model 中出现的表名。调用方是合同测试。
+    函数只读源码文件和 engine 函数源码，不执行 reader。
+    """
+    source = READER_PATH.read_text(encoding="utf-8")
+    registry = _engine_surface_registry(source)
+    names = _source_referenced_tables(source, schema_tables)
+    names.update(_engine_referenced_tables(registry, schema_tables))
     return names & schema_tables
 
 

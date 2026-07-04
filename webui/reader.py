@@ -20,7 +20,32 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..social_world import WORLD_AUDIENCE, slot_advisories, slots_from_canon
+from .. import world_model as _engine_world_model
+from ..persona import get_persona as _engine_get_persona
+from ..resources import list_resources as _engine_list_resources
+from ..social_world import (
+    WORLD_AUDIENCE,
+    slot_advisories,
+    slots_from_canon,
+)
+
+
+SURFACED_VIA_ENGINE: dict[str, str] = {
+    # WebUI 读面已由 reader.py 内联 SQL 迁移到 engine read-model。key 是仍被
+    # Observatory 读取的 schema 表，value 是实际承担读取的 engine 函数；契约测试会
+    # 扫描这些函数源码，避免 SQL 移出 reader 后被误判为未 surfaced。
+    "persona_traits": "lifeengine.persona.get_persona",
+    "resource_accounts": "lifeengine.resources.list_resources",
+    "resource_definitions": "lifeengine.resources.list_resources",
+    "world_chronicle_events": "lifeengine.world_model.list_chronicle_events",
+    "world_conditions": "lifeengine.world_model.list_conditions",
+    "world_faction_presence": "lifeengine.world_model.list_faction_presence",
+    "world_lore_entries": "lifeengine.world_model.list_lore_entries",
+    "world_places": "lifeengine.world_model.list_places",
+    "world_profiles": "lifeengine.world_model.list_profiles",
+    "world_regions": "lifeengine.world_model.list_regions",
+    "world_routes": "lifeengine.world_model.list_routes",
+}
 
 
 def _now() -> _dt.datetime:
@@ -232,14 +257,41 @@ class LifeEngineReader:
         with self._connect() as conn:
             if not self._table_exists(conn, "resource_accounts"):
                 return []
-            return self._all(conn, """
-                SELECT a.resource_key, a.current_value, a.unit, a.capacity, a.state, d.display_name, d.resource_class, d.min_value, d.max_value
-                FROM resource_accounts a
-                LEFT JOIN resource_definitions d
-                  ON d.owner_kind=a.owner_kind AND d.owner_id=a.owner_id AND d.key=a.resource_key
-                WHERE a.owner_kind=? AND a.owner_id=?
-                ORDER BY a.resource_key
-            """, (owner_kind, owner_id))
+            if not self._table_exists(conn, "resource_definitions"):
+                rows = self._all(
+                    conn,
+                    """SELECT resource_key, current_value, unit, capacity, state
+                       FROM resource_accounts
+                       WHERE owner_kind=? AND owner_id=?
+                       ORDER BY resource_key""",
+                    (owner_kind, owner_id),
+                )
+                for row in rows:
+                    row["display_name"] = None
+                    row["resource_class"] = None
+                    row["min_value"] = None
+                    row["max_value"] = None
+                return rows
+            engine_rows = _engine_list_resources(conn, owner_kind, owner_id)
+            definitions = {
+                str(row.get("key")): row
+                for row in engine_rows.get("definitions", [])
+            }
+            out = []
+            for account in engine_rows.get("accounts", []):
+                definition = definitions.get(str(account.get("resource_key"))) or {}
+                out.append({
+                    "resource_key": account.get("resource_key"),
+                    "current_value": account.get("current_value"),
+                    "unit": account.get("unit"),
+                    "capacity": account.get("capacity"),
+                    "state": account.get("state"),
+                    "display_name": definition.get("display_name"),
+                    "resource_class": definition.get("resource_class"),
+                    "min_value": definition.get("min_value"),
+                    "max_value": definition.get("max_value"),
+                })
+            return out
 
     def current_event(self, owner_kind: str, owner_id: str, state: dict[str, Any] | None = None) -> dict[str, Any] | None:
         state = state or self.realtime_state(owner_kind, owner_id)
@@ -565,7 +617,6 @@ class LifeEngineReader:
         来自 profile.rules.map、region.traits.map、place.coordinates，明灯位置只从
         当前事件 location 的结构化地点引用或唯一地点名解析。
         """
-        from .. import world_model as _world_model
         empty = {
             "profiles": [],
             "regions": [],
@@ -575,7 +626,7 @@ class LifeEngineReader:
             "routes": [],
             "conditions": [],
             "chronicle_events": [],
-            "map": _world_model.map_state([], [], [], current_location=current_location, actor_label=actor_label),
+            "map": _engine_world_model.map_state([], [], [], current_location=current_location, actor_label=actor_label),
             "counts": {
                 "profiles": 0,
                 "regions": 0,
@@ -590,92 +641,47 @@ class LifeEngineReader:
         with self._connect() as conn:
             profiles: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_profiles"):
-                profiles = self._all(
-                    conn,
-                    """SELECT * FROM world_profiles
-                       WHERE owner_kind=? AND owner_id=? AND status='active'
-                       ORDER BY updated_at DESC LIMIT ?""",
-                    (owner_kind, owner_id, int(limit)),
-                )
-                for item in profiles:
-                    item["rules"] = _safe_json(item.pop("rules_json", None), {})
-                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+                profiles = _engine_world_model.list_profiles(conn, owner_kind, owner_id, limit=int(limit))
 
             regions: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_regions"):
-                regions = self._all(
-                    conn,
-                    """SELECT * FROM world_regions
-                       WHERE owner_kind=? AND owner_id=? AND status='active'
-                       ORDER BY parent_region_id, name LIMIT ?""",
-                    (owner_kind, owner_id, int(limit)),
-                )
-                for item in regions:
-                    item["traits"] = _safe_json(item.pop("traits_json", None), {})
-                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+                regions = _engine_world_model.list_regions(conn, owner_kind, owner_id, limit=int(limit))
             region_names = {str(r.get("id")): str(r.get("name") or r.get("key") or r.get("id")) for r in regions if r.get("id")}
 
             places: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_places"):
-                places = self._all(
-                    conn,
-                    """SELECT * FROM world_places
-                       WHERE owner_kind=? AND owner_id=? AND status='active'
-                       ORDER BY region_id, name LIMIT ?""",
-                    (owner_kind, owner_id, int(limit)),
-                )
+                places = _engine_world_model.list_places(conn, owner_kind, owner_id, limit=int(limit))
                 for item in places:
-                    item["coordinates"] = _safe_json(item.pop("coordinates_json", None), {})
-                    item["traits"] = _safe_json(item.pop("traits_json", None), {})
-                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
                     item["region_name"] = region_names.get(str(item.get("region_id") or ""))
             place_names = {str(p.get("id")): str(p.get("name") or p.get("key") or p.get("id")) for p in places if p.get("id")}
 
             lore: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_lore_entries"):
-                lore = self._all(
-                    conn,
-                    """SELECT * FROM world_lore_entries
-                       WHERE owner_kind=? AND owner_id=? AND status='active'
-                       ORDER BY updated_at DESC LIMIT ?""",
-                    (owner_kind, owner_id, int(limit)),
-                )
+                lore = _engine_world_model.list_lore_entries(conn, owner_kind, owner_id, limit=int(limit))
                 for item in lore:
-                    item["tags"] = _safe_json(item.pop("tags_json", None), [])
-                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
                     scope_kind = item.get("scope_kind")
                     scope_id = str(item.get("scope_id") or "")
                     item["scope_name"] = "世界" if scope_kind == "world" else (
                         region_names.get(scope_id) if scope_kind == "region" else place_names.get(scope_id)
                     )
 
-            entity_names: dict[str, dict[str, str | None]] = {}
-            if self._table_exists(conn, "world_entities"):
-                for entity in self._all(
-                    conn,
-                    """SELECT id, display_name, entity_kind FROM world_entities
-                       WHERE owner_kind=? AND owner_id=?""",
-                    (owner_kind, owner_id),
-                ):
-                    entity_names[str(entity.get("id"))] = {
-                        "name": entity.get("display_name"),
-                        "kind": entity.get("entity_kind"),
-                    }
-
             faction_presence: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_faction_presence"):
-                faction_presence = self._all(
-                    conn,
-                    """SELECT * FROM world_faction_presence
-                       WHERE owner_kind=? AND owner_id=? AND status='active'
-                       ORDER BY ABS(influence) DESC, updated_at DESC LIMIT ?""",
-                    (owner_kind, owner_id, int(limit)),
-                )
+                if self._table_exists(conn, "world_entities"):
+                    faction_presence = _engine_world_model.list_faction_presence(conn, owner_kind, owner_id, limit=int(limit))
+                else:
+                    faction_presence = self._all(
+                        conn,
+                        """SELECT * FROM world_faction_presence
+                           WHERE owner_kind=? AND owner_id=? AND status='active'
+                           ORDER BY ABS(influence) DESC, updated_at DESC LIMIT ?""",
+                        (owner_kind, owner_id, int(limit)),
+                    )
                 for item in faction_presence:
-                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
-                    faction = entity_names.get(str(item.get("faction_entity_id") or "")) or {}
-                    item["faction_name"] = faction.get("name") or item.get("faction_entity_id")
-                    item["faction_kind"] = faction.get("kind")
+                    if "evidence_json" in item:
+                        item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
+                    item["faction_name"] = item.get("faction_name") or item.get("faction_entity_id")
+                    item.setdefault("faction_kind", None)
                     scope_kind = item.get("scope_kind")
                     scope_id = str(item.get("scope_id") or "")
                     item["scope_name"] = "世界" if scope_kind == "world" else (
@@ -695,54 +701,28 @@ class LifeEngineReader:
 
             routes: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_routes"):
-                routes = self._all(
-                    conn,
-                    """SELECT * FROM world_routes
-                       WHERE owner_kind=? AND owner_id=? AND status!='archived'
-                       ORDER BY risk_level DESC, updated_at DESC LIMIT ?""",
-                    (owner_kind, owner_id, int(limit)),
-                )
+                routes = _engine_world_model.list_routes(conn, owner_kind, owner_id, limit=int(limit))
                 for item in routes:
-                    item["cost"] = _safe_json(item.pop("cost_json", None), {})
-                    item["schedule"] = _safe_json(item.pop("schedule_json", None), {})
-                    item["points"] = _safe_json(item.pop("points_json", None), [])
-                    item["traits"] = _safe_json(item.pop("traits_json", None), {})
-                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
                     item["from_scope_name"] = _scope_name(item.get("from_scope_kind"), item.get("from_scope_id"))
                     item["to_scope_name"] = _scope_name(item.get("to_scope_kind"), item.get("to_scope_id"))
 
             conditions: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_conditions"):
-                conditions = self._all(
-                    conn,
-                    """SELECT * FROM world_conditions
-                       WHERE owner_kind=? AND owner_id=? AND status='active'
-                       ORDER BY severity DESC, updated_at DESC LIMIT ?""",
-                    (owner_kind, owner_id, int(limit)),
-                )
+                conditions = _engine_world_model.list_conditions(conn, owner_kind, owner_id, limit=int(limit))
                 for item in conditions:
-                    item["payload"] = _safe_json(item.pop("payload_json", None), {})
-                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
                     item["scope_name"] = _scope_name(item.get("scope_kind"), item.get("scope_id"))
 
             chronicle_events: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_chronicle_events"):
-                chronicle_events = self._all(
-                    conn,
-                    """SELECT * FROM world_chronicle_events
-                       WHERE owner_kind=? AND owner_id=? AND status='active'
-                       ORDER BY sort_order ASC, COALESCE(occurred_at, '') ASC, created_at ASC LIMIT ?""",
-                    (owner_kind, owner_id, max(int(limit), 80)),
+                chronicle_events = _engine_world_model.list_chronicle_events(
+                    conn, owner_kind, owner_id, limit=max(int(limit), 80)
                 )
                 for item in chronicle_events:
-                    item["tags"] = _safe_json(item.pop("tags_json", None), [])
-                    item["related"] = _safe_json(item.pop("related_json", None), {})
-                    item["evidence"] = _safe_json(item.pop("evidence_json", None), {})
                     item["scope_name"] = _scope_name(item.get("scope_kind"), item.get("scope_id"))
 
             if not any([profiles, regions, places, lore, faction_presence, routes, conditions, chronicle_events]):
                 return empty
-            world_map = _world_model.map_state(
+            world_map = _engine_world_model.map_state(
                 profiles, regions, places, routes, conditions,
                 current_location=current_location,
                 actor_label=actor_label or "明灯",
@@ -879,12 +859,13 @@ class LifeEngineReader:
         with self._connect() as conn:
             if not self._table_exists(conn, "persona_traits"):
                 return {"seeded": False, "traits": []}
-            rows = self._all(conn, "SELECT trait_key, value, baseline, evidence_count FROM persona_traits WHERE owner_kind=? AND owner_id=? ORDER BY trait_key", (owner_kind, owner_id))
-            if not rows:
+            rows_by_key = _engine_get_persona(conn, owner_kind, owner_id)
+            if not rows_by_key:
                 return {"seeded": False, "traits": []}
             traits = []
             notable = []
-            for r in rows:
+            for trait_key in sorted(rows_by_key):
+                r = rows_by_key[trait_key]
                 value = float(r.get("value") or 0.0)
                 baseline = float(r.get("baseline") or 0.0)
                 t = {"key": r["trait_key"], "value": round(value, 3), "baseline": round(baseline, 3),
