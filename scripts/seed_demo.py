@@ -23,6 +23,7 @@ TARGET_USER_ID = "ringo"
 DEMO_DATE = "2026-07-03"
 DEMO_TZ = "Asia/Shanghai"
 SOURCE = "demo_seed"
+DEMO_FEED_RUMOR_TS = "2026-07-04T00:00:00+08:00"
 
 
 # 演示设定数据：用于 CanonDraft patch，经 commit_canon 进入 active Canon。
@@ -1091,6 +1092,53 @@ def update_created_at(conn: Any, table: str, row_id: str, created_at: str) -> No
         conn.execute("UPDATE proactive_intents SET updated_at=?, queued_at=COALESCE(queued_at, ?) WHERE id=?", (created_at, created_at, row_id))
 
 
+def stabilize_social_feed_timestamps(conn: Any) -> None:
+    """固定 demo rumor / inter-agent 讲述的 feed 时间。
+
+    输入是 seed 使用的 SQLite connection；输出为空。调用方是 `seed_demo()` 在
+    social 与 constellation sharing 都完成后执行。副作用只更新 demo seed 自己写入
+    的 `rumors` 与 `inter_agent_outbox` 时间列，不改内容、状态或目标关系。所有
+    demo rumor 共用一个固定 feed 时间，保持原本“最新社会讲述”分页边界；同秒内部
+    顺序交给 reader 的业务字段排序，避免 SQLite `datetime('now')` 在 xdist/慢机器
+    上跨秒导致同一批讲述重排。
+    """
+    for rumor in SOCIAL_RUMORS:
+        conn.execute(
+            """UPDATE rumors
+                  SET created_at=?, updated_at=?
+                WHERE owner_kind=? AND owner_id=?
+                  AND channel=? AND content=?""",
+            (DEMO_FEED_RUMOR_TS, DEMO_FEED_RUMOR_TS, OWNER_KIND, OWNER_ID, rumor["channel"], rumor["content"]),
+        )
+
+    rows = conn.execute(
+        """SELECT id, payload_json FROM inter_agent_outbox
+            WHERE kind='telling' AND dedup_key LIKE 'share:%'"""
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except Exception:
+            payload = {}
+        if not payload.get("created_at"):
+            continue
+        conn.execute(
+            """UPDATE inter_agent_outbox
+                  SET created_at=?,
+                      claimed_at=CASE WHEN claimed_at IS NULL THEN NULL ELSE ? END,
+                      delivered_at=CASE WHEN delivered_at IS NULL THEN NULL ELSE ? END
+                WHERE id=?""",
+            (DEMO_FEED_RUMOR_TS, DEMO_FEED_RUMOR_TS, DEMO_FEED_RUMOR_TS, row["id"]),
+        )
+        conn.execute(
+            """UPDATE rumors
+                  SET created_at=?, updated_at=?
+                WHERE target_kind='inter_agent_outbox'
+                  AND target_id=?""",
+            (DEMO_FEED_RUMOR_TS, DEMO_FEED_RUMOR_TS, row["id"]),
+        )
+
+
 def ensure_diary(rt: Any) -> None:
     """写入三条日记叙事。
 
@@ -1639,6 +1687,7 @@ def seed_demo(home: Path, reset: bool) -> dict[str, Any]:
         ensure_second_agent_life(rt)
         ensure_inter_agent_gates(rt)
         sharing = ensure_constellation_sharing(rt)
+        stabilize_social_feed_timestamps(rt.conn)
         summaries = {
             OWNER_ID: build_summary(rt, OWNER_ID),
             AGENT_B_ID: build_summary(rt, AGENT_B_ID),

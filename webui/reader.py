@@ -18,7 +18,7 @@ import sqlite3
 _LOG = logging.getLogger("lifeengine.webui.reader")
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .. import world_model as _engine_world_model
 from ..persona import get_persona as _engine_get_persona
@@ -65,6 +65,62 @@ def _safe_json(value: Any, default: Any = None) -> Any:
 
 def _rowdict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
+
+
+def _stable_order_ties(
+    rows: list[dict[str, Any]],
+    semantic_key: Callable[[dict[str, Any]], Any],
+    tie_key: Callable[[dict[str, Any]], Any] | None = None,
+) -> list[dict[str, Any]]:
+    """只稳定已有业务排序中的同键行。
+
+    输入是已由 engine read-model 按业务键排好的 row 列表、业务排序键和可选唯一
+    tie-breaker；输出保留原业务分组顺序，只在相邻业务键完全相同的组内按 id/key
+    排序。调用方是 WebUI reader 对 engine 委托列表的只读后处理；副作用无。这样
+    不改字段、不改行集合，只补齐 SQLite 同键返回顺序未定义时的确定性。
+    """
+    if len(rows) <= 1:
+        return rows
+    tie = tie_key or (
+        lambda row: (
+            str(row.get("key") or ""),
+            str(row.get("name") or row.get("title") or row.get("display_name") or ""),
+            str(row.get("id") or ""),
+        )
+    )
+    out: list[dict[str, Any]] = []
+    group: list[dict[str, Any]] = []
+    marker: Any = object()
+    has_marker = False
+
+    def flush() -> None:
+        if not group:
+            return
+        out.extend(sorted(group, key=tie))
+        group.clear()
+
+    for row in rows:
+        key = semantic_key(row)
+        if has_marker and key != marker:
+            flush()
+        group.append(row)
+        marker = key
+        has_marker = True
+    flush()
+    return out
+
+
+_EVENT_SEMANTIC_ORDER = """
+    CASE WHEN planned_start IS NULL AND actual_start IS NULL THEN 0 ELSE 1 END,
+    COALESCE(planned_start_ts, actual_start_ts, 0),
+    COALESCE(planned_start, actual_start, ''),
+    COALESCE(event_type, ''),
+    COALESCE(event_category, ''),
+    COALESCE(activity_domain, ''),
+    COALESCE(status, ''),
+    COALESCE(title, '') DESC,
+    COALESCE(description, '')
+"""
 
 
 def _first_payload_value(payload: Any, keys: Iterable[str]) -> Any:
@@ -266,7 +322,12 @@ class LifeEngineReader:
             ]:
                 if self._table_exists(conn, table):
                     try:
-                        for r in conn.execute(f"SELECT DISTINCT owner_kind, owner_id FROM {table} WHERE owner_kind IS NOT NULL AND owner_id IS NOT NULL LIMIT 200"):
+                        for r in conn.execute(
+                            f"""SELECT DISTINCT owner_kind, owner_id FROM {table}
+                                WHERE owner_kind IS NOT NULL AND owner_id IS NOT NULL
+                                ORDER BY owner_kind, owner_id
+                                LIMIT 200"""
+                        ):
                             owners.add((str(r[0]), str(r[1])))
                     except sqlite3.Error:
                         pass
@@ -477,7 +538,10 @@ class LifeEngineReader:
                     slot["config"] = _safe_json(slot.pop("config_json", None), {})
                     slot.setdefault("origin", "db")
                     merged_slots[(slot.get("slot_type"), slot.get("key"))] = slot
-            slots = list(merged_slots.values())
+            slots = sorted(
+                merged_slots.values(),
+                key=lambda slot: (str(slot.get("slot_type") or ""), str(slot.get("key") or "")),
+            )
             advisories = slot_advisories(conn, owner_kind, owner_id, canon=canon, limit=int(limit))
 
             if not self._table_exists(conn, "world_entities"):
@@ -489,7 +553,13 @@ class LifeEngineReader:
 
             entities = self._all(
                 conn,
-                "SELECT * FROM world_entities WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+                """SELECT * FROM world_entities
+                   WHERE owner_kind=? AND owner_id=? AND status='active'
+                   ORDER BY entity_kind,
+                            display_name,
+                            summary,
+                            source
+                   LIMIT ?""",
                 (owner_kind, owner_id, int(limit)),
             )
             for entity in entities:
@@ -514,7 +584,12 @@ class LifeEngineReader:
                        LEFT JOIN world_entities s ON s.id=a.subject_entity_id
                        LEFT JOIN world_entities f ON f.id=a.faction_entity_id
                        WHERE a.owner_kind=? AND a.owner_id=? AND a.status='active'
-                       ORDER BY a.updated_at DESC LIMIT ?""",
+                       ORDER BY COALESCE(s.display_name, a.subject_entity_id),
+                                COALESCE(f.display_name, a.faction_entity_id),
+                                a.role,
+                                a.strength DESC,
+                                a.source
+                       LIMIT ?""",
                     (owner_kind, owner_id, int(limit)),
                 )
                 for item in affiliations:
@@ -532,7 +607,14 @@ class LifeEngineReader:
                        LEFT JOIN world_entities s ON s.id=e.source_entity_id
                        LEFT JOIN world_entities t ON t.id=e.target_entity_id
                        WHERE e.owner_kind=? AND e.owner_id=? AND e.status='active'
-                       ORDER BY ABS(e.value) DESC, e.updated_at DESC LIMIT ?""",
+                       ORDER BY ABS(e.value) DESC,
+                                COALESCE(s.display_name, e.source_entity_id),
+                                COALESCE(t.display_name, e.target_entity_id),
+                                e.axis,
+                                e.value DESC,
+                                e.confidence DESC,
+                                e.visibility
+                       LIMIT ?""",
                     (owner_kind, owner_id, int(limit)),
                 )
                 for item in edges:
@@ -550,7 +632,13 @@ class LifeEngineReader:
                        LEFT JOIN world_entities s ON s.id=r.subject_entity_id
                        LEFT JOIN world_entities a ON a.id=r.audience_entity_id
                        WHERE r.owner_kind=? AND r.owner_id=? AND r.status='active'
-                       ORDER BY ABS(r.value) DESC, r.updated_at DESC LIMIT ?""",
+                       ORDER BY ABS(r.value) DESC,
+                                COALESCE(s.display_name, r.subject_entity_id),
+                                COALESCE(a.display_name, r.audience_entity_id),
+                                r.axis,
+                                r.value DESC,
+                                r.confidence DESC
+                       LIMIT ?""",
                     (owner_kind, owner_id, int(limit)),
                 )
                 for item in reputation:
@@ -566,7 +654,14 @@ class LifeEngineReader:
                        LEFT JOIN world_entities s ON s.id=ev.subject_entity_id
                        LEFT JOIN world_entities a ON a.id=ev.audience_entity_id
                        WHERE ev.owner_kind=? AND ev.owner_id=?
-                       ORDER BY ev.created_at DESC LIMIT ?""",
+                       ORDER BY COALESCE(s.display_name, ev.subject_entity_id),
+                                COALESCE(a.display_name, ev.audience_entity_id),
+                                ev.axis,
+                                ev.evidence_kind,
+                                ev.evidence_id,
+                                ev.reason,
+                                ev.source
+                       LIMIT ?""",
                     (owner_kind, owner_id, min(int(limit), 30)),
                 )
                 for item in reputation_events:
@@ -583,7 +678,15 @@ class LifeEngineReader:
                        LEFT JOIN world_entities e ON e.id=ev.evaluator_entity_id
                        LEFT JOIN world_entities s ON s.id=ev.subject_entity_id
                        WHERE ev.owner_kind=? AND ev.owner_id=? AND ev.status='active'
-                       ORDER BY ev.created_at DESC LIMIT ?""",
+                       ORDER BY COALESCE(e.display_name, ev.evaluator_entity_id),
+                                COALESCE(s.display_name, ev.subject_entity_id),
+                                ev.axis,
+                                ev.target_kind,
+                                ev.score DESC,
+                                ev.reason,
+                                ev.visibility,
+                                ev.source
+                       LIMIT ?""",
                     (owner_kind, owner_id, int(limit)),
                 )
                 for item in evaluations:
@@ -607,7 +710,13 @@ class LifeEngineReader:
                        FROM rumors r
                        LEFT JOIN world_entities s ON s.id=r.subject_entity_id
                        WHERE r.owner_kind=? AND r.owner_id=? AND r.status='active'
-                       ORDER BY r.heat DESC, r.updated_at DESC LIMIT ?""",
+                       ORDER BY r.heat DESC,
+                                r.channel,
+                                r.content,
+                                r.credibility DESC,
+                                r.sentiment,
+                                r.truth_layer
+                       LIMIT ?""",
                     (owner_kind, owner_id, int(limit)),
                 )
                 for item in rumors:
@@ -624,7 +733,13 @@ class LifeEngineReader:
                        LEFT JOIN world_entities r ON r.id=q.requester_entity_id
                        LEFT JOIN world_entities t ON t.id=q.target_entity_id
                        WHERE q.owner_kind=? AND q.owner_id=?
-                       ORDER BY q.created_at DESC LIMIT ?""",
+                       ORDER BY q.topic,
+                                q.request_type,
+                                COALESCE(r.display_name, q.requester_entity_id),
+                                COALESCE(t.display_name, q.target_entity_id),
+                                q.status,
+                                q.source
+                       LIMIT ?""",
                     (owner_kind, owner_id, int(limit)),
                 )
                 for item in requests:
@@ -643,7 +758,13 @@ class LifeEngineReader:
                        FROM social_request_transitions x
                        LEFT JOIN social_requests q ON q.id=x.request_id
                        WHERE x.owner_kind=? AND x.owner_id=?
-                       ORDER BY x.created_at DESC LIMIT ?""",
+                       ORDER BY q.topic,
+                                x.action,
+                                x.from_status,
+                                x.to_status,
+                                x.reason,
+                                x.source
+                       LIMIT ?""",
                     (owner_kind, owner_id, min(int(limit), 40)),
                 )
                 for item in request_transitions:
@@ -660,7 +781,12 @@ class LifeEngineReader:
                        LEFT JOIN world_entities e ON e.id=x.entity_id
                        LEFT JOIN rumors r ON r.id=x.rumor_id
                        WHERE x.owner_kind=? AND x.owner_id=?
-                       ORDER BY x.updated_at DESC LIMIT ?""",
+                       ORDER BY COALESCE(e.display_name, x.entity_id),
+                                COALESCE(r.content, x.rumor_id),
+                                x.exposure_state,
+                                x.reaction,
+                                x.source
+                       LIMIT ?""",
                     (owner_kind, owner_id, min(int(limit), 40)),
                 )
                 for item in rumor_exposures:
@@ -727,15 +853,18 @@ class LifeEngineReader:
             profiles: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_profiles"):
                 profiles = _engine_world_model.list_profiles(conn, owner_kind, owner_id, limit=int(limit))
+                profiles = _stable_order_ties(profiles, lambda item: item.get("updated_at"), lambda item: item.get("key") or item.get("title") or "")
 
             regions: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_regions"):
                 regions = _engine_world_model.list_regions(conn, owner_kind, owner_id, limit=int(limit))
+                regions = _stable_order_ties(regions, lambda item: (item.get("parent_region_id"), item.get("name")), lambda item: item.get("key") or item.get("name") or "")
             region_names = {str(r.get("id")): str(r.get("name") or r.get("key") or r.get("id")) for r in regions if r.get("id")}
 
             places: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_places"):
                 places = _engine_world_model.list_places(conn, owner_kind, owner_id, limit=int(limit))
+                places = _stable_order_ties(places, lambda item: (item.get("region_id"), item.get("name")), lambda item: item.get("key") or item.get("name") or "")
                 for item in places:
                     item["region_name"] = region_names.get(str(item.get("region_id") or ""))
             place_names = {str(p.get("id")): str(p.get("name") or p.get("key") or p.get("id")) for p in places if p.get("id")}
@@ -743,6 +872,7 @@ class LifeEngineReader:
             lore: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_lore_entries"):
                 lore = _engine_world_model.list_lore_entries(conn, owner_kind, owner_id, limit=int(limit))
+                lore = _stable_order_ties(lore, lambda item: item.get("updated_at"), lambda item: item.get("key") or item.get("title") or "")
                 for item in lore:
                     scope_kind = item.get("scope_kind")
                     scope_id = str(item.get("scope_id") or "")
@@ -754,12 +884,28 @@ class LifeEngineReader:
             if self._table_exists(conn, "world_faction_presence"):
                 if self._table_exists(conn, "world_entities"):
                     faction_presence = _engine_world_model.list_faction_presence(conn, owner_kind, owner_id, limit=int(limit))
+                    faction_presence = _stable_order_ties(
+                        faction_presence,
+                        lambda item: (abs(float(item.get("influence") or 0)), item.get("updated_at")),
+                        lambda item: (
+                            item.get("faction_name") or "",
+                            item.get("scope_kind") or "",
+                            item.get("stance") or "",
+                            item.get("summary") or "",
+                        ),
+                    )
                 else:
                     faction_presence = self._all(
                         conn,
                         """SELECT * FROM world_faction_presence
                            WHERE owner_kind=? AND owner_id=? AND status='active'
-                           ORDER BY ABS(influence) DESC, updated_at DESC LIMIT ?""",
+                           ORDER BY ABS(influence) DESC,
+                                    scope_kind,
+                                    scope_id,
+                                    faction_entity_id,
+                                    stance,
+                                    summary
+                           LIMIT ?""",
                         (owner_kind, owner_id, int(limit)),
                     )
                 for item in faction_presence:
@@ -787,6 +933,7 @@ class LifeEngineReader:
             routes: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_routes"):
                 routes = _engine_world_model.list_routes(conn, owner_kind, owner_id, limit=int(limit))
+                routes = _stable_order_ties(routes, lambda item: (item.get("risk_level"), item.get("updated_at")), lambda item: item.get("key") or item.get("name") or "")
                 for item in routes:
                     item["from_scope_name"] = _scope_name(item.get("from_scope_kind"), item.get("from_scope_id"))
                     item["to_scope_name"] = _scope_name(item.get("to_scope_kind"), item.get("to_scope_id"))
@@ -794,6 +941,7 @@ class LifeEngineReader:
             conditions: list[dict[str, Any]] = []
             if self._table_exists(conn, "world_conditions"):
                 conditions = _engine_world_model.list_conditions(conn, owner_kind, owner_id, limit=int(limit))
+                conditions = _stable_order_ties(conditions, lambda item: (item.get("severity"), item.get("updated_at")), lambda item: item.get("key") or item.get("title") or "")
                 for item in conditions:
                     item["scope_name"] = _scope_name(item.get("scope_kind"), item.get("scope_id"))
 
@@ -801,6 +949,11 @@ class LifeEngineReader:
             if self._table_exists(conn, "world_chronicle_events"):
                 chronicle_events = _engine_world_model.list_chronicle_events(
                     conn, owner_kind, owner_id, limit=max(int(limit), 80)
+                )
+                chronicle_events = _stable_order_ties(
+                    chronicle_events,
+                    lambda item: (item.get("sort_order"), item.get("occurred_at") or "", item.get("created_at")),
+                    lambda item: item.get("key") or item.get("title") or "",
                 )
                 for item in chronicle_events:
                     item["scope_name"] = _scope_name(item.get("scope_kind"), item.get("scope_id"))
@@ -849,7 +1002,11 @@ class LifeEngineReader:
                   AND COALESCE(s.start_ts, strftime('%s', s.start)) < ?
                   AND COALESCE(s.end_ts, strftime('%s', s.end)) > ?
                   {status_filter}
-                ORDER BY COALESCE(s.start_ts, strftime('%s', s.start)), s.start
+                ORDER BY COALESCE(s.start_ts, strftime('%s', s.start)),
+                         s.start,
+                         s.block_type,
+                         e.title,
+                         s.status
                 LIMIT ?
             """, (owner_kind, owner_id, int(end.timestamp()), int(start.timestamp()), limit))
             for r in rows:
@@ -863,9 +1020,23 @@ class LifeEngineReader:
             if not self._table_exists(conn, "events"):
                 return []
             if status:
-                rows = self._all(conn, "SELECT * FROM events WHERE owner_kind=? AND owner_id=? AND status=? ORDER BY updated_at DESC LIMIT ?", (owner_kind, owner_id, status, limit))
+                rows = self._all(
+                    conn,
+                    f"""SELECT * FROM events
+                        WHERE owner_kind=? AND owner_id=? AND status=?
+                        ORDER BY {_EVENT_SEMANTIC_ORDER}
+                        LIMIT ?""",
+                    (owner_kind, owner_id, status, limit),
+                )
             else:
-                rows = self._all(conn, "SELECT * FROM events WHERE owner_kind=? AND owner_id=? ORDER BY updated_at DESC LIMIT ?", (owner_kind, owner_id, limit))
+                rows = self._all(
+                    conn,
+                    f"""SELECT * FROM events
+                        WHERE owner_kind=? AND owner_id=?
+                        ORDER BY {_EVENT_SEMANTIC_ORDER}
+                        LIMIT ?""",
+                    (owner_kind, owner_id, limit),
+                )
             return [self._decode_event(r) for r in rows]
 
     def clock(self, owner_kind: str, owner_id: str) -> dict[str, Any]:
@@ -919,7 +1090,7 @@ class LifeEngineReader:
                 date_key = _now().date().isoformat()
             by_type = {}
             if "meal_date" in cols:
-                rows = self._all(conn, "SELECT meal_type, status, skip_reason FROM meal_records WHERE owner_kind=? AND owner_id=? AND meal_date=?", (owner_kind, owner_id, date_key))
+                rows = self._all(conn, "SELECT meal_type, status, skip_reason FROM meal_records WHERE owner_kind=? AND owner_id=? AND meal_date=? ORDER BY meal_type, status, skip_reason", (owner_kind, owner_id, date_key))
                 by_type = {r["meal_type"]: r for r in rows}
             order = {"breakfast": 0, "lunch": 1, "dinner": 2}
             has_brunch = "brunch" in by_type
@@ -969,7 +1140,12 @@ class LifeEngineReader:
             rows = self._all(conn, """
                 SELECT * FROM human_review_items
                 WHERE owner_kind=? AND owner_id=? AND COALESCE(status,'open') NOT IN ('dismissed','resolved')
-                ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, created_at DESC
+                ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'error' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,
+                         created_at DESC,
+                         item_type,
+                         title,
+                         source_table,
+                         status
                 LIMIT ?
             """, (owner_kind, owner_id, limit))
             from ..review import review_item_choices
@@ -999,13 +1175,13 @@ class LifeEngineReader:
                 return []
             # delayed_replies records its creation time as queued_at (there is no
             # created_at column); the old ORDER BY created_at failed every build.
-            return self._all(conn, "SELECT * FROM delayed_replies WHERE owner_kind=? AND owner_id=? ORDER BY queued_at DESC LIMIT ?", (owner_kind, owner_id, limit))
+            return self._all(conn, "SELECT * FROM delayed_replies WHERE owner_kind=? AND owner_id=? ORDER BY queued_at DESC, user_id, session_id, message_preview, reason, status LIMIT ?", (owner_kind, owner_id, limit))
 
     def dreams(self, owner_kind: str, owner_id: str, limit: int = 20) -> list[dict[str, Any]]:
         with self._connect() as conn:
             if not self._table_exists(conn, "dream_entries"):
                 return []
-            rows = self._all(conn, "SELECT * FROM dream_entries WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT ?", (owner_kind, owner_id, limit))
+            rows = self._all(conn, "SELECT * FROM dream_entries WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC, summary, content LIMIT ?", (owner_kind, owner_id, limit))
             for r in rows:
                 r["symbols"] = _safe_json(r.get("symbols_json"), [])
             return rows
@@ -1018,7 +1194,7 @@ class LifeEngineReader:
             rows = self._all(
                 conn,
                 "SELECT * FROM campaigns WHERE owner_kind=? AND owner_id=? AND status IN ('active','resolved') "
-                "ORDER BY (status='active') DESC, updated_at DESC LIMIT ?",
+                "ORDER BY (status='active') DESC, updated_at DESC, title, importance DESC, status, source LIMIT ?",
                 (owner_kind, owner_id, limit),
             )
             for r in rows:
@@ -1052,7 +1228,8 @@ class LifeEngineReader:
                             END,
                             priority DESC,
                             updated_at DESC,
-                            created_at DESC
+                            created_at DESC,
+                            title
                    LIMIT ?""",
                 (owner_kind, owner_id, int(limit)),
             )
@@ -1068,7 +1245,9 @@ class LifeEngineReader:
                        WHERE owner_kind=? AND owner_id=?
                        ORDER BY CASE WHEN COALESCE(status, 'planned') IN ('done','completed') THEN 1 ELSE 0 END,
                                 COALESCE(due_at_ts, strftime('%s', due_at), strftime('%s', created_at)),
-                                created_at""",
+                                created_at,
+                                title,
+                                status""",
                     (owner_kind, owner_id),
                 ):
                     item = {
@@ -1086,7 +1265,7 @@ class LifeEngineReader:
                     """SELECT id, goal_id, reason, delta, created_at
                        FROM goal_progress_entries
                        WHERE owner_kind=? AND owner_id=?
-                       ORDER BY created_at DESC, rowid DESC""",
+                       ORDER BY created_at DESC, reason, delta DESC""",
                     (owner_kind, owner_id),
                 ):
                     goal_id = str(row.get("goal_id"))
@@ -1166,7 +1345,7 @@ class LifeEngineReader:
                        LEFT JOIN life_rhythm_runs r ON r.id=i.run_id
                        WHERE i.owner_kind=? AND i.owner_id=?
                          AND COALESCE(substr(i.start, 1, 10), r.date_key)=?
-                       ORDER BY i.start, i.end, i.created_at""",
+                       ORDER BY i.start, i.end, i.created_at, i.title, i.category, i.activity_domain""",
                     (owner_kind, owner_id, date),
                 )
             else:
@@ -1175,7 +1354,7 @@ class LifeEngineReader:
                     """SELECT id, title, start, end, category, activity_domain, status, payload_json
                        FROM life_rhythm_items
                        WHERE owner_kind=? AND owner_id=? AND substr(start, 1, 10)=?
-                       ORDER BY start, end, created_at""",
+                       ORDER BY start, end, created_at, title, category, activity_domain""",
                     (owner_kind, owner_id, date),
                 )
 
@@ -1202,7 +1381,7 @@ class LifeEngineReader:
                     conn,
                     "SELECT target, opinion_type, strength, confidence, reason, evidence_count, updated_at "
                     "FROM agent_opinions WHERE agent_id=? AND status='active' "
-                    "ORDER BY confidence*ABS(strength) DESC, updated_at DESC LIMIT 12",
+                    "ORDER BY confidence*ABS(strength) DESC, updated_at DESC, target, opinion_type LIMIT 12",
                     (owner_id,),
                 )
             self_narrative = None
@@ -1226,7 +1405,7 @@ class LifeEngineReader:
                 conn,
                 "SELECT topic, content, salience, sentiment, follow_up_due_ts, followed_up_at, created_at "
                 "FROM relationship_notes WHERE agent_id=? AND status='active' "
-                "ORDER BY salience DESC, created_at DESC LIMIT ?",
+                "ORDER BY salience DESC, created_at DESC, topic, content, sentiment LIMIT ?",
                 (owner_id, limit),
             )
 
@@ -1238,11 +1417,17 @@ class LifeEngineReader:
                 if not self._table_exists(conn, table):
                     return []
                 cols = self._columns(conn, table)
+                if table == "proactive_intents":
+                    order = "created_at DESC, intent_type, summary, target_type, target_id"
+                elif table == "proactive_outbox":
+                    order = "created_at DESC, status, delivery_channel, draft_text, target_user_id"
+                else:
+                    order = "created_at DESC, status"
                 if "agent_id" in cols:
-                    return self._all(conn, f"SELECT * FROM {table} WHERE agent_id=? ORDER BY created_at DESC LIMIT ?", (owner_id, limit))
+                    return self._all(conn, f"SELECT * FROM {table} WHERE agent_id=? ORDER BY {order} LIMIT ?", (owner_id, limit))
                 if "owner_id" in cols:
-                    return self._all(conn, f"SELECT * FROM {table} WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT ?", (owner_kind, owner_id, limit))
-                return self._all(conn, f"SELECT * FROM {table} ORDER BY created_at DESC LIMIT ?", (limit,))
+                    return self._all(conn, f"SELECT * FROM {table} WHERE owner_kind=? AND owner_id=? ORDER BY {order} LIMIT ?", (owner_kind, owner_id, limit))
+                return self._all(conn, f"SELECT * FROM {table} ORDER BY {order} LIMIT ?", (limit,))
             return {"intents": _q("proactive_intents"), "outbox": _q("proactive_outbox")}
 
     def life_feed(self, owner_kind: str, owner_id: str, before: str | None = None, limit: int = 40) -> dict[str, Any]:
@@ -1277,24 +1462,25 @@ class LifeEngineReader:
                 return self._all(conn, f"SELECT * FROM {table} WHERE {where}{cur} ORDER BY {order} LIMIT ?",
                                  (*params, *cp, limit))
 
-            for r in q("diary_entries", "owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
+            for r in q("diary_entries", "owner_kind=? AND owner_id=?", (owner_kind, owner_id), "created_at DESC, date DESC, diary_type, content"):
                 add(r, "diary", "📓", "日记", r.get("content"), diary_type=r.get("diary_type"))
-            for r in q("dream_entries", "owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
+            for r in q("dream_entries", "owner_kind=? AND owner_id=?", (owner_kind, owner_id), "created_at DESC, summary, content"):
                 add(r, "dream", "💭", "梦", r.get("share_text") or r.get("summary") or r.get("content"),
                     symbols=_safe_json(r.get("symbols_json"), []) or None, truth_layer=r.get("truth_layer"))
-            for r in q("serendipity_events", "owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
+            for r in q("serendipity_events", "owner_kind=? AND owner_id=?", (owner_kind, owner_id), "created_at DESC, title, serendipity_type, description"):
                 add(r, "serendipity", "🎲", r.get("title") or "偶遇", r.get("description"),
                     serendipity_type=r.get("serendipity_type"))
             for r in q("proactive_intents",
                        "agent_id=? AND intent_type IN ('idle_share','ask_about_user','self_reflection_share')",
-                       (owner_id,)):
+                       (owner_id,),
+                       "created_at DESC, intent_type, summary, target_type, target_id"):
                 add(r, "companion", "📣", "她想跟你说", r.get("summary"),
                     intent_type=r.get("intent_type"), status=r.get("status"))
-            for r in q("memories", "owner_kind=? AND owner_id=? AND memory_type='self_narrative'", (owner_kind, owner_id)):
+            for r in q("memories", "owner_kind=? AND owner_id=? AND memory_type='self_narrative'", (owner_kind, owner_id), "created_at DESC, memory_type, content"):
                 add(r, "reflection", "🌱", "她的自述", r.get("content"))
-            for r in q("rumors", "owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
+            for r in q("rumors", "owner_kind=? AND owner_id=?", (owner_kind, owner_id), "created_at DESC, channel, content, target_kind, target_id"):
                 add(r, "rumor", "🌐", "坊间流言", r.get("content"), truth_layer=r.get("truth_layer"), heat=r.get("heat"))
-            for r in q("persona_drift_log", "owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
+            for r in q("persona_drift_log", "owner_kind=? AND owner_id=?", (owner_kind, owner_id), "created_at DESC, trait_key, reason"):
                 add(r, "persona", "🎭", f"性格微移 · {r.get('trait_key')}", r.get("reason"),
                     trait=r.get("trait_key"), delta=r.get("delta"))
             if self._table_exists(conn, "campaign_phase_occurrences"):
@@ -1303,14 +1489,22 @@ class LifeEngineReader:
                     "SELECT o.*, c.title AS campaign_title FROM campaign_phase_occurrences o "
                     "LEFT JOIN campaigns c ON c.id=o.campaign_id "
                     "WHERE o.owner_kind=? AND o.owner_id=?" + (" AND o.created_at < ?" if before else "") +
-                    " ORDER BY o.created_at DESC LIMIT ?",
+                    " ORDER BY o.created_at DESC, c.title, o.date_key, o.phase LIMIT ?",
                     (owner_kind, owner_id, *cp, limit),
                 )
                 for r in crows:
                     add(r, "campaign", "📜", f"资料片 · {r.get('campaign_title') or '事变'}",
                         f"进入「{r.get('phase')}」阶段")
 
-        items.sort(key=lambda x: str(x["ts"]), reverse=True)
+        items.sort(
+            key=lambda x: (
+                str(x.get("ts") or ""),
+                str(x.get("kind") or ""),
+                str(x.get("title") or ""),
+                str(x.get("text") or ""),
+            ),
+            reverse=True,
+        )
         items = items[:limit]
         next_cursor = items[-1]["ts"] if len(items) >= limit else None
         return {"items": items, "next_cursor": next_cursor}
@@ -1319,7 +1513,7 @@ class LifeEngineReader:
         with self._connect() as conn:
             if not self._table_exists(conn, "item_collections"):
                 return {"collections": [], "items": [], "outfits": []}
-            collections = self._all(conn, "SELECT * FROM item_collections WHERE owner_kind=? AND owner_id=? AND status!='archived' ORDER BY sort_order, created_at LIMIT ?", (owner_kind, owner_id, limit))
+            collections = self._all(conn, "SELECT * FROM item_collections WHERE owner_kind=? AND owner_id=? AND status!='archived' ORDER BY sort_order, created_at, collection_type, name, status LIMIT ?", (owner_kind, owner_id, limit))
             for c in collections:
                 for key in ["rules_json", "image_generation_rule_json", "usage_rule_json", "maintenance_rule_json", "required_metadata_json"]:
                     if key in c:
@@ -1331,16 +1525,16 @@ class LifeEngineReader:
                     FROM collection_items i
                     LEFT JOIN item_collections c ON c.id=i.collection_id
                     WHERE i.owner_kind=? AND i.owner_id=? AND i.status!='archived'
-                    ORDER BY i.updated_at DESC LIMIT ?
+                    ORDER BY i.updated_at DESC, i.item_type, i.name, i.collection_id, i.status LIMIT ?
                 """, (owner_kind, owner_id, limit))
                 alias_by_item = {}
                 if self._table_exists(conn, "collection_item_aliases"):
-                    for a in self._all(conn, "SELECT item_id, alias FROM collection_item_aliases WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY created_at", (owner_kind, owner_id)):
+                    for a in self._all(conn, "SELECT item_id, alias FROM collection_item_aliases WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY created_at, item_id, alias, source", (owner_kind, owner_id)):
                         alias_by_item.setdefault(a.get("item_id"), []).append(a.get("alias"))
                 asset_by_item = {}
                 legacy_asset_uri_by_item = {}
                 if self._table_exists(conn, "collection_item_assets"):
-                    for a in self._all(conn, "SELECT item_id, status, asset_uri, view_name FROM collection_item_assets WHERE owner_kind=? AND owner_id=?", (owner_kind, owner_id)):
+                    for a in self._all(conn, "SELECT item_id, status, asset_uri, view_name FROM collection_item_assets WHERE owner_kind=? AND owner_id=? ORDER BY item_id, status, view_name, asset_type, asset_uri", (owner_kind, owner_id)):
                         d = asset_by_item.setdefault(a.get("item_id"), {"total":0,"available":0,"pending":0})
                         d["total"] += 1
                         if a.get("status") == "available" and a.get("asset_uri"):
@@ -1384,7 +1578,7 @@ class LifeEngineReader:
                     LEFT JOIN collection_items i ON i.id=l.item_id
                     LEFT JOIN item_collections c ON c.id=l.collection_id
                     WHERE l.owner_kind=? AND l.owner_id=? AND l.status='active'
-                    ORDER BY l.slot, l.updated_at DESC
+                    ORDER BY l.slot, l.updated_at DESC, l.name, l.item_id, l.collection_type
                     LIMIT ?
                 """, (owner_kind, owner_id, limit))
                 for l in loadout:
@@ -1395,13 +1589,13 @@ class LifeEngineReader:
                     l["primary_asset_uri"] = bundle.get("display_image") or bundle.get("reference_image")
             outfits = []
             if self._table_exists(conn, "outfit_plans"):
-                outfits = self._all(conn, "SELECT * FROM outfit_plans WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC LIMIT 20", (owner_kind, owner_id))
+                outfits = self._all(conn, "SELECT * FROM outfit_plans WHERE owner_kind=? AND owner_id=? ORDER BY created_at DESC, occasion, status, event_id LIMIT 20", (owner_kind, owner_id))
                 for o in outfits:
                     o["item_ids"] = _safe_json(o.get("item_ids_json"), [])
                     o["context"] = _safe_json(o.get("context_json"), {})
             presets = []
             if self._table_exists(conn, "outfit_presets"):
-                presets = self._all(conn, "SELECT * FROM outfit_presets WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY updated_at DESC LIMIT 100", (owner_kind, owner_id))
+                presets = self._all(conn, "SELECT * FROM outfit_presets WHERE owner_kind=? AND owner_id=? AND status='active' ORDER BY updated_at DESC, name, occasion, status LIMIT 100", (owner_kind, owner_id))
                 for p in presets:
                     p["aliases"] = _safe_json(p.get("aliases_json"), [])
                     p["item_refs"] = _safe_json(p.get("item_refs_json"), {})
@@ -1436,7 +1630,7 @@ class LifeEngineReader:
             # life_journal has no source_turn_id/source_tick_id columns; the old
             # query drifted and failed every build, blanking the trace panel. Use
             # the real linkage columns (transaction_id/op_id).
-            return self._all(conn, "SELECT id, owner_kind, owner_id, entry_type, source, transaction_id, op_id, created_at FROM life_journal ORDER BY created_at DESC LIMIT ?", (limit,))
+            return self._all(conn, "SELECT id, owner_kind, owner_id, entry_type, source, transaction_id, op_id, created_at FROM life_journal ORDER BY created_at DESC, rowid LIMIT ?", (limit,))
 
 
     def journal_changefeed(self, owner_kind: str, owner_id: str, since_rowid: int = 0, limit: int = 200) -> dict[str, Any]:
@@ -1521,52 +1715,52 @@ class LifeEngineReader:
             journal = []
             execution_sleep_adjustments = []
             if self._table_exists(conn, "schedule_blocks"):
-                schedule = self._all(conn, "SELECT * FROM schedule_blocks WHERE event_id=? ORDER BY COALESCE(start_ts, strftime('%s', start)), start", (event_id,))
+                schedule = self._all(conn, "SELECT * FROM schedule_blocks WHERE event_id=? ORDER BY COALESCE(start_ts, strftime('%s', start)), start, block_type, status, timezone", (event_id,))
                 for block in schedule:
                     block["interruptibility"] = _safe_json(block.get("interruptibility_json"), {})
             if self._table_exists(conn, "event_state_transitions"):
-                transitions = self._all(conn, "SELECT * FROM event_state_transitions WHERE event_id=? ORDER BY COALESCE(occurred_at_ts, strftime('%s', occurred_at)), occurred_at", (event_id,))
+                transitions = self._all(conn, "SELECT * FROM event_state_transitions WHERE event_id=? ORDER BY COALESCE(occurred_at_ts, strftime('%s', occurred_at)), occurred_at, from_status, to_status, source, reason", (event_id,))
                 for t in transitions:
                     t["metadata"] = _safe_json(t.get("metadata_json"), {})
             else:
                 transitions = []
             if self._table_exists(conn, "schedule_block_state_transitions"):
-                schedule_transitions = self._all(conn, "SELECT * FROM schedule_block_state_transitions WHERE event_id=? ORDER BY COALESCE(occurred_at_ts, strftime('%s', occurred_at)), occurred_at", (event_id,))
+                schedule_transitions = self._all(conn, "SELECT * FROM schedule_block_state_transitions WHERE event_id=? ORDER BY COALESCE(occurred_at_ts, strftime('%s', occurred_at)), occurred_at, from_status, to_status, source, reason", (event_id,))
                 for t in schedule_transitions:
                     t["metadata"] = _safe_json(t.get("metadata_json"), {})
             if self._table_exists(conn, "actions"):
-                actions = self._all(conn, "SELECT * FROM actions WHERE event_id=? ORDER BY created_at", (event_id,))
+                actions = self._all(conn, "SELECT * FROM actions WHERE event_id=? ORDER BY scheduled_start, actual_start, action_type, verb, target, status", (event_id,))
             if self._table_exists(conn, "action_state_transitions"):
-                action_transitions = self._all(conn, "SELECT * FROM action_state_transitions WHERE event_id=? ORDER BY COALESCE(occurred_at_ts, strftime('%s', occurred_at)), occurred_at", (event_id,))
+                action_transitions = self._all(conn, "SELECT * FROM action_state_transitions WHERE event_id=? ORDER BY COALESCE(occurred_at_ts, strftime('%s', occurred_at)), occurred_at, from_status, to_status, source, reason", (event_id,))
                 for t in action_transitions:
                     t["metadata"] = _safe_json(t.get("metadata_json"), {})
             if self._table_exists(conn, "results"):
-                results = self._all(conn, "SELECT * FROM results WHERE event_id=? ORDER BY created_at", (event_id,))
+                results = self._all(conn, "SELECT * FROM results WHERE event_id=? ORDER BY created_at, result_type, summary, progress_after", (event_id,))
                 for r in results:
                     r["state_changes"] = _safe_json(r.get("state_changes_json"), [])
                     r["memory_ids"] = _safe_json(r.get("memory_ids_json"), [])
             if self._table_exists(conn, "resource_ledger"):
-                resources = self._all(conn, "SELECT * FROM resource_ledger WHERE event_id=? ORDER BY created_at", (event_id,))
+                resources = self._all(conn, "SELECT * FROM resource_ledger WHERE event_id=? ORDER BY created_at, resource_key, operation, delta, reason", (event_id,))
             if self._table_exists(conn, "memories"):
                 cols = self._columns(conn, "memories")
                 if "event_id" in cols:
-                    memories = self._all(conn, "SELECT * FROM memories WHERE event_id=? ORDER BY created_at DESC LIMIT 20", (event_id,))
+                    memories = self._all(conn, "SELECT * FROM memories WHERE event_id=? ORDER BY created_at DESC, memory_type, content LIMIT 20", (event_id,))
             if self._table_exists(conn, "dream_entries"):
                 cols = self._columns(conn, "dream_entries")
                 if "source_event_ids_json" in cols:
                     # JSON membership is SQLite-version dependent; use LIKE as a conservative WebUI hint.
-                    dreams = self._all(conn, "SELECT * FROM dream_entries WHERE source_event_ids_json LIKE ? ORDER BY created_at DESC LIMIT 20", (f'%{event_id}%',))
+                    dreams = self._all(conn, "SELECT * FROM dream_entries WHERE source_event_ids_json LIKE ? ORDER BY created_at DESC, summary, content LIMIT 20", (f'%{event_id}%',))
             if self._table_exists(conn, "proactive_intents"):
                 cols = self._columns(conn, "proactive_intents")
                 if "trigger_event_id" in cols:
-                    proactive = self._all(conn, "SELECT * FROM proactive_intents WHERE trigger_event_id=? ORDER BY created_at DESC LIMIT 20", (event_id,))
+                    proactive = self._all(conn, "SELECT * FROM proactive_intents WHERE trigger_event_id=? ORDER BY created_at DESC, intent_type, summary, target_type, target_id LIMIT 20", (event_id,))
             if self._table_exists(conn, "execution_sleep_adjustments"):
-                execution_sleep_adjustments = self._all(conn, "SELECT * FROM execution_sleep_adjustments WHERE event_id=? ORDER BY created_at DESC LIMIT 20", (event_id,))
+                execution_sleep_adjustments = self._all(conn, "SELECT * FROM execution_sleep_adjustments WHERE event_id=? ORDER BY created_at DESC, adjustment_type, severity, original_decision_type, adjusted_decision_type, reason LIMIT 20", (event_id,))
                 for r in execution_sleep_adjustments:
                     r["sleep_context"] = _safe_json(r.get("sleep_context_json"), {})
                     r["proposed_ops"] = _safe_json(r.get("proposed_ops_json"), [])
             if self._table_exists(conn, "life_journal"):
-                journal = self._all(conn, "SELECT id, transaction_id, op_id, entry_type, source, created_at FROM life_journal WHERE owner_kind=? AND owner_id=? AND payload_json LIKE ? ORDER BY created_at DESC LIMIT 30", (owner_kind, owner_id, f'%{event_id}%'))
+                journal = self._all(conn, "SELECT id, transaction_id, op_id, entry_type, source, created_at FROM life_journal WHERE owner_kind=? AND owner_id=? AND payload_json LIKE ? ORDER BY created_at DESC, rowid LIMIT 30", (owner_kind, owner_id, f'%{event_id}%'))
             return {
                 "kind": "event",
                 "id": event_id,
@@ -1602,17 +1796,17 @@ class LifeEngineReader:
             if self._table_exists(conn, "dream_runs"):
                 cols = self._columns(conn, "dream_runs")
                 if "created_entry_id" in cols:
-                    runs = self._all(conn, "SELECT * FROM dream_runs WHERE created_entry_id=? ORDER BY started_at DESC LIMIT 10", (dream_id,))
+                    runs = self._all(conn, "SELECT * FROM dream_runs WHERE created_entry_id=? ORDER BY started_at DESC, status, run_type, trigger, audit_status, narrative_status LIMIT 10", (dream_id,))
             if runs and self._table_exists(conn, "dream_audit_findings"):
                 run_ids = [r.get("id") for r in runs if r.get("id")]
                 if run_ids:
                     marks = ",".join("?" for _ in run_ids)
-                    findings = self._all(conn, f"SELECT * FROM dream_audit_findings WHERE dream_run_id IN ({marks}) ORDER BY created_at DESC LIMIT 50", tuple(run_ids))
+                    findings = self._all(conn, f"SELECT * FROM dream_audit_findings WHERE dream_run_id IN ({marks}) ORDER BY created_at DESC, severity, finding_type, message LIMIT 50", tuple(run_ids))
                     for f in findings:
                         f["details"] = _safe_json(f.get("details_json"), {})
                         f["proposed_ops"] = _safe_json(f.get("proposed_ops_json"), [])
             if self._table_exists(conn, "life_journal"):
-                journal = self._all(conn, "SELECT id, transaction_id, op_id, entry_type, source, created_at FROM life_journal WHERE payload_json LIKE ? ORDER BY created_at DESC LIMIT 20", (f'%{dream_id}%',))
+                journal = self._all(conn, "SELECT id, transaction_id, op_id, entry_type, source, created_at FROM life_journal WHERE payload_json LIKE ? ORDER BY created_at DESC, rowid LIMIT 20", (f'%{dream_id}%',))
             return {"kind": "dream", "id": dream_id, "found": True, "dream": dream, "runs": runs, "findings": findings, "journal": journal}
 
     def trace_explain(self, object_id: str) -> dict[str, Any]:
@@ -1632,18 +1826,18 @@ class LifeEngineReader:
                 if tx:
                     out.update({"kind": "transaction", "found": True, "transaction": tx})
                     if self._table_exists(conn, "life_ops"):
-                        ops = self._all(conn, "SELECT * FROM life_ops WHERE transaction_id=? ORDER BY created_at", (object_id,))
+                        ops = self._all(conn, "SELECT * FROM life_ops WHERE transaction_id=? ORDER BY created_at, rowid", (object_id,))
                         for op in ops:
                             op["payload"] = _safe_json(op.get("payload_json"), {})
                         out["ops"] = ops
                     if self._table_exists(conn, "commit_receipts"):
-                        receipts = self._all(conn, "SELECT * FROM commit_receipts WHERE transaction_id=? ORDER BY created_at", (object_id,))
+                        receipts = self._all(conn, "SELECT * FROM commit_receipts WHERE transaction_id=? ORDER BY created_at, rowid", (object_id,))
                         for r in receipts:
                             r["facts"] = _safe_json(r.get("facts_json"), [])
                             r["summary"] = _safe_json(r.get("summary_json"), {})
                         out["receipts"] = receipts
                     if self._table_exists(conn, "life_journal"):
-                        out["journal"] = self._all(conn, "SELECT id, entry_type, source, created_at, payload_json FROM life_journal WHERE transaction_id=? ORDER BY created_at", (object_id,))
+                        out["journal"] = self._all(conn, "SELECT id, entry_type, source, created_at, payload_json FROM life_journal WHERE transaction_id=? ORDER BY created_at, rowid", (object_id,))
                     return out
             if self._table_exists(conn, "life_journal"):
                 journal = self._first(conn, "SELECT * FROM life_journal WHERE id=?", (object_id,))
@@ -1656,7 +1850,7 @@ class LifeEngineReader:
                     return out
             # Last chance: find references in journal payloads.
             if self._table_exists(conn, "life_journal"):
-                refs = self._all(conn, "SELECT id, transaction_id, entry_type, source, created_at FROM life_journal WHERE payload_json LIKE ? ORDER BY created_at DESC LIMIT 30", (f'%{object_id}%',))
+                refs = self._all(conn, "SELECT id, transaction_id, entry_type, source, created_at FROM life_journal WHERE payload_json LIKE ? ORDER BY created_at DESC, rowid LIMIT 30", (f'%{object_id}%',))
                 if refs:
                     out.update({"found": True, "references": refs})
             return out

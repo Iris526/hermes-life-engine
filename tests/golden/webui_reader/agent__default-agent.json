@@ -1041,6 +1041,18 @@
         "id": "<id:0133>",
         "kind": "rumor",
         "meta": {
+          "heat": 0.68,
+          "truth_layer": "rumor_unverified"
+        },
+        "text": "河边那位画画的待人温和，讲纸色和灯色都不急。",
+        "title": "坊间流言",
+        "ts": "<ts>"
+      },
+      {
+        "icon": "🌐",
+        "id": "<id:0134>",
+        "kind": "rumor",
+        "meta": {
           "heat": 0.54,
           "truth_layer": "rumor_unverified"
         },
@@ -1049,8 +1061,20 @@
         "ts": "<ts>"
       },
       {
+        "icon": "🌐",
+        "id": "<id:0135>",
+        "kind": "rumor",
+        "meta": {
+          "heat": 0.47,
+          "truth_layer": "rumor_unverified"
+        },
+        "text": "巷口颜料铺说凛为了河灯会又补了一盒群青。",
+        "title": "坊间流言",
+        "ts": "<ts>"
+      },
+      {
         "icon": "📣",
-        "id": "<id:0134>",
+        "id": "<id:0136>",
         "kind": "companion",
         "meta": {
           "intent_type": "ask_about_user",
@@ -1062,7 +1086,7 @@
       },
       {
         "icon": "📣",
-        "id": "<id:0135>",
+        "id": "<id:0137>",
         "kind": "companion",
         "meta": {
           "intent_type": "idle_share",
@@ -1074,7 +1098,7 @@
       },
       {
         "icon": "🌱",
-        "id": "<id:0136>",
+        "id": "<id:0138>",
         "kind": "reflection",
         "meta": {},
         "text": "我好像慢慢明白了：先交出去，再慢慢改。画是这样，人也是这样。",
@@ -1083,7 +1107,7 @@
       },
       {
         "icon": "📓",
-        "id": "<id:0137>",
+        "id": "<id:0139>",
         "kind": "diary",
         "meta": {
           "diary_type": "daily"
@@ -1093,38 +1117,14 @@
         "ts": "<ts>"
       },
       {
-        "icon": "🌐",
-        "id": "<id:0138>",
-        "kind": "rumor",
-        "meta": {
-          "heat": 0.47,
-          "truth_layer": "rumor_unverified"
-        },
-        "text": "巷口颜料铺说凛为了河灯会又补了一盒群青。",
-        "title": "坊间流言",
-        "ts": "<ts>"
-      },
-      {
         "icon": "🎲",
-        "id": "<id:0139>",
+        "id": "<id:0140>",
         "kind": "serendipity",
         "meta": {
           "serendipity_type": "useful_find"
         },
         "text": "巷口颜料铺老板从柜台下摸出最后一盒群青，说这盒适合画水里有灯的夜色。",
         "title": "巷口颜料铺群青",
-        "ts": "<ts>"
-      },
-      {
-        "icon": "🌐",
-        "id": "<id:0140>",
-        "kind": "rumor",
-        "meta": {
-          "heat": 0.68,
-          "truth_layer": "rumor_unverified"
-        },
-        "text": "河边那位画画的待人温和，讲纸色和灯色都不急。",
-        "title": "坊间流言",
         "ts": "<ts>"
       },
       {
@@ -1183,7 +1183,7 @@
     "items": [
       {
         "icon": "📣",
-        "id": "<id:0134>",
+        "id": "<id:0136>",
         "kind": "companion",
         "meta": {
           "intent_type": "ask_about_user",
@@ -1195,7 +1195,7 @@
       },
       {
         "icon": "📣",
-        "id": "<id:0135>",
+        "id": "<id:0137>",
         "kind": "companion",
         "meta": {
           "intent_type": "idle_share",
@@ -1207,7 +1207,7 @@
       },
       {
         "icon": "🌱",
-        "id": "<id:0136>",
+        "id": "<id:0138>",
         "kind": "reflection",
         "meta": {},
         "text": "我好像慢慢明白了：先交出去，再慢慢改。画是这样，人也是这样。",
@@ -1245,7 +1245,7 @@
       },
       {
         "icon": "🌐",
-        "id": "<id:0133>",
+        "id": "<id:0134>",
         "kind": "rumor",
         "meta": {
           "heat": 0.54,
@@ -4256,10 +4256,10 @@
       ],
       "evaluations": [
         {
-          "axis": "kindness",
+          "axis": "craft_finish",
           "created_at": "<ts>",
-          "evaluator_entity_id": "<id:0062>",
-          "evaluator_name": "阿照",
+          "evaluator_entity_id": "<id:0060>",
+          "evaluator_name": "叶老板",
           "evidence": {
             "date": "2026-07-03",
             "source": "demo_seed"
@@ -4267,8 +4267,8 @@
           "id": "<id:0071>",
           "owner_id": "default-agent",
           "owner_kind": "agent",
-          "reason": "问价时解释得清楚，也没有催人。",
-          "score": 41.0,
+          "reason": "封面第四色压得稳，像能上摊的样张。",
+          "score": 36.0,
           "source": "life_social_tool",
           "status": "active",
           "subject_entity_id": "<id:0059>",
@@ -4280,10 +4280,10 @@
           "visibility": "known"
         },
         {
-          "axis": "craft_finish",
+          "axis": "kindness",
           "created_at": "<ts>",
-          "evaluator_entity_id": "<id:0060>",
-          "evaluator_name": "叶老板",
+          "evaluator_entity_id": "<id:0062>",
+          "evaluator_name": "阿照",
           "evidence": {
             "date": "2026-07-03",
             "source": "demo_seed"
@@ -4291,8 +4291,8 @@
           "id": "<id:0072>",
           "owner_id": "default-agent",
           "owner_kind": "agent",
-          "reason": "封面第四色压得稳，像能上摊的样张。",
-          "score": 36.0,
+          "reason": "问价时解释得清楚，也没有催人。",
+          "score": 41.0,
           "source": "life_social_tool",
           "status": "active",
           "subject_entity_id": "<id:0059>",
@@ -4344,25 +4344,6 @@
         {
           "audience_entity_id": "<id:0061>",
           "audience_name": "河灯会摊主圈",
-          "axis": "painting_credit",
-          "created_at": "<ts>",
-          "delta": 21.0,
-          "evidence": {
-            "date": "2026-07-03"
-          },
-          "evidence_id": "demo.rep.painting_credit.20260703",
-          "evidence_kind": "demo_seed",
-          "id": "<id:0069>",
-          "owner_id": "default-agent",
-          "owner_kind": "agent",
-          "reason": "封面收尾按时交出，河灯会样张也准备妥当",
-          "source": "life_social_tool",
-          "subject_entity_id": "<id:0059>",
-          "subject_name": "凛"
-        },
-        {
-          "audience_entity_id": "<id:0061>",
-          "audience_name": "河灯会摊主圈",
           "axis": "approachable",
           "created_at": "<ts>",
           "delta": 18.0,
@@ -4371,10 +4352,29 @@
           },
           "evidence_id": "demo.rep.approachable.20260703",
           "evidence_kind": "demo_seed",
-          "id": "<id:0070>",
+          "id": "<id:0069>",
           "owner_id": "default-agent",
           "owner_kind": "agent",
           "reason": "给主顾解释画纸和灯色时很耐心",
+          "source": "life_social_tool",
+          "subject_entity_id": "<id:0059>",
+          "subject_name": "凛"
+        },
+        {
+          "audience_entity_id": "<id:0061>",
+          "audience_name": "河灯会摊主圈",
+          "axis": "painting_credit",
+          "created_at": "<ts>",
+          "delta": 21.0,
+          "evidence": {
+            "date": "2026-07-03"
+          },
+          "evidence_id": "demo.rep.painting_credit.20260703",
+          "evidence_kind": "demo_seed",
+          "id": "<id:0070>",
+          "owner_id": "default-agent",
+          "owner_kind": "agent",
+          "reason": "封面收尾按时交出，河灯会样张也准备妥当",
           "source": "life_social_tool",
           "subject_entity_id": "<id:0059>",
           "subject_name": "凛"
@@ -4455,29 +4455,26 @@
         },
         {
           "channel": "inter_agent",
-          "content": "青传来一条未证实讲述：我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
+          "content": "青传来一条未证实讲述：夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
           "created_at": "<ts>",
           "credibility": 0.25,
           "evidence": {
-            "dedup_key": "share:proactive:<id:0078>:agent:default-agent",
+            "dedup_key": "share:diary:<id:0078>:agent:default-agent",
             "from_owner_id": "agent-qing",
             "from_owner_kind": "agent",
             "kind": "telling",
             "outbox_id": "<id:0077>",
             "payload": {
-              "content": "我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
+              "content": "夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
               "created_at": "<ts>",
-              "emotional_tone": "focused",
+              "date": "2026-07-03",
+              "diary_type": "daily",
               "from_owner_id": "agent-qing",
               "from_owner_kind": "agent",
-              "importance": 62,
-              "intent_type": "idle_share",
-              "privacy_level": "safe_to_share",
-              "source": "proactive_intent",
+              "privacy": "safe_to_share",
+              "source": "diary_entry",
               "source_id": "<id:0078>",
-              "status": "queued",
-              "summary": "我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
-              "target_type": "user",
+              "summary": "夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
               "to_owner_id": "default-agent",
               "to_owner_kind": "agent"
             },
@@ -4502,26 +4499,29 @@
         },
         {
           "channel": "inter_agent",
-          "content": "青传来一条未证实讲述：夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
+          "content": "青传来一条未证实讲述：我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
           "created_at": "<ts>",
           "credibility": 0.25,
           "evidence": {
-            "dedup_key": "share:diary:<id:0081>:agent:default-agent",
+            "dedup_key": "share:proactive:<id:0081>:agent:default-agent",
             "from_owner_id": "agent-qing",
             "from_owner_kind": "agent",
             "kind": "telling",
             "outbox_id": "<id:0080>",
             "payload": {
-              "content": "夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
+              "content": "我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
               "created_at": "<ts>",
-              "date": "2026-07-03",
-              "diary_type": "daily",
+              "emotional_tone": "focused",
               "from_owner_id": "agent-qing",
               "from_owner_kind": "agent",
-              "privacy": "safe_to_share",
-              "source": "diary_entry",
+              "importance": 62,
+              "intent_type": "idle_share",
+              "privacy_level": "safe_to_share",
+              "source": "proactive_intent",
               "source_id": "<id:0081>",
-              "summary": "夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
+              "status": "queued",
+              "summary": "我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
+              "target_type": "user",
               "to_owner_id": "default-agent",
               "to_owner_kind": "agent"
             },
@@ -4607,81 +4607,27 @@
           "updated_at": "<ts>"
         },
         {
-          "config": {},
+          "config": {
+            "cross_owner_reference": true
+          },
           "created_at": "<ts>",
-          "description": null,
+          "description": "代表出现在当前 owner 社会世界里的另一个 LifeEngine agent。",
           "id": "<id:0047>",
-          "key": "familiarity",
-          "label": "熟悉",
+          "key": "peer_agent",
+          "label": "同行 Agent",
           "origin": "db",
           "owner_id": "default-agent",
           "owner_kind": "agent",
-          "slot_type": "relationship_axis",
-          "source": "demo_seed",
+          "slot_type": "entity_kind",
+          "source": "inter_agent_delivery",
           "status": "active",
           "updated_at": "<ts>"
         },
         {
           "config": {},
+          "created_at": "<ts>",
           "description": null,
           "id": "<id:0048>",
-          "key": "gratitude",
-          "label": "感谢",
-          "origin": "canon",
-          "slot_type": "relationship_axis",
-          "source": "canon_worldview",
-          "status": "active"
-        },
-        {
-          "config": {},
-          "created_at": "<ts>",
-          "description": null,
-          "id": "<id:0049>",
-          "key": "trust",
-          "label": "信任",
-          "origin": "db",
-          "owner_id": "default-agent",
-          "owner_kind": "agent",
-          "slot_type": "relationship_axis",
-          "source": "demo_seed",
-          "status": "active",
-          "updated_at": "<ts>"
-        },
-        {
-          "config": {},
-          "created_at": "<ts>",
-          "description": null,
-          "id": "<id:0050>",
-          "key": "approachable",
-          "label": "待人温和",
-          "origin": "db",
-          "owner_id": "default-agent",
-          "owner_kind": "agent",
-          "slot_type": "reputation_axis",
-          "source": "demo_seed",
-          "status": "active",
-          "updated_at": "<ts>"
-        },
-        {
-          "config": {},
-          "created_at": "<ts>",
-          "description": null,
-          "id": "<id:0051>",
-          "key": "painting_credit",
-          "label": "画作交付",
-          "origin": "db",
-          "owner_id": "default-agent",
-          "owner_kind": "agent",
-          "slot_type": "reputation_axis",
-          "source": "demo_seed",
-          "status": "active",
-          "updated_at": "<ts>"
-        },
-        {
-          "config": {},
-          "created_at": "<ts>",
-          "description": null,
-          "id": "<id:0052>",
           "key": "craft_finish",
           "label": "画面完成度",
           "origin": "db",
@@ -4696,7 +4642,7 @@
           "config": {},
           "created_at": "<ts>",
           "description": null,
-          "id": "<id:0053>",
+          "id": "<id:0049>",
           "key": "kindness",
           "label": "待人温和",
           "origin": "db",
@@ -4711,7 +4657,95 @@
           "config": {},
           "created_at": "<ts>",
           "description": null,
+          "id": "<id:0050>",
+          "key": "familiarity",
+          "label": "熟悉",
+          "origin": "db",
+          "owner_id": "default-agent",
+          "owner_kind": "agent",
+          "slot_type": "relationship_axis",
+          "source": "demo_seed",
+          "status": "active",
+          "updated_at": "<ts>"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0051>",
+          "key": "gratitude",
+          "label": "感谢",
+          "origin": "canon",
+          "slot_type": "relationship_axis",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "created_at": "<ts>",
+          "description": null,
+          "id": "<id:0052>",
+          "key": "trust",
+          "label": "信任",
+          "origin": "db",
+          "owner_id": "default-agent",
+          "owner_kind": "agent",
+          "slot_type": "relationship_axis",
+          "source": "demo_seed",
+          "status": "active",
+          "updated_at": "<ts>"
+        },
+        {
+          "config": {},
+          "created_at": "<ts>",
+          "description": null,
+          "id": "<id:0053>",
+          "key": "approachable",
+          "label": "待人温和",
+          "origin": "db",
+          "owner_id": "default-agent",
+          "owner_kind": "agent",
+          "slot_type": "reputation_axis",
+          "source": "demo_seed",
+          "status": "active",
+          "updated_at": "<ts>"
+        },
+        {
+          "config": {},
+          "created_at": "<ts>",
+          "description": null,
           "id": "<id:0054>",
+          "key": "painting_credit",
+          "label": "画作交付",
+          "origin": "db",
+          "owner_id": "default-agent",
+          "owner_kind": "agent",
+          "slot_type": "reputation_axis",
+          "source": "demo_seed",
+          "status": "active",
+          "updated_at": "<ts>"
+        },
+        {
+          "config": {
+            "truth_layer": "rumor_unverified"
+          },
+          "created_at": "<ts>",
+          "description": "来自另一个 LifeEngine agent 的未证实讲述。",
+          "id": "<id:0055>",
+          "key": "inter_agent",
+          "label": "跨 Agent 讲述",
+          "origin": "db",
+          "owner_id": "default-agent",
+          "owner_kind": "agent",
+          "slot_type": "rumor_channel",
+          "source": "inter_agent_delivery",
+          "status": "active",
+          "updated_at": "<ts>"
+        },
+        {
+          "config": {},
+          "created_at": "<ts>",
+          "description": null,
+          "id": "<id:0056>",
           "key": "lantern_market_gossip",
           "label": "河灯会闲话",
           "origin": "db",
@@ -4726,7 +4760,7 @@
           "config": {},
           "created_at": "<ts>",
           "description": null,
-          "id": "<id:0055>",
+          "id": "<id:0057>",
           "key": "pigment_shop_talk",
           "label": "颜料铺闲谈",
           "origin": "db",
@@ -4741,7 +4775,7 @@
           "config": {},
           "created_at": "<ts>",
           "description": null,
-          "id": "<id:0056>",
+          "id": "<id:0058>",
           "key": "river_word_of_mouth",
           "label": "河边口碑",
           "origin": "db",
@@ -4749,40 +4783,6 @@
           "owner_kind": "agent",
           "slot_type": "rumor_channel",
           "source": "demo_seed",
-          "status": "active",
-          "updated_at": "<ts>"
-        },
-        {
-          "config": {
-            "cross_owner_reference": true
-          },
-          "created_at": "<ts>",
-          "description": "代表出现在当前 owner 社会世界里的另一个 LifeEngine agent。",
-          "id": "<id:0057>",
-          "key": "peer_agent",
-          "label": "同行 Agent",
-          "origin": "db",
-          "owner_id": "default-agent",
-          "owner_kind": "agent",
-          "slot_type": "entity_kind",
-          "source": "inter_agent_delivery",
-          "status": "active",
-          "updated_at": "<ts>"
-        },
-        {
-          "config": {
-            "truth_layer": "rumor_unverified"
-          },
-          "created_at": "<ts>",
-          "description": "来自另一个 LifeEngine agent 的未证实讲述。",
-          "id": "<id:0058>",
-          "key": "inter_agent",
-          "label": "跨 Agent 讲述",
-          "origin": "db",
-          "owner_id": "default-agent",
-          "owner_kind": "agent",
-          "slot_type": "rumor_channel",
-          "source": "inter_agent_delivery",
           "status": "active",
           "updated_at": "<ts>"
         }
@@ -5670,10 +5670,10 @@
     ],
     "evaluations": [
       {
-        "axis": "kindness",
+        "axis": "craft_finish",
         "created_at": "<ts>",
-        "evaluator_entity_id": "<id:0062>",
-        "evaluator_name": "阿照",
+        "evaluator_entity_id": "<id:0060>",
+        "evaluator_name": "叶老板",
         "evidence": {
           "date": "2026-07-03",
           "source": "demo_seed"
@@ -5681,8 +5681,8 @@
         "id": "<id:0071>",
         "owner_id": "default-agent",
         "owner_kind": "agent",
-        "reason": "问价时解释得清楚，也没有催人。",
-        "score": 41.0,
+        "reason": "封面第四色压得稳，像能上摊的样张。",
+        "score": 36.0,
         "source": "life_social_tool",
         "status": "active",
         "subject_entity_id": "<id:0059>",
@@ -5694,10 +5694,10 @@
         "visibility": "known"
       },
       {
-        "axis": "craft_finish",
+        "axis": "kindness",
         "created_at": "<ts>",
-        "evaluator_entity_id": "<id:0060>",
-        "evaluator_name": "叶老板",
+        "evaluator_entity_id": "<id:0062>",
+        "evaluator_name": "阿照",
         "evidence": {
           "date": "2026-07-03",
           "source": "demo_seed"
@@ -5705,8 +5705,8 @@
         "id": "<id:0072>",
         "owner_id": "default-agent",
         "owner_kind": "agent",
-        "reason": "封面第四色压得稳，像能上摊的样张。",
-        "score": 36.0,
+        "reason": "问价时解释得清楚，也没有催人。",
+        "score": 41.0,
         "source": "life_social_tool",
         "status": "active",
         "subject_entity_id": "<id:0059>",
@@ -5758,25 +5758,6 @@
       {
         "audience_entity_id": "<id:0061>",
         "audience_name": "河灯会摊主圈",
-        "axis": "painting_credit",
-        "created_at": "<ts>",
-        "delta": 21.0,
-        "evidence": {
-          "date": "2026-07-03"
-        },
-        "evidence_id": "demo.rep.painting_credit.20260703",
-        "evidence_kind": "demo_seed",
-        "id": "<id:0069>",
-        "owner_id": "default-agent",
-        "owner_kind": "agent",
-        "reason": "封面收尾按时交出，河灯会样张也准备妥当",
-        "source": "life_social_tool",
-        "subject_entity_id": "<id:0059>",
-        "subject_name": "凛"
-      },
-      {
-        "audience_entity_id": "<id:0061>",
-        "audience_name": "河灯会摊主圈",
         "axis": "approachable",
         "created_at": "<ts>",
         "delta": 18.0,
@@ -5785,10 +5766,29 @@
         },
         "evidence_id": "demo.rep.approachable.20260703",
         "evidence_kind": "demo_seed",
-        "id": "<id:0070>",
+        "id": "<id:0069>",
         "owner_id": "default-agent",
         "owner_kind": "agent",
         "reason": "给主顾解释画纸和灯色时很耐心",
+        "source": "life_social_tool",
+        "subject_entity_id": "<id:0059>",
+        "subject_name": "凛"
+      },
+      {
+        "audience_entity_id": "<id:0061>",
+        "audience_name": "河灯会摊主圈",
+        "axis": "painting_credit",
+        "created_at": "<ts>",
+        "delta": 21.0,
+        "evidence": {
+          "date": "2026-07-03"
+        },
+        "evidence_id": "demo.rep.painting_credit.20260703",
+        "evidence_kind": "demo_seed",
+        "id": "<id:0070>",
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "reason": "封面收尾按时交出，河灯会样张也准备妥当",
         "source": "life_social_tool",
         "subject_entity_id": "<id:0059>",
         "subject_name": "凛"
@@ -5869,29 +5869,26 @@
       },
       {
         "channel": "inter_agent",
-        "content": "青传来一条未证实讲述：我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
+        "content": "青传来一条未证实讲述：夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
         "created_at": "<ts>",
         "credibility": 0.25,
         "evidence": {
-          "dedup_key": "share:proactive:<id:0078>:agent:default-agent",
+          "dedup_key": "share:diary:<id:0078>:agent:default-agent",
           "from_owner_id": "agent-qing",
           "from_owner_kind": "agent",
           "kind": "telling",
           "outbox_id": "<id:0077>",
           "payload": {
-            "content": "我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
+            "content": "夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
             "created_at": "<ts>",
-            "emotional_tone": "focused",
+            "date": "2026-07-03",
+            "diary_type": "daily",
             "from_owner_id": "agent-qing",
             "from_owner_kind": "agent",
-            "importance": 62,
-            "intent_type": "idle_share",
-            "privacy_level": "safe_to_share",
-            "source": "proactive_intent",
+            "privacy": "safe_to_share",
+            "source": "diary_entry",
             "source_id": "<id:0078>",
-            "status": "queued",
-            "summary": "我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
-            "target_type": "user",
+            "summary": "夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
             "to_owner_id": "default-agent",
             "to_owner_kind": "agent"
           },
@@ -5916,26 +5913,29 @@
       },
       {
         "channel": "inter_agent",
-        "content": "青传来一条未证实讲述：夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
+        "content": "青传来一条未证实讲述：我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
         "created_at": "<ts>",
         "credibility": 0.25,
         "evidence": {
-          "dedup_key": "share:diary:<id:0081>:agent:default-agent",
+          "dedup_key": "share:proactive:<id:0081>:agent:default-agent",
           "from_owner_id": "agent-qing",
           "from_owner_kind": "agent",
           "kind": "telling",
           "outbox_id": "<id:0080>",
           "payload": {
-            "content": "夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
+            "content": "我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
             "created_at": "<ts>",
-            "date": "2026-07-03",
-            "diary_type": "daily",
+            "emotional_tone": "focused",
             "from_owner_id": "agent-qing",
             "from_owner_kind": "agent",
-            "privacy": "safe_to_share",
-            "source": "diary_entry",
+            "importance": 62,
+            "intent_type": "idle_share",
+            "privacy_level": "safe_to_share",
+            "source": "proactive_intent",
             "source_id": "<id:0081>",
-            "summary": "夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
+            "status": "queued",
+            "summary": "我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
+            "target_type": "user",
             "to_owner_id": "default-agent",
             "to_owner_kind": "agent"
           },
@@ -6021,81 +6021,27 @@
         "updated_at": "<ts>"
       },
       {
-        "config": {},
+        "config": {
+          "cross_owner_reference": true
+        },
         "created_at": "<ts>",
-        "description": null,
+        "description": "代表出现在当前 owner 社会世界里的另一个 LifeEngine agent。",
         "id": "<id:0047>",
-        "key": "familiarity",
-        "label": "熟悉",
+        "key": "peer_agent",
+        "label": "同行 Agent",
         "origin": "db",
         "owner_id": "default-agent",
         "owner_kind": "agent",
-        "slot_type": "relationship_axis",
-        "source": "demo_seed",
+        "slot_type": "entity_kind",
+        "source": "inter_agent_delivery",
         "status": "active",
         "updated_at": "<ts>"
       },
       {
         "config": {},
+        "created_at": "<ts>",
         "description": null,
         "id": "<id:0048>",
-        "key": "gratitude",
-        "label": "感谢",
-        "origin": "canon",
-        "slot_type": "relationship_axis",
-        "source": "canon_worldview",
-        "status": "active"
-      },
-      {
-        "config": {},
-        "created_at": "<ts>",
-        "description": null,
-        "id": "<id:0049>",
-        "key": "trust",
-        "label": "信任",
-        "origin": "db",
-        "owner_id": "default-agent",
-        "owner_kind": "agent",
-        "slot_type": "relationship_axis",
-        "source": "demo_seed",
-        "status": "active",
-        "updated_at": "<ts>"
-      },
-      {
-        "config": {},
-        "created_at": "<ts>",
-        "description": null,
-        "id": "<id:0050>",
-        "key": "approachable",
-        "label": "待人温和",
-        "origin": "db",
-        "owner_id": "default-agent",
-        "owner_kind": "agent",
-        "slot_type": "reputation_axis",
-        "source": "demo_seed",
-        "status": "active",
-        "updated_at": "<ts>"
-      },
-      {
-        "config": {},
-        "created_at": "<ts>",
-        "description": null,
-        "id": "<id:0051>",
-        "key": "painting_credit",
-        "label": "画作交付",
-        "origin": "db",
-        "owner_id": "default-agent",
-        "owner_kind": "agent",
-        "slot_type": "reputation_axis",
-        "source": "demo_seed",
-        "status": "active",
-        "updated_at": "<ts>"
-      },
-      {
-        "config": {},
-        "created_at": "<ts>",
-        "description": null,
-        "id": "<id:0052>",
         "key": "craft_finish",
         "label": "画面完成度",
         "origin": "db",
@@ -6110,7 +6056,7 @@
         "config": {},
         "created_at": "<ts>",
         "description": null,
-        "id": "<id:0053>",
+        "id": "<id:0049>",
         "key": "kindness",
         "label": "待人温和",
         "origin": "db",
@@ -6125,7 +6071,95 @@
         "config": {},
         "created_at": "<ts>",
         "description": null,
+        "id": "<id:0050>",
+        "key": "familiarity",
+        "label": "熟悉",
+        "origin": "db",
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "slot_type": "relationship_axis",
+        "source": "demo_seed",
+        "status": "active",
+        "updated_at": "<ts>"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0051>",
+        "key": "gratitude",
+        "label": "感谢",
+        "origin": "canon",
+        "slot_type": "relationship_axis",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "created_at": "<ts>",
+        "description": null,
+        "id": "<id:0052>",
+        "key": "trust",
+        "label": "信任",
+        "origin": "db",
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "slot_type": "relationship_axis",
+        "source": "demo_seed",
+        "status": "active",
+        "updated_at": "<ts>"
+      },
+      {
+        "config": {},
+        "created_at": "<ts>",
+        "description": null,
+        "id": "<id:0053>",
+        "key": "approachable",
+        "label": "待人温和",
+        "origin": "db",
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "slot_type": "reputation_axis",
+        "source": "demo_seed",
+        "status": "active",
+        "updated_at": "<ts>"
+      },
+      {
+        "config": {},
+        "created_at": "<ts>",
+        "description": null,
         "id": "<id:0054>",
+        "key": "painting_credit",
+        "label": "画作交付",
+        "origin": "db",
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "slot_type": "reputation_axis",
+        "source": "demo_seed",
+        "status": "active",
+        "updated_at": "<ts>"
+      },
+      {
+        "config": {
+          "truth_layer": "rumor_unverified"
+        },
+        "created_at": "<ts>",
+        "description": "来自另一个 LifeEngine agent 的未证实讲述。",
+        "id": "<id:0055>",
+        "key": "inter_agent",
+        "label": "跨 Agent 讲述",
+        "origin": "db",
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "slot_type": "rumor_channel",
+        "source": "inter_agent_delivery",
+        "status": "active",
+        "updated_at": "<ts>"
+      },
+      {
+        "config": {},
+        "created_at": "<ts>",
+        "description": null,
+        "id": "<id:0056>",
         "key": "lantern_market_gossip",
         "label": "河灯会闲话",
         "origin": "db",
@@ -6140,7 +6174,7 @@
         "config": {},
         "created_at": "<ts>",
         "description": null,
-        "id": "<id:0055>",
+        "id": "<id:0057>",
         "key": "pigment_shop_talk",
         "label": "颜料铺闲谈",
         "origin": "db",
@@ -6155,7 +6189,7 @@
         "config": {},
         "created_at": "<ts>",
         "description": null,
-        "id": "<id:0056>",
+        "id": "<id:0058>",
         "key": "river_word_of_mouth",
         "label": "河边口碑",
         "origin": "db",
@@ -6163,40 +6197,6 @@
         "owner_kind": "agent",
         "slot_type": "rumor_channel",
         "source": "demo_seed",
-        "status": "active",
-        "updated_at": "<ts>"
-      },
-      {
-        "config": {
-          "cross_owner_reference": true
-        },
-        "created_at": "<ts>",
-        "description": "代表出现在当前 owner 社会世界里的另一个 LifeEngine agent。",
-        "id": "<id:0057>",
-        "key": "peer_agent",
-        "label": "同行 Agent",
-        "origin": "db",
-        "owner_id": "default-agent",
-        "owner_kind": "agent",
-        "slot_type": "entity_kind",
-        "source": "inter_agent_delivery",
-        "status": "active",
-        "updated_at": "<ts>"
-      },
-      {
-        "config": {
-          "truth_layer": "rumor_unverified"
-        },
-        "created_at": "<ts>",
-        "description": "来自另一个 LifeEngine agent 的未证实讲述。",
-        "id": "<id:0058>",
-        "key": "inter_agent",
-        "label": "跨 Agent 讲述",
-        "origin": "db",
-        "owner_id": "default-agent",
-        "owner_kind": "agent",
-        "slot_type": "rumor_channel",
-        "source": "inter_agent_delivery",
         "status": "active",
         "updated_at": "<ts>"
       }

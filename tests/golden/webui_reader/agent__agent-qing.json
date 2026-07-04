@@ -40,7 +40,7 @@
           "heat": 0.35,
           "truth_layer": "rumor_unverified"
         },
-        "text": "凛传来一条未证实讲述：刚收尾一张画，想跟你说：袖口那一笔终于安静下来了。",
+        "text": "凛传来一条未证实讲述：封面收尾。最后一笔落在袖口，纸面安静下来。我把画夹扣好，忽然想先交出去，再慢慢改；人也许也是这样活下去的。",
         "title": "坊间流言",
         "ts": "<ts>"
       },
@@ -52,7 +52,7 @@
           "heat": 0.35,
           "truth_layer": "rumor_unverified"
         },
-        "text": "凛传来一条未证实讲述：封面收尾。最后一笔落在袖口，纸面安静下来。我把画夹扣好，忽然想先交出去，再慢慢改；人也许也是这样活下去的。",
+        "text": "凛传来一条未证实讲述：刚收尾一张画，想跟你说：袖口那一笔终于安静下来了。",
         "title": "坊间流言",
         "ts": "<ts>"
       },
@@ -130,7 +130,7 @@
           "heat": 0.35,
           "truth_layer": "rumor_unverified"
         },
-        "text": "凛传来一条未证实讲述：刚收尾一张画，想跟你说：袖口那一笔终于安静下来了。",
+        "text": "凛传来一条未证实讲述：封面收尾。最后一笔落在袖口，纸面安静下来。我把画夹扣好，忽然想先交出去，再慢慢改；人也许也是这样活下去的。",
         "title": "坊间流言",
         "ts": "<ts>"
       },
@@ -142,7 +142,7 @@
           "heat": 0.35,
           "truth_layer": "rumor_unverified"
         },
-        "text": "凛传来一条未证实讲述：封面收尾。最后一笔落在袖口，纸面安静下来。我把画夹扣好，忽然想先交出去，再慢慢改；人也许也是这样活下去的。",
+        "text": "凛传来一条未证实讲述：刚收尾一张画，想跟你说：袖口那一笔终于安静下来了。",
         "title": "坊间流言",
         "ts": "<ts>"
       },
@@ -855,111 +855,12 @@
           "status": "active"
         },
         {
-          "config": {},
-          "description": "会承载采样、排练或现场演出的现代空间。",
-          "id": "<id:0004>",
-          "key": "venue",
-          "label": "演出/录音场地",
-          "origin": "canon",
-          "slot_type": "entity_kind",
-          "source": "canon_worldview",
-          "status": "active"
-        },
-        {
-          "config": {},
-          "description": null,
-          "id": "<id:0005>",
-          "key": "creative_sync",
-          "label": "创作默契",
-          "origin": "canon",
-          "slot_type": "relationship_axis",
-          "source": "canon_worldview",
-          "status": "active"
-        },
-        {
-          "config": {},
-          "description": null,
-          "id": "<id:0006>",
-          "key": "trust",
-          "label": "信任",
-          "origin": "canon",
-          "slot_type": "relationship_axis",
-          "source": "canon_worldview",
-          "status": "active"
-        },
-        {
-          "config": {},
-          "description": null,
-          "id": "<id:0007>",
-          "key": "reliable_delivery",
-          "label": "交付稳定",
-          "origin": "canon",
-          "slot_type": "reputation_axis",
-          "source": "canon_worldview",
-          "status": "active"
-        },
-        {
-          "config": {},
-          "description": null,
-          "id": "<id:0008>",
-          "key": "sound_craft",
-          "label": "声音质感",
-          "origin": "canon",
-          "slot_type": "reputation_axis",
-          "source": "canon_worldview",
-          "status": "active"
-        },
-        {
-          "config": {},
-          "description": null,
-          "id": "<id:0009>",
-          "key": "listening_depth",
-          "label": "聆听深度",
-          "origin": "canon",
-          "slot_type": "evaluation_axis",
-          "source": "canon_worldview",
-          "status": "active"
-        },
-        {
-          "config": {},
-          "description": null,
-          "id": "<id:0010>",
-          "key": "texture_finish",
-          "label": "质感完成度",
-          "origin": "canon",
-          "slot_type": "evaluation_axis",
-          "source": "canon_worldview",
-          "status": "active"
-        },
-        {
-          "config": {},
-          "description": null,
-          "id": "<id:0011>",
-          "key": "studio_chat",
-          "label": "工作室闲聊",
-          "origin": "canon",
-          "slot_type": "rumor_channel",
-          "source": "canon_worldview",
-          "status": "active"
-        },
-        {
-          "config": {},
-          "description": null,
-          "id": "<id:0012>",
-          "key": "venue_backstage",
-          "label": "后台口碑",
-          "origin": "canon",
-          "slot_type": "rumor_channel",
-          "source": "canon_worldview",
-          "status": "active"
-        },
-        {
           "config": {
             "cross_owner_reference": true
           },
           "created_at": "<ts>",
           "description": "代表出现在当前 owner 社会世界里的另一个 LifeEngine agent。",
-          "id": "<id:0013>",
+          "id": "<id:0004>",
           "key": "peer_agent",
           "label": "同行 Agent",
           "origin": "db",
@@ -971,12 +872,89 @@
           "updated_at": "<ts>"
         },
         {
+          "config": {},
+          "description": "会承载采样、排练或现场演出的现代空间。",
+          "id": "<id:0005>",
+          "key": "venue",
+          "label": "演出/录音场地",
+          "origin": "canon",
+          "slot_type": "entity_kind",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0006>",
+          "key": "listening_depth",
+          "label": "聆听深度",
+          "origin": "canon",
+          "slot_type": "evaluation_axis",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0007>",
+          "key": "texture_finish",
+          "label": "质感完成度",
+          "origin": "canon",
+          "slot_type": "evaluation_axis",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0008>",
+          "key": "creative_sync",
+          "label": "创作默契",
+          "origin": "canon",
+          "slot_type": "relationship_axis",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0009>",
+          "key": "trust",
+          "label": "信任",
+          "origin": "canon",
+          "slot_type": "relationship_axis",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0010>",
+          "key": "reliable_delivery",
+          "label": "交付稳定",
+          "origin": "canon",
+          "slot_type": "reputation_axis",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0011>",
+          "key": "sound_craft",
+          "label": "声音质感",
+          "origin": "canon",
+          "slot_type": "reputation_axis",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
           "config": {
             "truth_layer": "rumor_unverified"
           },
           "created_at": "<ts>",
           "description": "来自另一个 LifeEngine agent 的未证实讲述。",
-          "id": "<id:0014>",
+          "id": "<id:0012>",
           "key": "inter_agent",
           "label": "跨 Agent 讲述",
           "origin": "db",
@@ -986,6 +964,28 @@
           "source": "inter_agent_delivery",
           "status": "active",
           "updated_at": "<ts>"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0013>",
+          "key": "studio_chat",
+          "label": "工作室闲聊",
+          "origin": "canon",
+          "slot_type": "rumor_channel",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0014>",
+          "key": "venue_backstage",
+          "label": "后台口碑",
+          "origin": "canon",
+          "slot_type": "rumor_channel",
+          "source": "canon_worldview",
+          "status": "active"
         }
       ]
     },
@@ -1405,111 +1405,12 @@
         "status": "active"
       },
       {
-        "config": {},
-        "description": "会承载采样、排练或现场演出的现代空间。",
-        "id": "<id:0004>",
-        "key": "venue",
-        "label": "演出/录音场地",
-        "origin": "canon",
-        "slot_type": "entity_kind",
-        "source": "canon_worldview",
-        "status": "active"
-      },
-      {
-        "config": {},
-        "description": null,
-        "id": "<id:0005>",
-        "key": "creative_sync",
-        "label": "创作默契",
-        "origin": "canon",
-        "slot_type": "relationship_axis",
-        "source": "canon_worldview",
-        "status": "active"
-      },
-      {
-        "config": {},
-        "description": null,
-        "id": "<id:0006>",
-        "key": "trust",
-        "label": "信任",
-        "origin": "canon",
-        "slot_type": "relationship_axis",
-        "source": "canon_worldview",
-        "status": "active"
-      },
-      {
-        "config": {},
-        "description": null,
-        "id": "<id:0007>",
-        "key": "reliable_delivery",
-        "label": "交付稳定",
-        "origin": "canon",
-        "slot_type": "reputation_axis",
-        "source": "canon_worldview",
-        "status": "active"
-      },
-      {
-        "config": {},
-        "description": null,
-        "id": "<id:0008>",
-        "key": "sound_craft",
-        "label": "声音质感",
-        "origin": "canon",
-        "slot_type": "reputation_axis",
-        "source": "canon_worldview",
-        "status": "active"
-      },
-      {
-        "config": {},
-        "description": null,
-        "id": "<id:0009>",
-        "key": "listening_depth",
-        "label": "聆听深度",
-        "origin": "canon",
-        "slot_type": "evaluation_axis",
-        "source": "canon_worldview",
-        "status": "active"
-      },
-      {
-        "config": {},
-        "description": null,
-        "id": "<id:0010>",
-        "key": "texture_finish",
-        "label": "质感完成度",
-        "origin": "canon",
-        "slot_type": "evaluation_axis",
-        "source": "canon_worldview",
-        "status": "active"
-      },
-      {
-        "config": {},
-        "description": null,
-        "id": "<id:0011>",
-        "key": "studio_chat",
-        "label": "工作室闲聊",
-        "origin": "canon",
-        "slot_type": "rumor_channel",
-        "source": "canon_worldview",
-        "status": "active"
-      },
-      {
-        "config": {},
-        "description": null,
-        "id": "<id:0012>",
-        "key": "venue_backstage",
-        "label": "后台口碑",
-        "origin": "canon",
-        "slot_type": "rumor_channel",
-        "source": "canon_worldview",
-        "status": "active"
-      },
-      {
         "config": {
           "cross_owner_reference": true
         },
         "created_at": "<ts>",
         "description": "代表出现在当前 owner 社会世界里的另一个 LifeEngine agent。",
-        "id": "<id:0013>",
+        "id": "<id:0004>",
         "key": "peer_agent",
         "label": "同行 Agent",
         "origin": "db",
@@ -1521,12 +1422,89 @@
         "updated_at": "<ts>"
       },
       {
+        "config": {},
+        "description": "会承载采样、排练或现场演出的现代空间。",
+        "id": "<id:0005>",
+        "key": "venue",
+        "label": "演出/录音场地",
+        "origin": "canon",
+        "slot_type": "entity_kind",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0006>",
+        "key": "listening_depth",
+        "label": "聆听深度",
+        "origin": "canon",
+        "slot_type": "evaluation_axis",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0007>",
+        "key": "texture_finish",
+        "label": "质感完成度",
+        "origin": "canon",
+        "slot_type": "evaluation_axis",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0008>",
+        "key": "creative_sync",
+        "label": "创作默契",
+        "origin": "canon",
+        "slot_type": "relationship_axis",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0009>",
+        "key": "trust",
+        "label": "信任",
+        "origin": "canon",
+        "slot_type": "relationship_axis",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0010>",
+        "key": "reliable_delivery",
+        "label": "交付稳定",
+        "origin": "canon",
+        "slot_type": "reputation_axis",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0011>",
+        "key": "sound_craft",
+        "label": "声音质感",
+        "origin": "canon",
+        "slot_type": "reputation_axis",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
         "config": {
           "truth_layer": "rumor_unverified"
         },
         "created_at": "<ts>",
         "description": "来自另一个 LifeEngine agent 的未证实讲述。",
-        "id": "<id:0014>",
+        "id": "<id:0012>",
         "key": "inter_agent",
         "label": "跨 Agent 讲述",
         "origin": "db",
@@ -1536,6 +1514,28 @@
         "source": "inter_agent_delivery",
         "status": "active",
         "updated_at": "<ts>"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0013>",
+        "key": "studio_chat",
+        "label": "工作室闲聊",
+        "origin": "canon",
+        "slot_type": "rumor_channel",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0014>",
+        "key": "venue_backstage",
+        "label": "后台口碑",
+        "origin": "canon",
+        "slot_type": "rumor_channel",
+        "source": "canon_worldview",
+        "status": "active"
       }
     ]
   },
