@@ -1,0 +1,1759 @@
+{
+  "api_agents_after_select": [
+    {
+      "engine_state": "active",
+      "is_selected": true,
+      "name": "青",
+      "owner_id": "agent-qing",
+      "owner_kind": "agent"
+    },
+    {
+      "engine_state": "active",
+      "is_selected": false,
+      "name": "凛",
+      "owner_id": "default-agent",
+      "owner_kind": "agent"
+    }
+  ],
+  "api_campaigns": {
+    "items": []
+  },
+  "api_dream_detail": {
+    "skipped": "no dream id"
+  },
+  "api_dreams": {
+    "items": []
+  },
+  "api_event_detail": {
+    "skipped": "no event id"
+  },
+  "api_events": {
+    "items": []
+  },
+  "api_feed": {
+    "items": [
+      {
+        "icon": "🌐",
+        "id": "<id:0049>",
+        "kind": "rumor",
+        "meta": {
+          "heat": 0.35,
+          "truth_layer": "rumor_unverified"
+        },
+        "text": "凛传来一条未证实讲述：刚收尾一张画，想跟你说：袖口那一笔终于安静下来了。",
+        "title": "坊间流言",
+        "ts": "<ts>"
+      },
+      {
+        "icon": "🌐",
+        "id": "<id:0050>",
+        "kind": "rumor",
+        "meta": {
+          "heat": 0.35,
+          "truth_layer": "rumor_unverified"
+        },
+        "text": "凛传来一条未证实讲述：封面收尾。最后一笔落在袖口，纸面安静下来。我把画夹扣好，忽然想先交出去，再慢慢改；人也许也是这样活下去的。",
+        "title": "坊间流言",
+        "ts": "<ts>"
+      },
+      {
+        "icon": "📣",
+        "id": "<id:0051>",
+        "kind": "companion",
+        "meta": {
+          "intent_type": "idle_share",
+          "status": "queued"
+        },
+        "text": "我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
+        "title": "她想跟你说",
+        "ts": "<ts>"
+      },
+      {
+        "icon": "📓",
+        "id": "<id:0052>",
+        "kind": "diary",
+        "meta": {
+          "diary_type": "daily"
+        },
+        "text": "夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
+        "title": "日记",
+        "ts": "<ts>"
+      },
+      {
+        "icon": "📓",
+        "id": "<id:0053>",
+        "kind": "diary",
+        "meta": {
+          "diary_type": "daily"
+        },
+        "text": "下午在旧厂房楼梯间录了三段脚步声。混响很短，像有人把一句话说到一半就停住。我把它标成 roomtone-0702，准备放进短片开场。",
+        "title": "日记",
+        "ts": "<ts>"
+      }
+    ],
+    "next_cursor": null
+  },
+  "api_feed_after_cursor": {
+    "items": [
+      {
+        "icon": "📓",
+        "id": "<id:0052>",
+        "kind": "diary",
+        "meta": {
+          "diary_type": "daily"
+        },
+        "text": "夜里把一段雨声切成很细的颗粒，铺在合成器下面。它不像雨，更像城市在很低的地方呼吸。",
+        "title": "日记",
+        "ts": "<ts>"
+      },
+      {
+        "icon": "📓",
+        "id": "<id:0053>",
+        "kind": "diary",
+        "meta": {
+          "diary_type": "daily"
+        },
+        "text": "下午在旧厂房楼梯间录了三段脚步声。混响很短，像有人把一句话说到一半就停住。我把它标成 roomtone-0702，准备放进短片开场。",
+        "title": "日记",
+        "ts": "<ts>"
+      }
+    ],
+    "next_cursor": null
+  },
+  "api_feed_limit3": {
+    "items": [
+      {
+        "icon": "🌐",
+        "id": "<id:0049>",
+        "kind": "rumor",
+        "meta": {
+          "heat": 0.35,
+          "truth_layer": "rumor_unverified"
+        },
+        "text": "凛传来一条未证实讲述：刚收尾一张画，想跟你说：袖口那一笔终于安静下来了。",
+        "title": "坊间流言",
+        "ts": "<ts>"
+      },
+      {
+        "icon": "🌐",
+        "id": "<id:0050>",
+        "kind": "rumor",
+        "meta": {
+          "heat": 0.35,
+          "truth_layer": "rumor_unverified"
+        },
+        "text": "凛传来一条未证实讲述：封面收尾。最后一笔落在袖口，纸面安静下来。我把画夹扣好，忽然想先交出去，再慢慢改；人也许也是这样活下去的。",
+        "title": "坊间流言",
+        "ts": "<ts>"
+      },
+      {
+        "icon": "📣",
+        "id": "<id:0051>",
+        "kind": "companion",
+        "meta": {
+          "intent_type": "idle_share",
+          "status": "queued"
+        },
+        "text": "我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
+        "title": "她想跟你说",
+        "ts": "<ts>"
+      }
+    ],
+    "next_cursor": "<ts>"
+  },
+  "api_goals": {
+    "goals": []
+  },
+  "api_inner_life": {
+    "opinions": [],
+    "self_narrative": null
+  },
+  "api_owners_after_select": {
+    "owners": [
+      {
+        "owner_id": "agent-qing",
+        "owner_kind": "agent"
+      },
+      {
+        "owner_id": "default-agent",
+        "owner_kind": "agent"
+      }
+    ],
+    "selected": {
+      "owner_id": "agent-qing",
+      "owner_kind": "agent"
+    }
+  },
+  "api_relationship": {
+    "items": []
+  },
+  "api_resources": {
+    "items": [
+      {
+        "capacity": 100.0,
+        "current_value": 58.0,
+        "display_name": "体力",
+        "max_value": 100.0,
+        "min_value": 0.0,
+        "resource_class": "vital",
+        "resource_key": "energy",
+        "state": "available",
+        "unit": "points"
+      },
+      {
+        "capacity": 100.0,
+        "current_value": 64.0,
+        "display_name": "深听专注",
+        "max_value": 100.0,
+        "min_value": 0.0,
+        "resource_class": "capacity",
+        "resource_key": "focus.deep_listening",
+        "state": "available",
+        "unit": "points"
+      },
+      {
+        "capacity": 200000.0,
+        "current_value": 42000.0,
+        "display_name": "日元账户",
+        "max_value": 200000.0,
+        "min_value": 0.0,
+        "resource_class": "fungible",
+        "resource_key": "money.jpy",
+        "state": "available",
+        "unit": "JPY"
+      },
+      {
+        "capacity": 100.0,
+        "current_value": 12.0,
+        "display_name": "情绪亮度",
+        "max_value": 100.0,
+        "min_value": -100.0,
+        "resource_class": "vital",
+        "resource_key": "mood",
+        "state": "available",
+        "unit": "points"
+      },
+      {
+        "capacity": 120.0,
+        "current_value": 9.0,
+        "display_name": "房间底噪采样",
+        "max_value": 120.0,
+        "min_value": 0.0,
+        "resource_class": "material",
+        "resource_key": "sample.library.roomtone",
+        "state": "available",
+        "unit": "段"
+      }
+    ]
+  },
+  "api_review": {
+    "items": []
+  },
+  "api_rhythm": {
+    "date": "2026-07-03",
+    "items": []
+  },
+  "api_schedule": {
+    "date": "2026-07-03",
+    "end": "<ts>",
+    "items": [],
+    "label": "2026-07-03",
+    "period": "day",
+    "start": "<ts>"
+  },
+  "api_schedule_open": {
+    "date": "2026-07-03",
+    "end": "<ts>",
+    "items": [],
+    "label": "2026-07-03",
+    "period": "day",
+    "start": "<ts>"
+  },
+  "api_snapshot": {
+    "avatar": {
+      "bubble": "观察生活流",
+      "label": "待机",
+      "mode": "unknown",
+      "scene": "observatory",
+      "sprite_state": "idle"
+    },
+    "campaigns": [],
+    "clock": {
+      "hhmm": "<now>",
+      "hour": "<now>",
+      "iso": "<now>",
+      "label": "<now>",
+      "phase": "<now>",
+      "timezone": "Asia/Tokyo"
+    },
+    "collections": {
+      "board": [],
+      "collections": [],
+      "items": [],
+      "loadout": [],
+      "outfit_presets": [],
+      "outfits": []
+    },
+    "control": {
+      "active_branch_id": null,
+      "active_canon_version": 1,
+      "created_at": "<ts>",
+      "current_workspace": "agent_self",
+      "draft_canon_id": null,
+      "engine_state": "active",
+      "heartbeat_mode": "manual",
+      "module_gates": {
+        "autonomy": "full",
+        "campaigns": "auto",
+        "companion": "auto",
+        "context_budget_chars": "5200",
+        "context_mode": "slim",
+        "daily_rhythm": "auto",
+        "dream": "auto",
+        "final_audit": "advisory",
+        "heartbeat": "manual",
+        "inter_agent": "on",
+        "life_author": "auto",
+        "managed_review_loop": "auto",
+        "meals": "auto",
+        "passive_metabolism": "auto",
+        "personality_drift": "auto",
+        "proactive": "pending_only",
+        "reflection": "auto",
+        "reply_gate": "advisory",
+        "schedule": "auto",
+        "truth_sources": "auto",
+        "venture": "auto",
+        "world_evolution": "auto"
+      },
+      "module_gates_json": "{\"autonomy\":\"full\",\"campaigns\":\"auto\",\"companion\":\"auto\",\"context_budget_chars\":\"5200\",\"context_mode\":\"slim\",\"daily_rhythm\":\"auto\",\"dream\":\"auto\",\"final_audit\":\"advisory\",\"heartbeat\":\"manual\",\"inter_agent\":\"on\",\"life_author\":\"auto\",\"managed_review_loop\":\"auto\",\"meals\":\"auto\",\"passive_metabolism\":\"auto\",\"personality_drift\":\"auto\",\"proactive\":\"pending_only\",\"reflection\":\"auto\",\"reply_gate\":\"advisory\",\"schedule\":\"auto\",\"truth_sources\":\"auto\",\"venture\":\"auto\",\"world_evolution\":\"auto\"}",
+      "owner_id": "agent-qing",
+      "owner_kind": "agent",
+      "paused": {},
+      "paused_json": null,
+      "resume_policy": "mark_gap_only",
+      "updated_at": "<ts>",
+      "workspace": "agent_self"
+    },
+    "current_event": null,
+    "delayed_replies": [],
+    "doctor": null,
+    "dreams": [],
+    "identity": {
+      "age": null,
+      "gender": null,
+      "name": "青",
+      "role": "独立音乐人 / 声音设计师"
+    },
+    "inner_life": {
+      "opinions": [],
+      "self_narrative": null
+    },
+    "life_feed_head": "<ts>",
+    "meals_today": {
+      "date": "<now>",
+      "extras": [],
+      "meals": [
+        {
+          "meal_type": "breakfast",
+          "skip_reason": null,
+          "status": "pending",
+          "time": "07:30"
+        },
+        {
+          "meal_type": "lunch",
+          "skip_reason": null,
+          "status": "pending",
+          "time": "12:30"
+        },
+        {
+          "meal_type": "dinner",
+          "skip_reason": null,
+          "status": "pending",
+          "time": "19:00"
+        }
+      ]
+    },
+    "meta": {
+      "db_path": "<hermes_home>/lifeengine/lifeengine.db",
+      "life_dir": "<hermes_home>/lifeengine",
+      "mtime": "<ts>",
+      "schema_version": 71,
+      "size_bytes": 5255168,
+      "tables": [
+        "action_state_transitions",
+        "actions",
+        "agent_loadout",
+        "agent_opinions",
+        "agent_realtime_state",
+        "agent_state_snapshots",
+        "agent_user_proactive_state",
+        "audit_log",
+        "autonomy_decisions",
+        "autonomy_sleep_adjustments",
+        "behavior_mapping_runs",
+        "behavior_mapping_sources",
+        "behavior_mappings",
+        "call_overrides",
+        "campaign_phase_occurrences",
+        "campaigns",
+        "canon_consistency_reports",
+        "canon_drafts",
+        "canon_migrations",
+        "canon_versions",
+        "collection_asset_checks",
+        "collection_item_aliases",
+        "collection_item_assets",
+        "collection_items",
+        "collection_maintenance_runs",
+        "collection_purchase_chains",
+        "collection_rule_presets",
+        "collection_usage_history",
+        "command_surface_profiles",
+        "commit_receipt_facts",
+        "commit_receipts",
+        "controls",
+        "conversation_activity_judgments",
+        "cron_heartbeat_tests",
+        "db_backups",
+        "delayed_replies",
+        "delayed_reply_digests",
+        "diary_entries",
+        "dream_entries",
+        "dream_repair_policies",
+        "dream_repair_runs",
+        "dream_runs",
+        "event_decompositions",
+        "event_dependencies",
+        "event_goal_links",
+        "event_state_transitions",
+        "events",
+        "execution_decisions",
+        "execution_sleep_adjustments",
+        "failed_lifeops_audits",
+        "final_gate_feedback_queue",
+        "final_gate_reports",
+        "goal_milestones",
+        "goal_progress_entries",
+        "goals",
+        "heartbeat_runs",
+        "human_review_action_policies",
+        "human_review_action_runs",
+        "human_review_batch_items",
+        "human_review_batch_runs",
+        "human_review_items",
+        "human_review_managed_loop_runs",
+        "human_review_managed_loop_state",
+        "human_review_runs",
+        "human_review_undo_items",
+        "human_review_undo_runs",
+        "install_checks",
+        "inter_agent_outbox",
+        "item_collections",
+        "life_arcs",
+        "life_author_runs",
+        "life_branches",
+        "life_invariant_checks",
+        "life_journal",
+        "life_ops",
+        "life_reflections",
+        "life_required_setting_checks",
+        "life_rhythm_items",
+        "life_rhythm_runs",
+        "life_transactions",
+        "living_inventory_preset_runs",
+        "maintenance_runs",
+        "meal_records",
+        "memories",
+        "memory_fts",
+        "memory_fts_config",
+        "memory_fts_content",
+        "memory_fts_data",
+        "memory_fts_docsize",
+        "memory_fts_idx",
+        "memory_vec",
+        "memory_vec_chunks",
+        "memory_vec_info",
+        "memory_vec_rowids",
+        "memory_vec_vector_chunks00",
+        "nightly_check_findings",
+        "outfit_plans",
+        "outfit_presets",
+        "outfit_resolutions",
+        "outfit_resolver_runs",
+        "outfit_snapshots",
+        "owners",
+        "package_manifests",
+        "persona_drift_log",
+        "persona_traits",
+        "proactive_deliveries",
+        "proactive_evaluations",
+        "proactive_intents",
+        "proactive_outbox",
+        "profile_exports",
+        "profile_imports",
+        "prompt_context_runs",
+        "prompt_context_session_mounts",
+        "relationship_notes",
+        "reply_gate_decisions",
+        "reply_gate_recoveries",
+        "reputation_accounts",
+        "reputation_events",
+        "resource_accounts",
+        "resource_definitions",
+        "resource_ledger",
+        "resource_reconcile_checks",
+        "resource_reconciliations",
+        "resource_reservations",
+        "restore_staging",
+        "results",
+        "rumor_exposures",
+        "rumors",
+        "schedule_block_executions",
+        "schedule_block_state_transitions",
+        "schedule_blocks",
+        "schema_migrations",
+        "serendipity_events",
+        "sleep_autonomy_execution_acceptance_runs",
+        "sleep_autonomy_execution_acceptance_scenarios",
+        "sleep_day_states",
+        "sleep_doctor_findings",
+        "sleep_interruptions",
+        "sleep_plans",
+        "sleep_recovery_plans",
+        "sleep_reply_dream_conversation_acceptance_runs",
+        "sleep_reply_dream_conversation_acceptance_scenarios",
+        "sleep_reply_dream_policies",
+        "sleep_reply_dream_policy_acceptance_runs",
+        "sleep_reply_dream_policy_acceptance_scenarios",
+        "sleep_reply_dream_policy_audits",
+        "sleep_reply_dream_policy_conflict_reports",
+        "sleep_reply_dream_policy_exports",
+        "sleep_reply_dream_policy_imports",
+        "sleep_reply_dream_policy_suggestions",
+        "sleep_session_state_transitions",
+        "sleep_sessions",
+        "social_edges",
+        "social_evaluations",
+        "social_projection_runs",
+        "social_request_transitions",
+        "social_requests",
+        "sqlite_sequence",
+        "stale_event_cleanup_runs",
+        "thoughts",
+        "trace_coverage_reports",
+        "trace_integrity_checks",
+        "trace_runs",
+        "trace_spans",
+        "truth_source_cache",
+        "truth_source_reads",
+        "turn_commits",
+        "upgrade_runs",
+        "user_activity_spans",
+        "user_confirmations",
+        "v010_release_notes",
+        "venture_occurrences",
+        "venture_opportunity_arrivals",
+        "venture_restock_orders",
+        "ventures",
+        "wake_jobs",
+        "world_affiliations",
+        "world_chronicle_events",
+        "world_conditions",
+        "world_entities",
+        "world_faction_presence",
+        "world_lore_entries",
+        "world_places",
+        "world_profiles",
+        "world_regions",
+        "world_routes",
+        "worldview_slot_definitions"
+      ]
+    },
+    "owner": {
+      "owner_id": "agent-qing",
+      "owner_kind": "agent"
+    },
+    "owners": [
+      {
+        "owner_id": "agent-qing",
+        "owner_kind": "agent"
+      },
+      {
+        "owner_id": "default-agent",
+        "owner_kind": "agent"
+      }
+    ],
+    "persona": {
+      "seeded": false,
+      "traits": []
+    },
+    "proactive": {
+      "intents": [
+        {
+          "agent_id": "agent-qing",
+          "created_at": "<ts>",
+          "decision_json": "{}",
+          "delivery_policy_json": "{\"demo_seed\":true,\"mode\":\"pending_only\"}",
+          "emotional_tone": "focused",
+          "expired_at": null,
+          "expires_at": "<ts>",
+          "expires_at_ts": "<ts>",
+          "generated_by": "life_proactive_tool",
+          "id": "<id:0001>",
+          "importance": 62,
+          "intent_type": "idle_share",
+          "novelty": 58,
+          "privacy_level": "safe_to_share",
+          "queued_at": "<ts>",
+          "relationship_relevance": 52,
+          "result_outbox_id": null,
+          "score_json": "{}",
+          "sent_at": null,
+          "status": "queued",
+          "summary": "我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
+          "suppressed_at": null,
+          "suppression_reason": null,
+          "target_id": "ringo",
+          "target_type": "user",
+          "trace_id": null,
+          "trigger_event_id": null,
+          "trigger_result_id": null,
+          "updated_at": "<ts>",
+          "urgency": 18
+        }
+      ],
+      "outbox": []
+    },
+    "recent_events": [],
+    "relationship": [],
+    "resources": [
+      {
+        "capacity": 100.0,
+        "current_value": 58.0,
+        "display_name": "体力",
+        "max_value": 100.0,
+        "min_value": 0.0,
+        "resource_class": "vital",
+        "resource_key": "energy",
+        "state": "available",
+        "unit": "points"
+      },
+      {
+        "capacity": 100.0,
+        "current_value": 64.0,
+        "display_name": "深听专注",
+        "max_value": 100.0,
+        "min_value": 0.0,
+        "resource_class": "capacity",
+        "resource_key": "focus.deep_listening",
+        "state": "available",
+        "unit": "points"
+      },
+      {
+        "capacity": 200000.0,
+        "current_value": 42000.0,
+        "display_name": "日元账户",
+        "max_value": 200000.0,
+        "min_value": 0.0,
+        "resource_class": "fungible",
+        "resource_key": "money.jpy",
+        "state": "available",
+        "unit": "JPY"
+      },
+      {
+        "capacity": 100.0,
+        "current_value": 12.0,
+        "display_name": "情绪亮度",
+        "max_value": 100.0,
+        "min_value": -100.0,
+        "resource_class": "vital",
+        "resource_key": "mood",
+        "state": "available",
+        "unit": "points"
+      },
+      {
+        "capacity": 120.0,
+        "current_value": 9.0,
+        "display_name": "房间底噪采样",
+        "max_value": 120.0,
+        "min_value": 0.0,
+        "resource_class": "material",
+        "resource_key": "sample.library.roomtone",
+        "state": "available",
+        "unit": "段"
+      }
+    ],
+    "review_items": [],
+    "schedule": {
+      "date": "2026-07-03",
+      "end": "<ts>",
+      "items": [],
+      "label": "2026-07-03",
+      "period": "day",
+      "start": "<ts>"
+    },
+    "sleep_day_state": null,
+    "snapshot_hash": "<hash>",
+    "social_world": {
+      "advisories": [],
+      "affiliations": [],
+      "counts": {
+        "advisories": 0,
+        "affiliations": 0,
+        "edges": 0,
+        "entities": 1,
+        "evaluations": 0,
+        "reputation": 0,
+        "requests": 0,
+        "rumors": 2,
+        "slots": 13
+      },
+      "edges": [],
+      "entities": [
+        {
+          "created_at": "<ts>",
+          "display_name": "凛",
+          "entity_kind": "peer_agent",
+          "id": "<id:0015>",
+          "metadata": {
+            "peer_owner_id": "default-agent",
+            "peer_owner_kind": "agent",
+            "reference_type": "lifeengine_owner"
+          },
+          "owner_id": "agent-qing",
+          "owner_kind": "agent",
+          "source": "inter_agent_delivery",
+          "status": "active",
+          "summary": "凛 是另一个 LifeEngine agent；其讲述进入本世界时保持未证实状态。",
+          "traits": {
+            "agent_relationship": "peer"
+          },
+          "updated_at": "<ts>"
+        }
+      ],
+      "evaluations": [],
+      "reputation": [],
+      "reputation_events": [],
+      "request_transitions": [],
+      "requests": [],
+      "rumor_exposures": [],
+      "rumors": [
+        {
+          "channel": "inter_agent",
+          "content": "凛传来一条未证实讲述：刚收尾一张画，想跟你说：袖口那一笔终于安静下来了。",
+          "created_at": "<ts>",
+          "credibility": 0.25,
+          "evidence": {
+            "dedup_key": "share:proactive:<id:0018>:agent:agent-qing",
+            "from_owner_id": "default-agent",
+            "from_owner_kind": "agent",
+            "kind": "telling",
+            "outbox_id": "<id:0017>",
+            "payload": {
+              "content": "刚收尾一张画，想跟你说：袖口那一笔终于安静下来了。",
+              "created_at": "<ts>",
+              "emotional_tone": "warm",
+              "from_owner_id": "default-agent",
+              "from_owner_kind": "agent",
+              "importance": 66,
+              "intent_type": "idle_share",
+              "privacy_level": "safe_to_share",
+              "source": "proactive_intent",
+              "source_id": "<id:0018>",
+              "status": "queued",
+              "summary": "刚收尾一张画，想跟你说：袖口那一笔终于安静下来了。",
+              "target_type": "user",
+              "to_owner_id": "agent-qing",
+              "to_owner_kind": "agent"
+            },
+            "source": "inter_agent_outbox"
+          },
+          "exposure_count": 0,
+          "heat": 0.35,
+          "id": "<id:0016>",
+          "owner_id": "agent-qing",
+          "owner_kind": "agent",
+          "sentiment": "neutral",
+          "source": "inter_agent_delivery",
+          "status": "active",
+          "subject_entity_id": null,
+          "subject_kind": null,
+          "subject_name": "",
+          "target_id": "<id:0017>",
+          "target_kind": "inter_agent_outbox",
+          "truth_layer": "rumor_unverified",
+          "updated_at": "<ts>",
+          "visibility": "local"
+        },
+        {
+          "channel": "inter_agent",
+          "content": "凛传来一条未证实讲述：封面收尾。最后一笔落在袖口，纸面安静下来。我把画夹扣好，忽然想先交出去，再慢慢改；人也许也是这样活下去的。",
+          "created_at": "<ts>",
+          "credibility": 0.25,
+          "evidence": {
+            "dedup_key": "share:diary:<id:0021>:agent:agent-qing",
+            "from_owner_id": "default-agent",
+            "from_owner_kind": "agent",
+            "kind": "telling",
+            "outbox_id": "<id:0020>",
+            "payload": {
+              "content": "封面收尾。最后一笔落在袖口，纸面安静下来。我把画夹扣好，忽然想先交出去，再慢慢改；人也许也是这样活下去的。",
+              "created_at": "<ts>",
+              "date": "2026-07-03",
+              "diary_type": "daily",
+              "from_owner_id": "default-agent",
+              "from_owner_kind": "agent",
+              "privacy": "safe_to_share",
+              "source": "diary_entry",
+              "source_id": "<id:0021>",
+              "summary": "封面收尾。最后一笔落在袖口，纸面安静下来。我把画夹扣好，忽然想先交出去，再慢慢改；人也许也是这样活下去的。",
+              "to_owner_id": "agent-qing",
+              "to_owner_kind": "agent"
+            },
+            "source": "inter_agent_outbox"
+          },
+          "exposure_count": 0,
+          "heat": 0.35,
+          "id": "<id:0019>",
+          "owner_id": "agent-qing",
+          "owner_kind": "agent",
+          "sentiment": "neutral",
+          "source": "inter_agent_delivery",
+          "status": "active",
+          "subject_entity_id": null,
+          "subject_kind": null,
+          "subject_name": "",
+          "target_id": "<id:0020>",
+          "target_kind": "inter_agent_outbox",
+          "truth_layer": "rumor_unverified",
+          "updated_at": "<ts>",
+          "visibility": "local"
+        }
+      ],
+      "slots": [
+        {
+          "config": {},
+          "description": "LifeEngine 当前演示主体。",
+          "id": "<id:0002>",
+          "key": "agent",
+          "label": "生活主体",
+          "origin": "canon",
+          "slot_type": "entity_kind",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": "短片、演出或录音项目里的协作对象。",
+          "id": "<id:0003>",
+          "key": "collaborator",
+          "label": "创作合作者",
+          "origin": "canon",
+          "slot_type": "entity_kind",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": "会承载采样、排练或现场演出的现代空间。",
+          "id": "<id:0004>",
+          "key": "venue",
+          "label": "演出/录音场地",
+          "origin": "canon",
+          "slot_type": "entity_kind",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0005>",
+          "key": "creative_sync",
+          "label": "创作默契",
+          "origin": "canon",
+          "slot_type": "relationship_axis",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0006>",
+          "key": "trust",
+          "label": "信任",
+          "origin": "canon",
+          "slot_type": "relationship_axis",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0007>",
+          "key": "reliable_delivery",
+          "label": "交付稳定",
+          "origin": "canon",
+          "slot_type": "reputation_axis",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0008>",
+          "key": "sound_craft",
+          "label": "声音质感",
+          "origin": "canon",
+          "slot_type": "reputation_axis",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0009>",
+          "key": "listening_depth",
+          "label": "聆听深度",
+          "origin": "canon",
+          "slot_type": "evaluation_axis",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0010>",
+          "key": "texture_finish",
+          "label": "质感完成度",
+          "origin": "canon",
+          "slot_type": "evaluation_axis",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0011>",
+          "key": "studio_chat",
+          "label": "工作室闲聊",
+          "origin": "canon",
+          "slot_type": "rumor_channel",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {},
+          "description": null,
+          "id": "<id:0012>",
+          "key": "venue_backstage",
+          "label": "后台口碑",
+          "origin": "canon",
+          "slot_type": "rumor_channel",
+          "source": "canon_worldview",
+          "status": "active"
+        },
+        {
+          "config": {
+            "cross_owner_reference": true
+          },
+          "created_at": "<ts>",
+          "description": "代表出现在当前 owner 社会世界里的另一个 LifeEngine agent。",
+          "id": "<id:0013>",
+          "key": "peer_agent",
+          "label": "同行 Agent",
+          "origin": "db",
+          "owner_id": "agent-qing",
+          "owner_kind": "agent",
+          "slot_type": "entity_kind",
+          "source": "inter_agent_delivery",
+          "status": "active",
+          "updated_at": "<ts>"
+        },
+        {
+          "config": {
+            "truth_layer": "rumor_unverified"
+          },
+          "created_at": "<ts>",
+          "description": "来自另一个 LifeEngine agent 的未证实讲述。",
+          "id": "<id:0014>",
+          "key": "inter_agent",
+          "label": "跨 Agent 讲述",
+          "origin": "db",
+          "owner_id": "agent-qing",
+          "owner_kind": "agent",
+          "slot_type": "rumor_channel",
+          "source": "inter_agent_delivery",
+          "status": "active",
+          "updated_at": "<ts>"
+        }
+      ]
+    },
+    "state": {
+      "mode": "unknown",
+      "owner_id": "agent-qing",
+      "owner_kind": "agent"
+    },
+    "trace": [
+      {
+        "created_at": "<ts>",
+        "entry_type": "social_record_rumor",
+        "id": "<id:0022>",
+        "op_id": "<id:0024>",
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": "<id:0023>"
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "rumor_recorded",
+        "id": "<id:0025>",
+        "op_id": null,
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": null
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "social_record_rumor",
+        "id": "<id:0026>",
+        "op_id": "<id:0028>",
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": "<id:0027>"
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "rumor_recorded",
+        "id": "<id:0029>",
+        "op_id": null,
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": null
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "social_create_entity",
+        "id": "<id:0030>",
+        "op_id": "<id:0031>",
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": "<id:0027>"
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "world_entity_created",
+        "id": "<id:0032>",
+        "op_id": null,
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": null
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "social_define_slot",
+        "id": "<id:0033>",
+        "op_id": "<id:0034>",
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": "<id:0027>"
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "social_slot_defined",
+        "id": "<id:0035>",
+        "op_id": null,
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": null
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "social_define_slot",
+        "id": "<id:0036>",
+        "op_id": "<id:0037>",
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": "<id:0027>"
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "social_slot_defined",
+        "id": "<id:0038>",
+        "op_id": null,
+        "owner_id": "default-agent",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": null
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "social_record_rumor",
+        "id": "<id:0039>",
+        "op_id": "<id:0041>",
+        "owner_id": "agent-qing",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": "<id:0040>"
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "rumor_recorded",
+        "id": "<id:0042>",
+        "op_id": null,
+        "owner_id": "agent-qing",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": null
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "social_record_rumor",
+        "id": "<id:0043>",
+        "op_id": "<id:0045>",
+        "owner_id": "agent-qing",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": "<id:0044>"
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "rumor_recorded",
+        "id": "<id:0046>",
+        "op_id": null,
+        "owner_id": "agent-qing",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": null
+      },
+      {
+        "created_at": "<ts>",
+        "entry_type": "social_create_entity",
+        "id": "<id:0047>",
+        "op_id": "<id:0048>",
+        "owner_id": "agent-qing",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "transaction_id": "<id:0044>"
+      }
+    ],
+    "updated_at": "<now>",
+    "workspace": {
+      "docs": [
+        {
+          "modified_at": "<ts>",
+          "name": "AGENTS.md",
+          "path": "<hermes_home>/AGENTS.md",
+          "relative_path": "AGENTS.md",
+          "root_label": "Hermes Profile",
+          "root_path": "<hermes_home>",
+          "size_bytes": 60
+        }
+      ],
+      "roots": [
+        {
+          "label": "Hermes Profile",
+          "path": "<hermes_home>"
+        },
+        {
+          "label": "lifeengine",
+          "path": "<hermes_home>/lifeengine"
+        }
+      ]
+    },
+    "world_model": {
+      "chronicle_events": [],
+      "conditions": [],
+      "counts": {
+        "chronicle_events": 0,
+        "conditions": 0,
+        "faction_presence": 0,
+        "lore": 0,
+        "places": 0,
+        "profiles": 0,
+        "regions": 0,
+        "routes": 0
+      },
+      "faction_presence": [],
+      "lore": [],
+      "map": {
+        "actor": {
+          "label": "青",
+          "source": "current_location",
+          "status": "unknown"
+        },
+        "assets": [],
+        "canvas": {
+          "background_color": "#15181c",
+          "height": 100.0,
+          "projection": "local_grid",
+          "title": "世界地图",
+          "unit": "grid",
+          "width": 100.0
+        },
+        "conditions": [],
+        "counts": {
+          "conditions": 0,
+          "image_layers": 0,
+          "important_markers": 0,
+          "markers": 0,
+          "routes": 0,
+          "terrain": 0
+        },
+        "grid": {
+          "major_every": 5,
+          "size": 10.0,
+          "visible": true
+        },
+        "image_layers": [],
+        "legend": {
+          "marker_roles": {
+            "important_building": "重要建筑",
+            "place": "地点"
+          },
+          "terrain": []
+        },
+        "markers": [],
+        "regions": [],
+        "routes": [],
+        "terrain": [],
+        "viewport": {
+          "default_center": {
+            "x": 50.0,
+            "y": 50.0
+          },
+          "default_zoom": 1.0,
+          "marking_enabled": true,
+          "max_zoom": 6.0,
+          "min_zoom": 0.75,
+          "pan_enabled": true,
+          "zoom_step": 1.25
+        }
+      },
+      "places": [],
+      "profiles": [],
+      "regions": [],
+      "routes": []
+    }
+  },
+  "api_social_world": {
+    "advisories": [],
+    "affiliations": [],
+    "counts": {
+      "advisories": 0,
+      "affiliations": 0,
+      "edges": 0,
+      "entities": 1,
+      "evaluations": 0,
+      "reputation": 0,
+      "requests": 0,
+      "rumors": 2,
+      "slots": 13
+    },
+    "edges": [],
+    "entities": [
+      {
+        "created_at": "<ts>",
+        "display_name": "凛",
+        "entity_kind": "peer_agent",
+        "id": "<id:0015>",
+        "metadata": {
+          "peer_owner_id": "default-agent",
+          "peer_owner_kind": "agent",
+          "reference_type": "lifeengine_owner"
+        },
+        "owner_id": "agent-qing",
+        "owner_kind": "agent",
+        "source": "inter_agent_delivery",
+        "status": "active",
+        "summary": "凛 是另一个 LifeEngine agent；其讲述进入本世界时保持未证实状态。",
+        "traits": {
+          "agent_relationship": "peer"
+        },
+        "updated_at": "<ts>"
+      }
+    ],
+    "evaluations": [],
+    "reputation": [],
+    "reputation_events": [],
+    "request_transitions": [],
+    "requests": [],
+    "rumor_exposures": [],
+    "rumors": [
+      {
+        "channel": "inter_agent",
+        "content": "凛传来一条未证实讲述：刚收尾一张画，想跟你说：袖口那一笔终于安静下来了。",
+        "created_at": "<ts>",
+        "credibility": 0.25,
+        "evidence": {
+          "dedup_key": "share:proactive:<id:0018>:agent:agent-qing",
+          "from_owner_id": "default-agent",
+          "from_owner_kind": "agent",
+          "kind": "telling",
+          "outbox_id": "<id:0017>",
+          "payload": {
+            "content": "刚收尾一张画，想跟你说：袖口那一笔终于安静下来了。",
+            "created_at": "<ts>",
+            "emotional_tone": "warm",
+            "from_owner_id": "default-agent",
+            "from_owner_kind": "agent",
+            "importance": 66,
+            "intent_type": "idle_share",
+            "privacy_level": "safe_to_share",
+            "source": "proactive_intent",
+            "source_id": "<id:0018>",
+            "status": "queued",
+            "summary": "刚收尾一张画，想跟你说：袖口那一笔终于安静下来了。",
+            "target_type": "user",
+            "to_owner_id": "agent-qing",
+            "to_owner_kind": "agent"
+          },
+          "source": "inter_agent_outbox"
+        },
+        "exposure_count": 0,
+        "heat": 0.35,
+        "id": "<id:0016>",
+        "owner_id": "agent-qing",
+        "owner_kind": "agent",
+        "sentiment": "neutral",
+        "source": "inter_agent_delivery",
+        "status": "active",
+        "subject_entity_id": null,
+        "subject_kind": null,
+        "subject_name": "",
+        "target_id": "<id:0017>",
+        "target_kind": "inter_agent_outbox",
+        "truth_layer": "rumor_unverified",
+        "updated_at": "<ts>",
+        "visibility": "local"
+      },
+      {
+        "channel": "inter_agent",
+        "content": "凛传来一条未证实讲述：封面收尾。最后一笔落在袖口，纸面安静下来。我把画夹扣好，忽然想先交出去，再慢慢改；人也许也是这样活下去的。",
+        "created_at": "<ts>",
+        "credibility": 0.25,
+        "evidence": {
+          "dedup_key": "share:diary:<id:0021>:agent:agent-qing",
+          "from_owner_id": "default-agent",
+          "from_owner_kind": "agent",
+          "kind": "telling",
+          "outbox_id": "<id:0020>",
+          "payload": {
+            "content": "封面收尾。最后一笔落在袖口，纸面安静下来。我把画夹扣好，忽然想先交出去，再慢慢改；人也许也是这样活下去的。",
+            "created_at": "<ts>",
+            "date": "2026-07-03",
+            "diary_type": "daily",
+            "from_owner_id": "default-agent",
+            "from_owner_kind": "agent",
+            "privacy": "safe_to_share",
+            "source": "diary_entry",
+            "source_id": "<id:0021>",
+            "summary": "封面收尾。最后一笔落在袖口，纸面安静下来。我把画夹扣好，忽然想先交出去，再慢慢改；人也许也是这样活下去的。",
+            "to_owner_id": "agent-qing",
+            "to_owner_kind": "agent"
+          },
+          "source": "inter_agent_outbox"
+        },
+        "exposure_count": 0,
+        "heat": 0.35,
+        "id": "<id:0019>",
+        "owner_id": "agent-qing",
+        "owner_kind": "agent",
+        "sentiment": "neutral",
+        "source": "inter_agent_delivery",
+        "status": "active",
+        "subject_entity_id": null,
+        "subject_kind": null,
+        "subject_name": "",
+        "target_id": "<id:0020>",
+        "target_kind": "inter_agent_outbox",
+        "truth_layer": "rumor_unverified",
+        "updated_at": "<ts>",
+        "visibility": "local"
+      }
+    ],
+    "slots": [
+      {
+        "config": {},
+        "description": "LifeEngine 当前演示主体。",
+        "id": "<id:0002>",
+        "key": "agent",
+        "label": "生活主体",
+        "origin": "canon",
+        "slot_type": "entity_kind",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": "短片、演出或录音项目里的协作对象。",
+        "id": "<id:0003>",
+        "key": "collaborator",
+        "label": "创作合作者",
+        "origin": "canon",
+        "slot_type": "entity_kind",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": "会承载采样、排练或现场演出的现代空间。",
+        "id": "<id:0004>",
+        "key": "venue",
+        "label": "演出/录音场地",
+        "origin": "canon",
+        "slot_type": "entity_kind",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0005>",
+        "key": "creative_sync",
+        "label": "创作默契",
+        "origin": "canon",
+        "slot_type": "relationship_axis",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0006>",
+        "key": "trust",
+        "label": "信任",
+        "origin": "canon",
+        "slot_type": "relationship_axis",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0007>",
+        "key": "reliable_delivery",
+        "label": "交付稳定",
+        "origin": "canon",
+        "slot_type": "reputation_axis",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0008>",
+        "key": "sound_craft",
+        "label": "声音质感",
+        "origin": "canon",
+        "slot_type": "reputation_axis",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0009>",
+        "key": "listening_depth",
+        "label": "聆听深度",
+        "origin": "canon",
+        "slot_type": "evaluation_axis",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0010>",
+        "key": "texture_finish",
+        "label": "质感完成度",
+        "origin": "canon",
+        "slot_type": "evaluation_axis",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0011>",
+        "key": "studio_chat",
+        "label": "工作室闲聊",
+        "origin": "canon",
+        "slot_type": "rumor_channel",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {},
+        "description": null,
+        "id": "<id:0012>",
+        "key": "venue_backstage",
+        "label": "后台口碑",
+        "origin": "canon",
+        "slot_type": "rumor_channel",
+        "source": "canon_worldview",
+        "status": "active"
+      },
+      {
+        "config": {
+          "cross_owner_reference": true
+        },
+        "created_at": "<ts>",
+        "description": "代表出现在当前 owner 社会世界里的另一个 LifeEngine agent。",
+        "id": "<id:0013>",
+        "key": "peer_agent",
+        "label": "同行 Agent",
+        "origin": "db",
+        "owner_id": "agent-qing",
+        "owner_kind": "agent",
+        "slot_type": "entity_kind",
+        "source": "inter_agent_delivery",
+        "status": "active",
+        "updated_at": "<ts>"
+      },
+      {
+        "config": {
+          "truth_layer": "rumor_unverified"
+        },
+        "created_at": "<ts>",
+        "description": "来自另一个 LifeEngine agent 的未证实讲述。",
+        "id": "<id:0014>",
+        "key": "inter_agent",
+        "label": "跨 Agent 讲述",
+        "origin": "db",
+        "owner_id": "agent-qing",
+        "owner_kind": "agent",
+        "slot_type": "rumor_channel",
+        "source": "inter_agent_delivery",
+        "status": "active",
+        "updated_at": "<ts>"
+      }
+    ]
+  },
+  "api_state": {
+    "mode": "unknown",
+    "owner_id": "agent-qing",
+    "owner_kind": "agent"
+  },
+  "api_trace_explain_dream": {
+    "skipped": "no dream id"
+  },
+  "api_trace_explain_event": {
+    "skipped": "no event id"
+  },
+  "api_world_model": {
+    "chronicle_events": [],
+    "conditions": [],
+    "counts": {
+      "chronicle_events": 0,
+      "conditions": 0,
+      "faction_presence": 0,
+      "lore": 0,
+      "places": 0,
+      "profiles": 0,
+      "regions": 0,
+      "routes": 0
+    },
+    "faction_presence": [],
+    "lore": [],
+    "map": {
+      "actor": {
+        "label": "明灯",
+        "source": "current_location",
+        "status": "unknown"
+      },
+      "assets": [],
+      "canvas": {
+        "background_color": "#15181c",
+        "height": 100.0,
+        "projection": "local_grid",
+        "title": "世界地图",
+        "unit": "grid",
+        "width": 100.0
+      },
+      "conditions": [],
+      "counts": {
+        "conditions": 0,
+        "image_layers": 0,
+        "important_markers": 0,
+        "markers": 0,
+        "routes": 0,
+        "terrain": 0
+      },
+      "grid": {
+        "major_every": 5,
+        "size": 10.0,
+        "visible": true
+      },
+      "image_layers": [],
+      "legend": {
+        "marker_roles": {
+          "important_building": "重要建筑",
+          "place": "地点"
+        },
+        "terrain": []
+      },
+      "markers": [],
+      "regions": [],
+      "routes": [],
+      "terrain": [],
+      "viewport": {
+        "default_center": {
+          "x": 50.0,
+          "y": 50.0
+        },
+        "default_zoom": 1.0,
+        "marking_enabled": true,
+        "max_zoom": 6.0,
+        "min_zoom": 0.75,
+        "pan_enabled": true,
+        "zoom_step": 1.25
+      }
+    },
+    "places": [],
+    "profiles": [],
+    "regions": [],
+    "routes": []
+  },
+  "direct_clock": {
+    "hhmm": "<now>",
+    "hour": "<now>",
+    "iso": "<now>",
+    "label": "<now>",
+    "phase": "<now>",
+    "timezone": "Asia/Tokyo"
+  },
+  "direct_collections": {
+    "board": [],
+    "collections": [],
+    "items": [],
+    "loadout": [],
+    "outfit_presets": [],
+    "outfits": []
+  },
+  "direct_control": {
+    "active_branch_id": null,
+    "active_canon_version": 1,
+    "created_at": "<ts>",
+    "current_workspace": "agent_self",
+    "draft_canon_id": null,
+    "engine_state": "active",
+    "heartbeat_mode": "manual",
+    "module_gates": {
+      "autonomy": "full",
+      "campaigns": "auto",
+      "companion": "auto",
+      "context_budget_chars": "5200",
+      "context_mode": "slim",
+      "daily_rhythm": "auto",
+      "dream": "auto",
+      "final_audit": "advisory",
+      "heartbeat": "manual",
+      "inter_agent": "on",
+      "life_author": "auto",
+      "managed_review_loop": "auto",
+      "meals": "auto",
+      "passive_metabolism": "auto",
+      "personality_drift": "auto",
+      "proactive": "pending_only",
+      "reflection": "auto",
+      "reply_gate": "advisory",
+      "schedule": "auto",
+      "truth_sources": "auto",
+      "venture": "auto",
+      "world_evolution": "auto"
+    },
+    "module_gates_json": "{\"autonomy\":\"full\",\"campaigns\":\"auto\",\"companion\":\"auto\",\"context_budget_chars\":\"5200\",\"context_mode\":\"slim\",\"daily_rhythm\":\"auto\",\"dream\":\"auto\",\"final_audit\":\"advisory\",\"heartbeat\":\"manual\",\"inter_agent\":\"on\",\"life_author\":\"auto\",\"managed_review_loop\":\"auto\",\"meals\":\"auto\",\"passive_metabolism\":\"auto\",\"personality_drift\":\"auto\",\"proactive\":\"pending_only\",\"reflection\":\"auto\",\"reply_gate\":\"advisory\",\"schedule\":\"auto\",\"truth_sources\":\"auto\",\"venture\":\"auto\",\"world_evolution\":\"auto\"}",
+    "owner_id": "agent-qing",
+    "owner_kind": "agent",
+    "paused": {},
+    "paused_json": null,
+    "resume_policy": "mark_gap_only",
+    "updated_at": "<ts>",
+    "workspace": "agent_self"
+  },
+  "direct_current_event": null,
+  "direct_delayed_replies": [],
+  "direct_doctor_latest": null,
+  "direct_identity": {
+    "age": null,
+    "gender": null,
+    "name": "青",
+    "role": "独立音乐人 / 声音设计师"
+  },
+  "direct_latest_sleep_day": null,
+  "direct_meals_today": {
+    "date": "<now>",
+    "extras": [],
+    "meals": [
+      {
+        "meal_type": "breakfast",
+        "skip_reason": null,
+        "status": "pending",
+        "time": "07:30"
+      },
+      {
+        "meal_type": "lunch",
+        "skip_reason": null,
+        "status": "pending",
+        "time": "12:30"
+      },
+      {
+        "meal_type": "dinner",
+        "skip_reason": null,
+        "status": "pending",
+        "time": "19:00"
+      }
+    ]
+  },
+  "direct_persona": {
+    "seeded": false,
+    "traits": []
+  },
+  "direct_proactive": {
+    "intents": [
+      {
+        "agent_id": "agent-qing",
+        "created_at": "<ts>",
+        "decision_json": "{}",
+        "delivery_policy_json": "{\"demo_seed\":true,\"mode\":\"pending_only\"}",
+        "emotional_tone": "focused",
+        "expired_at": null,
+        "expires_at": "<ts>",
+        "expires_at_ts": "<ts>",
+        "generated_by": "life_proactive_tool",
+        "id": "<id:0001>",
+        "importance": 62,
+        "intent_type": "idle_share",
+        "novelty": 58,
+        "privacy_level": "safe_to_share",
+        "queued_at": "<ts>",
+        "relationship_relevance": 52,
+        "result_outbox_id": null,
+        "score_json": "{}",
+        "sent_at": null,
+        "status": "queued",
+        "summary": "我刚把雨声切成很细的颗粒，忽然觉得城市也会在低频里呼吸。",
+        "suppressed_at": null,
+        "suppression_reason": null,
+        "target_id": "ringo",
+        "target_type": "user",
+        "trace_id": null,
+        "trigger_event_id": null,
+        "trigger_result_id": null,
+        "updated_at": "<ts>",
+        "urgency": 18
+      }
+    ],
+    "outbox": []
+  }
+}
