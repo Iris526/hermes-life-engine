@@ -155,18 +155,21 @@ def _venture_replenish_event(rt, *, owner_kind: str, owner_id: str, control: dic
     }
     if act.get("location"):
         ev_payload["location"] = {"name": act.get("location"), "kind": "flexible"}
-    with trace.span("venture_replenish", {"activity_id": act["id"], "target": target_key, "qty": order_qty}):
-        c1 = rt._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "venture_restock", session_id=None, turn_id=tick_id, trace=trace, control=control)
-    rev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
-    if rev_id:
-        try:
-            rt._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": rev_id, "start": r_start, "end": r_end, "block_type": "venture_restock", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 60}}}], owner_kind, owner_id, "venture_restock", session_id=None, turn_id=tick_id, trace=trace, control=control)
-        except Exception:
-            pass
-    rt.conn.execute(
-        "INSERT INTO venture_restock_orders(id, owner_kind, owner_id, activity_id, event_id, goods_name, quantity, unit_cost, status) VALUES(?,?,?,?,?,?,?,?, 'pending')",
-        (new_id("restock"), owner_kind, owner_id, act["id"], rev_id, target_key, order_qty, unit_cost),
-    )
+    # Atomic: event + schedule + restock order must commit together. A prior bug
+    # swallowed schedule failures then still inserted a pending order, so stock
+    # never replenished (event had no wake job) while the order blocked retries.
+    from .db import savepoint
+    with savepoint(rt.conn, f"venture_restock_{act['id']}_{target_key}"):
+        with trace.span("venture_replenish", {"activity_id": act["id"], "target": target_key, "qty": order_qty}):
+            c1 = rt._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "venture_restock", session_id=None, turn_id=tick_id, trace=trace, control=control)
+        rev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
+        if not rev_id:
+            raise RuntimeError("venture restock event create returned no id")
+        rt._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": rev_id, "start": r_start, "end": r_end, "block_type": "venture_restock", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 60}}}], owner_kind, owner_id, "venture_restock", session_id=None, turn_id=tick_id, trace=trace, control=control)
+        rt.conn.execute(
+            "INSERT INTO venture_restock_orders(id, owner_kind, owner_id, activity_id, event_id, goods_name, quantity, unit_cost, status) VALUES(?,?,?,?,?,?,?,?, 'pending')",
+            (new_id("restock"), owner_kind, owner_id, act["id"], rev_id, target_key, order_qty, unit_cost),
+        )
     return True
 
 # ----- registry runner：按 runtime._HEARTBEAT_MODULES 顺序调用 -----
@@ -519,12 +522,12 @@ def run_campaigns(rt, owner_kind: str, owner_id: str, control: dict[str, Any],
                     with trace.span("campaign_materialize", {"campaign_id": camp["id"], "phase": plan["phase_idx"]}):
                         c1 = rt._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "campaign", session_id=None, turn_id=tick_id, trace=trace, control=control)
                     ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
-                    if ev_id:
-                        spawned_ids.append(ev_id)
-                        try:
-                            _schedule_campaign_event(rt, owner_kind, owner_id, control, tick_id, trace, now, ctz, ev_id, duration_minutes)
-                        except Exception:
-                            pass
+                    if not ev_id:
+                        raise RuntimeError("campaign event create returned no id")
+                    spawned_ids.append(ev_id)
+                    # Schedule failures must roll the whole phase-day savepoint so
+                    # occurrence is not recorded without runnable blocks.
+                    _schedule_campaign_event(rt, owner_kind, owner_id, control, tick_id, trace, now, ctz, ev_id, duration_minutes)
                 _campaigns.record_phase_occurrence(rt.conn, camp["id"], owner_kind, owner_id, plan["phase_idx"], date_key, spawned_ids)
                 _campaigns.update_phase_progress(rt.conn, camp["id"], plan["phase_idx"], plan["progress"])
             out.append({"campaign_id": camp["id"], "phase": plan["phase_idx"], "spawned": len(spawned_ids), "progress": plan["progress"]})
@@ -1097,15 +1100,15 @@ def roll_opportunities(rt, owner_kind: str, owner_id: str, control: dict[str, An
                 }
                 if act.get("location"):
                     ev_payload["location"] = {"name": act.get("location"), "kind": act.get("location_kind") or "flexible"}
-                with trace.span("venture_opportunity", {"activity_id": act["id"]}):
-                    c1 = rt._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "venture_opportunity", session_id=None, turn_id=tick_id, trace=trace, control=control)
-                ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
-                if ev_id:
-                    try:
-                        rt._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": ev_id, "start": s_iso, "end": e_iso, "block_type": "venture_opportunity", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 30}}}], owner_kind, owner_id, "venture_opportunity", session_id=None, turn_id=tick_id, trace=trace, control=control)
-                    except Exception:
-                        pass
-                venture.record_arrival(rt.conn, owner_kind, owner_id, act["id"], date_key, ev_id)
+                from .db import savepoint
+                with savepoint(rt.conn, f"venture_opp_{act['id']}_{date_key}_{have}"):
+                    with trace.span("venture_opportunity", {"activity_id": act["id"]}):
+                        c1 = rt._commit_ops_locked([{"type": "CREATE_EVENT", "payload": ev_payload}], owner_kind, owner_id, "venture_opportunity", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                    ev_id = (((c1.get("results") or [{}])[0].get("result") or {}).get("id"))
+                    if not ev_id:
+                        raise RuntimeError("venture opportunity event create returned no id")
+                    rt._commit_ops_locked([{"type": "CREATE_SCHEDULE_BLOCK", "payload": {"event_id": ev_id, "start": s_iso, "end": e_iso, "block_type": "venture_opportunity", "timezone_name": atz, "interruptibility": {"level": "soft_interruptible", "max_delay_minutes": 30}}}], owner_kind, owner_id, "venture_opportunity", session_id=None, turn_id=tick_id, trace=trace, control=control)
+                    venture.record_arrival(rt.conn, owner_kind, owner_id, act["id"], date_key, ev_id)
                 landed.append({"activity_id": act["id"], "title": act["title"], "event_id": ev_id, "start": s_iso})
         return {"status": "ok", "date_key": date_key, "count": len(landed), "landed": landed}
     except Exception as exc:

@@ -476,7 +476,16 @@ def run_dream_cycle(conn, owner_kind: str, owner_id: str, *, sleep_session_id: s
     if allow_nap is None:
         allow_nap = bool(policy.get("allow_nap_dreams", False))
     create_share_intent = bool(create_share_intent and policy.get("share_on_wake", True) and policy.get("share_mode", "pending_intent") != "self_journal")
-    target_user_id = target_user_id or str(policy.get("default_share_user_id") or "anonymous-user")
+    if not target_user_id:
+        share_default = policy.get("default_share_user_id")
+        if share_default:
+            target_user_id = str(share_default)
+        else:
+            try:
+                from . import relationship as rel
+                target_user_id = rel.resolve_primary_user(conn, owner_id)
+            except Exception:
+                target_user_id = "anonymous-user"
 
     if sleep_session_id:
         session_row = conn.execute("SELECT * FROM sleep_sessions WHERE id=? AND owner_kind=? AND owner_id=?", (sleep_session_id, owner_kind, owner_id)).fetchone()

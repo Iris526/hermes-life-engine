@@ -1632,13 +1632,22 @@ class LifeEngineReader:
                 "issues": _safe_json(row.get("issues_json"), []),
             }
 
-    def trace_latest(self, limit: int = 20) -> list[dict[str, Any]]:
+    def trace_latest(self, limit: int = 20, *, owner_kind: str | None = None, owner_id: str | None = None) -> list[dict[str, Any]]:
         with self._connect() as conn:
             if not self._table_exists(conn, "life_journal"):
                 return []
             # life_journal has no source_turn_id/source_tick_id columns; the old
             # query drifted and failed every build, blanking the trace panel. Use
-            # the real linkage columns (transaction_id/op_id).
+            # the real linkage columns (transaction_id/op_id). Scope to the
+            # selected owner when provided so multi-agent DBs don't mix journals.
+            if owner_kind and owner_id:
+                return self._all(
+                    conn,
+                    """SELECT id, owner_kind, owner_id, entry_type, source, transaction_id, op_id, created_at
+                         FROM life_journal WHERE owner_kind=? AND owner_id=?
+                         ORDER BY created_at DESC, rowid LIMIT ?""",
+                    (owner_kind, owner_id, limit),
+                )
             return self._all(conn, "SELECT id, owner_kind, owner_id, entry_type, source, transaction_id, op_id, created_at FROM life_journal ORDER BY created_at DESC, rowid LIMIT ?", (limit,))
 
 
@@ -1701,12 +1710,23 @@ class LifeEngineReader:
         return {"cursor": cursor, "events": events}
 
 
-    def event_detail(self, event_id: str) -> dict[str, Any]:
-        """Return a rich, read-only event explain payload for WebUI drawers."""
+    def event_detail(self, event_id: str, *, owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
+        """Return a rich, read-only event explain payload for WebUI drawers.
+
+        When owner_kind/owner_id are provided (WebUI selected agent), events that
+        belong to another owner are treated as not found — no cross-agent leak.
+        """
         with self._connect() as conn:
             if not self._table_exists(conn, "events"):
                 return {"kind": "event", "id": event_id, "found": False}
-            event = self._first(conn, "SELECT * FROM events WHERE id=?", (event_id,))
+            if owner_kind and owner_id:
+                event = self._first(
+                    conn,
+                    "SELECT * FROM events WHERE id=? AND owner_kind=? AND owner_id=?",
+                    (event_id, owner_kind, owner_id),
+                )
+            else:
+                event = self._first(conn, "SELECT * FROM events WHERE id=?", (event_id,))
             if not event:
                 return {"kind": "event", "id": event_id, "found": False}
             self._decode_event(event)
@@ -1873,15 +1893,21 @@ class LifeEngineReader:
         """
         roots: list[Path] = []
         hermes_home = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser().resolve()
-        roots.append(hermes_home)
+        # Narrow roots: profile docs + LifeEngine dir only. Do NOT include Path.cwd()
+        # (accidental monorepo/home exposure) or the entire HERMES_HOME tree.
+        for sub in ("", "lifeengine", "docs", "agents", "workspace"):
+            candidate = hermes_home / sub if sub else hermes_home
+            # Only the top-level profile home for SOUL.md/AGENT.md style files —
+            # deeper secret paths stay out by suffix filter, but we still prefer
+            # known doc dirs when they exist.
+            if sub in {"lifeengine", "docs", "agents", "workspace"}:
+                roots.append(candidate)
+            elif sub == "":
+                roots.append(hermes_home)
         life_dir = self.selection.life_dir.resolve()
         if life_dir.name == "lifeengine":
             roots.append(life_dir.parent)
         roots.append(life_dir)
-        try:
-            roots.append(Path.cwd().resolve())
-        except Exception:
-            pass
         seen: set[str] = set()
         out: list[dict[str, Any]] = []
         for r in roots:

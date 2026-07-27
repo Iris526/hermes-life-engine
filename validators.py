@@ -736,11 +736,36 @@ def validate_resource_delta_against_db(conn, owner_kind: str, owner_id: str, pay
     if not key or payload.get("allow_ad_hoc") is True:
         return
     row = conn.execute(
-        "SELECT 1 FROM resource_definitions WHERE owner_kind=? AND owner_id=? AND key=?",
+        "SELECT * FROM resource_definitions WHERE owner_kind=? AND owner_id=? AND key=?",
         (owner_kind, owner_id, key),
     ).fetchone()
     if not row:
         raise ValidationError(f"resource delta uses undefined resource: {key}. Define it first.")
+    # Pre-check hard overdraft at validation time so LifeOps fail before apply.
+    try:
+        delta = float(payload.get("delta", 0))
+    except (TypeError, ValueError):
+        return
+    if delta >= 0:
+        return
+    from .resources import _is_soft_clamp_resource
+    if _is_soft_clamp_resource(row):
+        return
+    acct = conn.execute(
+        "SELECT current_value FROM resource_accounts WHERE owner_kind=? AND owner_id=? AND resource_key=?",
+        (owner_kind, owner_id, key),
+    ).fetchone()
+    if not acct:
+        return
+    reserved = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM resource_reservations WHERE owner_kind=? AND owner_id=? AND resource_key=? AND status='reserved'",
+        (owner_kind, owner_id, key),
+    ).fetchone()[0]
+    available = float(acct["current_value"] or 0) - float(reserved or 0)
+    if -delta > available + 1e-9:
+        raise ValidationError(
+            f"resource {key} insufficient: requested spend {-delta}, available {available}"
+        )
 
 
 def validate_resource_reservation_against_db(conn, owner_kind: str, owner_id: str, payload: dict[str, Any]) -> None:

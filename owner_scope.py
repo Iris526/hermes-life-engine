@@ -36,6 +36,13 @@ def default_user_id(sender_id: str | None = None) -> str:
     return sender_id or os.getenv("LIFEENGINE_USER_ID") or DEFAULT_USER_ID
 
 
+def _cross_owner_tools_allowed() -> bool:
+    """Host-only escape hatch for privileged multi-agent admin tools."""
+    return os.getenv("LIFEENGINE_ALLOW_CROSS_OWNER_TOOLS", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def resolve_owner_scope(
     args: dict[str, Any] | None = None,
     kwargs: dict[str, Any] | None = None,
@@ -55,7 +62,16 @@ def resolve_owner_scope(
     raw = owner_kind or args.get("owner_kind") or args.get("owner") or default_workspace or "agent"
     raw = str(raw)
     if raw in {"agent", "agent_self"}:
-        oid = owner_id or args.get("owner_id") or agent_id
+        # Bind agent tools to the host/session agent_id. Model-supplied owner_id
+        # that points at another agent is ignored unless the host explicitly
+        # enables LIFEENGINE_ALLOW_CROSS_OWNER_TOOLS (privileged admin).
+        # Explicit owner_id kwarg from resolve_owner/host code still wins when
+        # it matches agent_id or cross-owner is allowed.
+        requested = owner_id if owner_id is not None else args.get("owner_id")
+        if requested is None or str(requested) == str(agent_id) or _cross_owner_tools_allowed():
+            oid = requested if requested is not None else agent_id
+        else:
+            oid = agent_id
         return OwnerScope("agent", str(oid), str(agent_id), str(user_id) if user_id else None, None, "agent_self", session_id, turn_id, platform, sender_id)
     if raw in {"user", "user_life"}:
         oid = owner_id or args.get("owner_id") or user_id
@@ -67,7 +83,7 @@ def resolve_owner_scope(
     oid = owner_id or args.get("owner_id") or agent_id
     return OwnerScope(raw, str(oid), str(agent_id), str(user_id) if user_id else None, None, raw, session_id, turn_id, platform, sender_id)
 
-# Back-compat helpers used by early LifeEngine adapters.
+
 def resolve_owner(args: dict[str, Any] | None = None, *, owner_kind: str | None = None, owner_id: str | None = None,
                   sender_id: str | None = None, agent_id: str | None = None, user_id: str | None = None,
                   workspace: str | None = None) -> tuple[str, str]:
@@ -85,13 +101,5 @@ def resolve_owner(args: dict[str, Any] | None = None, *, owner_kind: str | None 
 
 
 def resolve_scope_from_hook(**kwargs: Any) -> OwnerScope:
-    return resolve_owner_scope({}, kwargs)
-
-# Compatibility helpers used by runtime/tools.
-def resolve_owner(args: dict[str, Any] | None = None, *, owner_kind: str | None = None, owner_id: str | None = None, sender_id: str | None = None) -> tuple[str, str]:
-    scope = resolve_owner_scope(args, {"sender_id": sender_id}, owner_kind=owner_kind, owner_id=owner_id)
-    return scope.owner_kind, scope.owner_id
-
-
-def resolve_scope_from_hook(*, session_id: str | None = None, turn_id: str | None = None, sender_id: str | None = None, platform: str | None = None, args: dict[str, Any] | None = None) -> OwnerScope:
-    return resolve_owner_scope(args or {}, {"session_id": session_id, "turn_id": turn_id, "sender_id": sender_id, "platform": platform})
+    args = kwargs.pop("args", None) or {}
+    return resolve_owner_scope(args, kwargs)

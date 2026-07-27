@@ -425,7 +425,11 @@ def inspect_profile_export(archive_path: str) -> dict[str, Any]:
             manifest_canonical = json.dumps(manifest_no_self, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")
             manifest_sha = _sha256_bytes(manifest_canonical)
             expected_db_sha = manifest.get("db_sha256")
-            ok = (expected_db_sha in {None, db_sha}) and (expected_manifest_sha in {None, manifest_sha})
+            # Both checksums are required — omitting them used to pass inspect and
+            # let a tampered lifeengine.db stage without integrity evidence.
+            db_ok = bool(expected_db_sha) and expected_db_sha == db_sha
+            manifest_ok = bool(expected_manifest_sha) and expected_manifest_sha == manifest_sha
+            ok = db_ok and manifest_ok
             return {
                 "ok": bool(ok),
                 "status": "ok" if ok else "error",
@@ -435,8 +439,8 @@ def inspect_profile_export(archive_path: str) -> dict[str, Any]:
                 "db_sha256": db_sha,
                 "manifest_sha256": manifest_sha,
                 "checks": [
-                    {"name": "db_sha256", "ok": expected_db_sha in {None, db_sha}, "expected": expected_db_sha, "actual": db_sha},
-                    {"name": "manifest_sha256", "ok": expected_manifest_sha in {None, manifest_sha}, "expected": expected_manifest_sha, "actual": manifest_sha},
+                    {"name": "db_sha256", "ok": db_ok, "expected": expected_db_sha, "actual": db_sha},
+                    {"name": "manifest_sha256", "ok": manifest_ok, "expected": expected_manifest_sha, "actual": manifest_sha},
                 ],
             }
     except Exception as exc:

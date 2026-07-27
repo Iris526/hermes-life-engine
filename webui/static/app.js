@@ -3,6 +3,7 @@
    三栏布局 + hotbar 全屏面板 + 模块化渲染
    ═══════════════════════════════════════════════════════════ */
 const API = "";
+let authToken = "";
 let snapshotData = null;
 let collectionsData = null;
 let agentRoster = [];
@@ -65,9 +66,35 @@ function blip(kind) {
   } catch (e) {}
 }
 
+// ── 鉴权：loopback 自动从 /api/auth/session 领取写 token ──────────
+async function ensureAuthToken() {
+  if (authToken) return authToken;
+  try {
+    const cached = sessionStorage.getItem("lifeengine_webui_token");
+    if (cached) { authToken = cached; return authToken; }
+  } catch (e) {}
+  try {
+    const res = await fetch(`${API}/api/auth/session`);
+    if (!res.ok) return "";
+    const data = await res.json();
+    if (data && data.token) {
+      authToken = data.token;
+      try { sessionStorage.setItem("lifeengine_webui_token", authToken); } catch (e) {}
+    }
+  } catch (e) {}
+  return authToken;
+}
+
+function authHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (authToken) headers["X-LifeEngine-Token"] = authToken;
+  return headers;
+}
+
 // ── 初始化 ────────────────────────────────────
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   bindEvents();
+  await ensureAuthToken();
   loadSnapshot();
 });
 
@@ -2941,11 +2968,11 @@ async function showTraceDetail(id) {
     const data = await res.json();
     const sections = [];
     if (data.kind) sections.push(`<div class="td-section"><div class="td-label">类型</div><div>${data.kind}</div></div>`);
-    if (data.event) sections.push(`<div class="td-section"><div class="td-label">事件</div><pre>${JSON.stringify(data.event, null, 2)}</pre></div>`);
-    if (data.transaction) sections.push(`<div class="td-section"><div class="td-label">事务</div><pre>${JSON.stringify(data.transaction, null, 2)}</pre></div>`);
-    if (data.ops) sections.push(`<div class="td-section"><div class="td-label">操作 (${data.ops.length})</div><pre>${JSON.stringify(data.ops, null, 2)}</pre></div>`);
-    if (data.receipt) sections.push(`<div class="td-section"><div class="td-label">收据</div><pre>${JSON.stringify(data.receipt, null, 2)}</pre></div>`);
-    if (data.journal) sections.push(`<div class="td-section"><div class="td-label">日志 (${(data.journal||[]).length})</div><pre>${JSON.stringify(data.journal, null, 2)}</pre></div>`);
+    if (data.event) sections.push(`<div class="td-section"><div class="td-label">事件</div><pre>${escapeHtml(JSON.stringify(data.event, null, 2))}</pre></div>`);
+    if (data.transaction) sections.push(`<div class="td-section"><div class="td-label">事务</div><pre>${escapeHtml(JSON.stringify(data.transaction, null, 2))}</pre></div>`);
+    if (data.ops) sections.push(`<div class="td-section"><div class="td-label">操作 (${data.ops.length})</div><pre>${escapeHtml(JSON.stringify(data.ops, null, 2))}</pre></div>`);
+    if (data.receipt) sections.push(`<div class="td-section"><div class="td-label">收据</div><pre>${escapeHtml(JSON.stringify(data.receipt, null, 2))}</pre></div>`);
+    if (data.journal) sections.push(`<div class="td-section"><div class="td-label">日志 (${(data.journal||[]).length})</div><pre>${escapeHtml(JSON.stringify(data.journal, null, 2))}</pre></div>`);
     detail.innerHTML = sections.join("") || `<p class="trace-hint">无详情</p>`;
   } catch {
     detail.innerHTML = '<p class="trace-hint">解析失败</p>';
@@ -3005,9 +3032,9 @@ async function showEventDetail(id) {
       <div class="desc">${escapeHtml(ev.description || "")}</div>
       ${kv("类别", ev.event_category)}${kv("类型", ev.event_type)}${kv("状态", ev.status)}${kv("重要度", ev.importance)}
       ${kv("开始", formatTime(ev.planned_start))}${kv("结束", formatTime(ev.planned_end))}
-      ${ev.resource_costs && Object.keys(ev.resource_costs).length ? `<h4>资源消耗</h4><pre>${JSON.stringify(ev.resource_costs, null, 2)}</pre>` : ""}
-      ${data.transitions?.length ? `<h4>状态流转 (${data.transitions.length})</h4><pre>${JSON.stringify(data.transitions, null, 2)}</pre>` : ""}
-      ${data.resource_ledger?.length ? `<h4>资源账本</h4><pre>${JSON.stringify(data.resource_ledger, null, 2)}</pre>` : ""}`;
+      ${ev.resource_costs && Object.keys(ev.resource_costs).length ? `<h4>资源消耗</h4><pre>${escapeHtml(JSON.stringify(ev.resource_costs, null, 2))}</pre>` : ""}
+      ${data.transitions?.length ? `<h4>状态流转 (${data.transitions.length})</h4><pre>${escapeHtml(JSON.stringify(data.transitions, null, 2))}</pre>` : ""}
+      ${data.resource_ledger?.length ? `<h4>资源账本</h4><pre>${escapeHtml(JSON.stringify(data.resource_ledger, null, 2))}</pre>` : ""}`;
   } catch { body.innerHTML = '<p class="empty-state">载入失败</p>'; }
 }
 
@@ -3023,7 +3050,7 @@ async function showDreamDetail(id) {
     body.innerHTML = `<h4>${formatTime(d.created_at)}</h4>
       <div class="desc">${escapeHtml(d.content || d.summary || "")}</div>
       ${d.symbols?.length ? `<h4>象征</h4><div>${d.symbols.map(s => `<span class="dream-symbol">${escapeHtml(s)}</span>`).join(" ")}</div>` : ""}
-      ${data.findings?.length ? `<h4>审计发现 (${data.findings.length})</h4><pre>${JSON.stringify(data.findings, null, 2)}</pre>` : ""}`;
+      ${data.findings?.length ? `<h4>审计发现 (${data.findings.length})</h4><pre>${escapeHtml(JSON.stringify(data.findings, null, 2))}</pre>` : ""}`;
   } catch { body.innerHTML = '<p class="empty-state">载入失败</p>'; }
 }
 
@@ -3043,7 +3070,7 @@ function showItemDetail(itemId) {
     ${kv("状态", item.status)}${kv("数量", item.quantity)}${kv("清洁度", item.cleanliness_state)}
     ${item.aliases?.length ? `<h4>别名</h4><div>${item.aliases.map(a => `<span class="dream-symbol">${escapeHtml(a)}</span>`).join(" ")}</div>` : ""}
     ${attrItems.length ? `<h4>属性</h4>${attrItems.map(([k,v]) => kv(attrLabel(k), v)).join("")}` : ""}
-    ${item.material_spec ? `<h4>材质</h4><pre>${JSON.stringify(item.material_spec, null, 2)}</pre>` : ""}
+    ${item.material_spec ? `<h4>材质</h4><pre>${escapeHtml(JSON.stringify(item.material_spec, null, 2))}</pre>` : ""}
     ${item.tags?.length ? `<h4>标签</h4><div>${item.tags.map(t => `<span class="dream-symbol">${escapeHtml(t)}</span>`).join(" ")}</div>` : ""}`;
 }
 
@@ -3120,9 +3147,10 @@ async function switchObservedAgent(ownerKind, ownerId) {
   if (current.owner_kind === ownerKind && current.owner_id === ownerId) return;
   switchingOwner = true;
   try {
+    await ensureAuthToken();
     const res = await fetch(`${API}/api/owner`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ owner_kind: ownerKind, owner_id: ownerId }),
     });
     if (!res.ok) throw new Error("owner switch failed");
@@ -3183,9 +3211,10 @@ function tickSummary(d) {
 async function doAction(action, payload = {}) {
   try {
     pulseHeartbeat();
+    await ensureAuthToken();
     const res = await fetch(`${API}/api/action`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ action, payload }),
     });
     const data = await res.json();

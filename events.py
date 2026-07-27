@@ -135,14 +135,25 @@ def get_realtime_state(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
     return d
 
 
+# Sentinel: field omitted → keep current value. Explicit None → clear the column.
+# (Previously every default None wrote SQL NULL and wiped active sleep/event anchors.)
+_UNSET: Any = object()
+
+
 def set_realtime_state(conn, owner_kind: str, owner_id: str, *, mode: str | None = None,
-                       active_event_id: str | None = None, active_action_id: str | None = None,
-                       active_schedule_block_id: str | None = None, active_sleep_session_id: str | None = None,
+                       active_event_id: Any = _UNSET, active_action_id: Any = _UNSET,
+                       active_schedule_block_id: Any = _UNSET, active_sleep_session_id: Any = _UNSET,
                        interruptibility_level: str | None = None, reply_mode: str | None = None,
                        lease_expires_at: str | None = None, body_state: dict[str, Any] | None = None,
                        mind_state: dict[str, Any] | None = None, environment_state: dict[str, Any] | None = None,
                        source: str = "life_commit", reason: str | None = None,
                        trace_id: str | None = None) -> dict[str, Any]:
+    """Update realtime state with partial-update semantics.
+
+    ``mode`` / ``interruptibility_level`` / ``reply_mode`` use COALESCE (omit → keep).
+    Active anchors (event/action/schedule/sleep) use ``_UNSET`` default: omit → keep,
+    pass explicit ``None`` → clear. Callers that intentionally clear must pass ``None``.
+    """
     current = ensure_realtime_state(conn, owner_kind, owner_id)
     new_body = current.get("body_state") or {}
     new_mind = current.get("mind_state") or {}
@@ -155,6 +166,14 @@ def set_realtime_state(conn, owner_kind: str, owner_id: str, *, mode: str | None
         new_env.update(environment_state)
     lease_iso = normalized_iso(lease_expires_at) if lease_expires_at else current.get("lease_expires_at")
     lease_ts = to_epoch(lease_iso) if lease_iso else None
+
+    def _anchor(value: Any, key: str) -> Any:
+        return current.get(key) if value is _UNSET else value
+
+    next_event = _anchor(active_event_id, "active_event_id")
+    next_action = _anchor(active_action_id, "active_action_id")
+    next_block = _anchor(active_schedule_block_id, "active_schedule_block_id")
+    next_sleep = _anchor(active_sleep_session_id, "active_sleep_session_id")
     conn.execute(
         """UPDATE agent_realtime_state SET
                mode=COALESCE(?, mode), active_event_id=?, active_action_id=?, active_schedule_block_id=?, active_sleep_session_id=?,
@@ -162,7 +181,7 @@ def set_realtime_state(conn, owner_kind: str, owner_id: str, *, mode: str | None
                lease_expires_at=?, lease_expires_at_ts=?, body_state_json=?, mind_state_json=?, environment_state_json=?,
                updated_at=datetime('now')
              WHERE owner_kind=? AND owner_id=?""",
-        (mode, active_event_id, active_action_id, active_schedule_block_id, active_sleep_session_id,
+        (mode, next_event, next_action, next_block, next_sleep,
          interruptibility_level, reply_mode, lease_iso, lease_ts, dumps(new_body), dumps(new_mind), dumps(new_env),
          owner_kind, owner_id),
     )
@@ -176,7 +195,7 @@ def set_realtime_state(conn, owner_kind: str, owner_id: str, *, mode: str | None
         (new_id("statesnap"), owner_kind, owner_id, updated.get("mode"), updated.get("active_event_id"),
          updated.get("active_action_id"), updated.get("active_schedule_block_id"), updated.get("active_sleep_session_id"), updated.get("interruptibility_level"),
          updated.get("reply_mode"), dumps(updated.get("body_state") or {}), dumps(updated.get("mind_state") or {}),
-         source, reason, active_event_id or updated.get("active_event_id"), active_schedule_block_id or updated.get("active_schedule_block_id"), trace_id),
+         source, reason, updated.get("active_event_id"), updated.get("active_schedule_block_id"), trace_id),
     )
     append_journal(conn, owner_kind, owner_id, "realtime_state_updated", {"state": updated, "reason": reason}, source)
     return updated
@@ -247,11 +266,15 @@ def create_event(conn, owner_kind: str, owner_id: str, title: str,
     return get_event(conn, event_id)
 
 
-def get_event(conn, event_id: str) -> dict[str, Any]:
+def get_event(conn, event_id: str, *, owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
     row = conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
     if not row:
         raise ValueError(f"Event not found: {event_id}")
-    return _decode_event_row(row)
+    event = _decode_event_row(row)
+    if owner_kind is not None and owner_id is not None:
+        if event.get("owner_kind") != owner_kind or event.get("owner_id") != owner_id:
+            raise ValueError(f"Event not found: {event_id}")
+    return event
 
 
 def list_events(conn, owner_kind: str, owner_id: str, status: str | None = None,
@@ -475,7 +498,9 @@ def retry_or_fail_wake_job(conn, owner_kind: str, owner_id: str, wake_job_id: st
 def complete_event(conn, owner_kind: str, owner_id: str, event_id: str, summary: str,
                    resource_deltas: dict[str, float] | None = None,
                    source: str = "heartbeat") -> dict[str, Any]:
-    event = get_event(conn, event_id)
+    event = get_event(conn, event_id, owner_kind=owner_kind, owner_id=owner_id)
+    if event.get("owner_kind") != owner_kind or event.get("owner_id") != owner_id:
+        raise ValueError("event owner mismatch")
     assert_event_completable(event["status"])
     action_id = new_id("action")
     result_id = new_id("result")
@@ -501,6 +526,10 @@ def complete_event(conn, owner_kind: str, owner_id: str, event_id: str, summary:
         (result_id, owner_kind, owner_id, event_id, action_id, "success", summary, 100, dumps([])),
     )
     deltas = resource_deltas if resource_deltas is not None else (event.get("resource_costs") or {})
+    # Pre-check the whole map so a hard-ledger shortfall cannot leave earlier
+    # keys already deducted (complete_event is not multi-savepoint).
+    from .resources import assert_deltas_affordable
+    assert_deltas_affordable(conn, owner_kind, owner_id, deltas if isinstance(deltas, dict) else {})
     for key, delta in deltas.items():
         apply_delta(conn, owner_kind, owner_id, key, float(delta), "consume" if float(delta) < 0 else "produce",
                     f"event completed: {event['title']}", source, event_id=event_id, action_id=action_id, result_id=result_id)

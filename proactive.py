@@ -1329,12 +1329,24 @@ def mark_outbox_sent(conn, agent_id: str, outbox_id: str, *, result: dict[str, A
     intent_id = msg.get("intent_id")
     canon_policy = _get_canon_policy(conn, agent_id)
     policy = _gate_policy(None, canon_policy)
-    conn.execute(
-        "UPDATE proactive_outbox SET status='sent', sent_at=datetime('now'), delivery_result_json=? WHERE id=?",
+    # Idempotent: already-sent/expired rows must not bump daily_sent_count or cooldown again.
+    cur = conn.execute(
+        """UPDATE proactive_outbox SET status='sent', sent_at=datetime('now'), delivery_result_json=?
+              WHERE id=? AND status IN ('queued','delivering','drafted','approved')""",
         (dumps(result or {"manual": manual}), outbox_id),
     )
+    if not cur.rowcount:
+        return {
+            "outbox": get_outbox_message(conn, outbox_id),
+            "state": ensure_proactive_state(conn, agent_id, user_id, timezone_name=policy.get("timezone")),
+            "already_sent": True,
+        }
     if intent_id:
-        conn.execute("UPDATE proactive_intents SET status='sent', sent_at=datetime('now'), updated_at=datetime('now') WHERE id=?", (intent_id,))
+        conn.execute(
+            """UPDATE proactive_intents SET status='sent', sent_at=datetime('now'), updated_at=datetime('now')
+                  WHERE id=? AND status NOT IN ('sent','suppressed','expired')""",
+            (intent_id,),
+        )
     state = ensure_proactive_state(conn, agent_id, user_id, timezone_name=policy.get("timezone"))
     pending = [pid for pid in (state.get("pending_intent_ids") or []) if pid != intent_id]
     cooldown_minutes = int(canon_policy.get("cooldown_minutes", 180))
@@ -1803,10 +1815,13 @@ def expire_intents(conn, agent_id: str) -> dict[str, Any]:
         conn.execute("UPDATE proactive_intents SET status='expired', expired_at=datetime('now'), updated_at=datetime('now') WHERE id=?", (r["id"],))
         expired.append(r["id"])
     if expired:
+        # Include delivering so a mid-flight claim cannot hang forever after its
+        # intent has been retired (reap would re-queue it; delivery would then
+        # refuse because the intent is terminal).
         conn.executemany(
             """UPDATE proactive_outbox
                   SET status='expired', suppression_reason='intent expired', error=NULL
-                WHERE intent_id=? AND status IN ('drafted','queued')""",
+                WHERE intent_id=? AND status IN ('drafted','queued','delivering')""",
             [(intent_id,) for intent_id in expired],
         )
         state_rows_changed = _remove_pending_intents(conn, agent_id, expired)

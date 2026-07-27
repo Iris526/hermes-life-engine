@@ -981,10 +981,29 @@ def build_human_review(conn, owner_kind: str, owner_id: str, *, include_doctor: 
             sev = "error" if issue.get("severity") == "error" else "warning"
             items.append(_item("doctor_warning", sev, f"Doctor: {issue.get('check')}", issue.get("message") or "doctor warning", section="doctor", action_hint={"command": "/life doctor"}))
 
+    # Skip sources the human already dismissed so "忽略" is sticky across
+    # regenerate/summary runs (each run used to INSERT fresh open rows).
+    dismissed_sources: set[tuple[str, str]] = set()
+    try:
+        for r in conn.execute(
+            """SELECT source_table, source_id FROM human_review_items
+                 WHERE owner_kind=? AND owner_id=? AND status='dismissed'
+                   AND source_table IS NOT NULL AND source_id IS NOT NULL
+                   AND COALESCE(resolved_at, created_at) >= datetime('now', '-30 days')""",
+            (owner_kind, owner_id),
+        ).fetchall():
+            dismissed_sources.add((str(r["source_table"]), str(r["source_id"])))
+    except Exception:
+        dismissed_sources = set()
+
     # Deduplicate repeated source rows and sort by urgency.
     seen: set[tuple[str, str | None]] = set()
     deduped: list[dict[str, Any]] = []
     for it in items:
+        src_table = it.get("source_table")
+        src_id = it.get("source_id")
+        if src_table and src_id and (str(src_table), str(src_id)) in dismissed_sources:
+            continue
         key = (it.get("item_type"), it.get("source_id"))
         if key in seen:
             continue

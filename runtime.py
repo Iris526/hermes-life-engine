@@ -601,7 +601,7 @@ class LifeEngineRuntime:
                 return {"ok": True, "events": list_events(self.conn, owner_kind, owner_id, payload.get("status"), int(payload.get("limit", 20)), payload.get("event_category"))}
         if action == "get":
             with transaction(self.conn):
-                event = get_event(self.conn, payload["event_id"])
+                event = get_event(self.conn, payload["event_id"], owner_kind=owner_kind, owner_id=owner_id)
                 return {"ok": True, "event": event, "transitions": event_transitions(self.conn, owner_kind, owner_id, payload["event_id"])}
         if action == "transitions":
             with transaction(self.conn):
@@ -1249,14 +1249,27 @@ class LifeEngineRuntime:
         already accounted for — double-counting energy/mood/fatigue. ``noop``
         ticks return before settling and ``failed`` ticks roll their settlement
         back, so neither is a valid watermark and both stay excluded.
+
+        Exception: if resource_recovery reported ``settlement_failed``, that
+        tick must NOT advance the watermark (otherwise a rare apply error
+        permanently under-settles the gap).
         """
-        # rowid tiebreak: in tests/replays many ticks can share the same
-        # wall-clock started_at, so order by insertion order as well to pick the
-        # genuinely most-recent settled tick.
-        row = self.conn.execute(
-            "SELECT output_json, started_at FROM heartbeat_runs WHERE owner_kind=? AND owner_id=? AND status IN ('done','partial') ORDER BY started_at DESC, rowid DESC LIMIT 1",
+        # Walk recent settled ticks until we find one whose settlement completed.
+        rows = self.conn.execute(
+            "SELECT output_json, started_at FROM heartbeat_runs WHERE owner_kind=? AND owner_id=? AND status IN ('done','partial') ORDER BY started_at DESC, rowid DESC LIMIT 20",
             (owner_kind, owner_id),
-        ).fetchone()
+        ).fetchall()
+        row = None
+        for candidate in rows:
+            try:
+                out = loads(candidate["output_json"], {}) or {}
+            except Exception:
+                out = {}
+            rr = out.get("resource_recovery") if isinstance(out, dict) else None
+            if isinstance(rr, dict) and rr.get("settlement_failed"):
+                continue
+            row = candidate
+            break
         if not row:
             return 0.0
         prev_now = None
@@ -1322,6 +1335,10 @@ class LifeEngineRuntime:
                     except Exception as exc:
                         applied.append({"resource_key": r["key"], "error": str(exc)})
         out["applied"] = applied
+        if any(isinstance(a, dict) and a.get("error") for a in applied):
+            # Signal watermark skip: this tick must not mark the window settled.
+            out["settlement_failed"] = True
+            out["status"] = "error"
         return out
 
     def _settle_supply_chain_for_tick(self, owner_kind: str, owner_id: str, control: dict[str, Any],

@@ -54,7 +54,9 @@ _COMPANION_MECHANICAL_PREFIXES = (
 )
 _RECENT_IDLE_REPEAT_WINDOW_DAYS = 7
 _RECENT_IDLE_REPEAT_JACCARD = 0.32
-_GENERIC_IDLE_DEDUP_FILLERS = ("Ringo", "我刚", "刚刚", "忽然", "莫名", "想跟你", "想给你", "一句", "嘿嘿")
+# Generic fillers only — never hardcode a real person's name here. Character
+# address terms (师兄/…) come from Canon/skin via `_companion_address_term`.
+_GENERIC_IDLE_DEDUP_FILLERS = ("我刚", "刚刚", "忽然", "莫名", "想跟你", "想给你", "一句", "嘿嘿")
 
 _DEFAULT_POLICY: dict[str, Any] = {
     "enabled": True,
@@ -420,34 +422,51 @@ def _today_idle_count(conn, agent_id: str, user_id: str | None = None,
     return int(n or 0)
 
 
-def _minutes_since_last_idle(conn, agent_id: str, user_id: str | None = None) -> float | None:
+def _minutes_between(created_at: str | None, now: str | None) -> float | None:
+    """Minutes from created_at to logical now (fallback wall clock only if now omitted)."""
+    if not created_at:
+        return None
+    from .time_utils import now_iso, to_epoch
+    end = to_epoch(now or now_iso())
+    start = to_epoch(str(created_at))
+    if end is None or start is None:
+        return None
+    return max(0.0, (end - start) / 60.0)
+
+
+def _minutes_since_last_idle(conn, agent_id: str, user_id: str | None = None,
+                             *, now: str | None = None) -> float | None:
+    # Anchor to the tick's logical ``now`` so replays / frozen tests match
+    # wall-clock-independent companion cadence (audit medium #7).
     if user_id:
         row = conn.execute(
-            "SELECT (julianday('now') - julianday(created_at)) * 1440.0 AS mins FROM proactive_intents "
+            "SELECT created_at FROM proactive_intents "
             "WHERE agent_id=? AND target_type='user' AND target_id=? AND intent_type IN ('idle_share','ask_about_user') "
             "ORDER BY created_at DESC LIMIT 1",
             (agent_id, user_id),
         ).fetchone()
-        return float(row["mins"]) if row and row["mins"] is not None else None
-    row = conn.execute(
-        "SELECT (julianday('now') - julianday(created_at)) * 1440.0 AS mins FROM proactive_intents "
-        "WHERE agent_id=? AND intent_type IN ('idle_share','ask_about_user') ORDER BY created_at DESC LIMIT 1",
-        (agent_id,),
-    ).fetchone()
-    return float(row["mins"]) if row and row["mins"] is not None else None
+    else:
+        row = conn.execute(
+            "SELECT created_at FROM proactive_intents "
+            "WHERE agent_id=? AND intent_type IN ('idle_share','ask_about_user') ORDER BY created_at DESC LIMIT 1",
+            (agent_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return _minutes_between(row["created_at"], now)
 
 
-def _recent_user_bedtime_signal(conn, agent_id: str, user_id: str, *, minutes: int = 480) -> bool:
+def _recent_user_bedtime_signal(conn, agent_id: str, user_id: str, *, minutes: int = 480,
+                                now: str | None = None) -> bool:
     """Return True when the latest user turn looks like a bedtime sign-off.
 
-    QQ companion idle messages should not fire right after Ringo says 困困/晚安.
+    QQ companion idle messages should not fire right after a 困困/晚安 cue.
     ReplyGate decisions are the closest always-on record of incoming messages;
     use only the latest message so a later real conversation naturally clears
-    the sleep cue.
+    the sleep cue. Age is measured against logical ``now`` when provided.
     """
     row = conn.execute(
-        """SELECT incoming_message_preview,
-                  (julianday('now') - julianday(created_at)) * 1440.0 AS mins
+        """SELECT incoming_message_preview, created_at
              FROM reply_gate_decisions
             WHERE owner_kind='agent' AND owner_id=? AND source='incoming_message'
             ORDER BY created_at DESC LIMIT 1""",
@@ -456,7 +475,8 @@ def _recent_user_bedtime_signal(conn, agent_id: str, user_id: str, *, minutes: i
     if not row:
         return False
     try:
-        if float(row["mins"] or 999999) > float(minutes):
+        age = _minutes_between(row["created_at"], now)
+        if age is None or age > float(minutes):
             return False
     except Exception:
         return False
@@ -501,13 +521,13 @@ def _candidate(conn, agent_id: str, *, control: dict[str, Any] | None = None,
     if not pol.get("enabled", True):
         return None
     user_id = user_id or pol.get("default_user_id") or rel.resolve_primary_user(conn, agent_id)
-    if _recent_user_bedtime_signal(conn, agent_id, user_id):
+    if _recent_user_bedtime_signal(conn, agent_id, user_id, now=now):
         return None
     if _has_pending_idle(conn, agent_id, user_id):
         return None
     if _today_idle_count(conn, agent_id, user_id, timezone_name=pol.get("timezone"), now=now) >= int(pol.get("idle_max_per_day") or 3):
         return None
-    gap = _minutes_since_last_idle(conn, agent_id, user_id)
+    gap = _minutes_since_last_idle(conn, agent_id, user_id, now=now)
     if gap is not None and gap < float(pol.get("min_minutes_between") or 180):
         return None
     due = rel.notes_due_for_followup(conn, agent_id, user_id, now=now, limit=1)

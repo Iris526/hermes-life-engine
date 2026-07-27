@@ -149,25 +149,47 @@ def assess_reply_gate(conn, owner_kind: str, owner_id: str, control: dict[str, A
     call_requested = bool(force_call or _contains_call_override(message_text, policy_cfg.get("call_words")))
     policy = {"reply_gate_mode": mode_gate, "call_requested": call_requested, "expired_lease": expired, "srd_reply_policy": policy_cfg}
 
+    # Underlying unavailability must win over surface modes like waiting_to_reply.
+    # create_delayed_reply used to rewrite asleep → waiting_to_reply, which made the
+    # second message allow under auto/strict; also check live sleep session + anchors.
+    active_sleep = None
+    try:
+        active_sleep = get_active_sleep_session(conn, owner_kind, owner_id)
+    except Exception:
+        active_sleep = None
+    mode = (state or {}).get("mode")
+    reply_mode = (state or {}).get("reply_mode")
+    sleeping = (
+        mode in {"asleep", "napping", "dreaming"}
+        or bool((state or {}).get("active_sleep_session_id"))
+        or bool(active_sleep)
+    )
+    uninterruptible = (
+        mode == "uninterruptible_event"
+        or reply_mode == "defer_until_event_end"
+        or (state or {}).get("interruptibility_level") == "uninterruptible"
+    )
+
     if mode_gate in {"off", "disabled"}:
         decision, reason = "allow", "reply_gate disabled"
     elif expired:
         decision, reason = "allow", "state lease expired; fail-safe allow"
     elif call_requested:
         decision, reason = "call_override", "call override requested"
-    elif (state or {}).get("mode") in {"asleep", "napping", "dreaming"}:
+    elif sleeping:
         if mode_gate in {"auto", "strict"}:
             decision, reason = "defer", "agent is sleeping"
         else:
             decision, reason = "advisory", "agent is sleeping; advise model, do not block"
-    elif (state or {}).get("mode") == "uninterruptible_event" or (state or {}).get("reply_mode") == "defer_until_event_end":
+    elif uninterruptible:
         if mode_gate in {"auto", "strict"}:
             decision, reason = "defer", "agent is in an uninterruptible event"
         else:
             decision, reason = "advisory", "agent is in an uninterruptible event; advise model, do not block"
-    elif (state or {}).get("mode") == "waiting_to_reply":
+    elif mode == "waiting_to_reply" or reply_mode == "defer_until_available":
+        # Only advisory when the agent is otherwise available (queued digest waiting).
         decision, reason = "advisory", "agent has delayed replies waiting"
-    elif (state or {}).get("mode") in BUSY_MODES:
+    elif mode in BUSY_MODES:
         decision, reason = "allow", "agent is busy but interruptible"
     else:
         decision, reason = "allow", "agent available"
@@ -198,15 +220,18 @@ def create_delayed_reply(conn, owner_kind: str, owner_id: str, *, message_text: 
          reason, "pending", expires_iso, expires_ts, dumps(metadata or {})),
     )
     current_state = get_realtime_state(conn, owner_kind, owner_id)
-    set_realtime_state(
-        conn, owner_kind, owner_id, mode="waiting_to_reply", reply_mode="defer_until_available",
-        active_event_id=current_state.get("active_event_id"),
-        active_action_id=current_state.get("active_action_id"),
-        active_schedule_block_id=current_state.get("active_schedule_block_id"),
-        active_sleep_session_id=current_state.get("active_sleep_session_id"),
-        interruptibility_level=current_state.get("interruptibility_level"),
-        source=source, reason="delayed reply queued",
-    )
+    current_mode = (current_state or {}).get("mode")
+    # Never overwrite asleep / uninterruptible with waiting_to_reply — that used to
+    # let the next ordinary message bypass ReplyGate. Anchors are left untouched
+    # via set_realtime_state partial-update defaults.
+    if current_mode in {"asleep", "napping", "dreaming", "uninterruptible_event"}:
+        # Keep mode + reply_mode (defer_or_wake / defer_until_event_end) intact.
+        pass
+    else:
+        set_realtime_state(
+            conn, owner_kind, owner_id, mode="waiting_to_reply", reply_mode="defer_until_available",
+            source=source, reason="delayed reply queued",
+        )
     append_journal(conn, owner_kind, owner_id, "delayed_reply_created", {"delayed_reply_id": did, "gate_decision_id": gate_decision_id, "reason": reason}, source)
     row = conn.execute("SELECT * FROM delayed_replies WHERE id=?", (did,)).fetchone()
     return _decode_delayed(row)
@@ -237,7 +262,27 @@ def release_delayed_replies(conn, owner_kind: str, owner_id: str, *, reason: str
     decoded_rows = [_decode_delayed(r) for r in rows]
     if ids:
         digest = create_delayed_reply_digest(conn, owner_kind, owner_id, decoded_rows, release_reason=reason, source=source)
-        set_realtime_state(conn, owner_kind, owner_id, mode="idle", reply_mode="immediate", source=source, reason="delayed replies released")
+        state = get_realtime_state(conn, owner_kind, owner_id) or {}
+        active_sleep = None
+        try:
+            active_sleep = get_active_sleep_session(conn, owner_kind, owner_id)
+        except Exception:
+            active_sleep = None
+        still_unavailable = (
+            state.get("mode") in {"asleep", "napping", "dreaming", "uninterruptible_event"}
+            or bool(state.get("active_sleep_session_id"))
+            or bool(active_sleep)
+        )
+        if still_unavailable:
+            # Release the queue only — do not force idle or wipe sleep/event anchors.
+            pass
+        elif state.get("mode") == "waiting_to_reply":
+            set_realtime_state(conn, owner_kind, owner_id, mode="idle", reply_mode="immediate",
+                               source=source, reason="delayed replies released")
+        else:
+            # e.g. in_conversation after call_override: keep mode, restore immediate replies.
+            set_realtime_state(conn, owner_kind, owner_id, reply_mode="immediate",
+                               source=source, reason="delayed replies released")
         append_journal(conn, owner_kind, owner_id, "delayed_replies_released", {"reply_ids": ids, "reason": reason, "digest_id": digest.get("id") if digest else None}, source)
     return {"ok": True, "released_count": len(ids), "replies": decoded_rows, "digest": digest}
 

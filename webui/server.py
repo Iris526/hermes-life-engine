@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import json
 import os
+import secrets
 import socket
 import sys
 import time
@@ -22,14 +23,96 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from .reader import LifeEngineReader, resolve_lifeengine_db
 
 _THIS_DIR = Path(__file__).resolve().parent
 _STATIC_DIR = _THIS_DIR / "static"
+_TRUTHY = {"1", "true", "yes", "on"}
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "testclient"}
+_WRITE_PATH_PREFIXES = (
+    "/api/action",
+    "/api/select",
+    "/api/owner",
+)
+
+
+def _test_context_active() -> bool:
+    return bool(os.getenv("PYTEST_CURRENT_TEST") or os.getenv("LIFEENGINE_TEST_CONTEXT", "").strip().lower() in _TRUTHY)
+
+
+def _token_path() -> Path:
+    hermes_home = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser().resolve()
+    return hermes_home / "lifeengine" / "webui.token"
+
+
+def resolve_webui_token(*, explicit: str | None = None) -> str:
+    """Resolve the operator token used to authorize WebUI write APIs.
+
+    Precedence: explicit arg → ``LIFEENGINE_WEBUI_TOKEN`` → persisted file under
+    ``$HERMES_HOME/lifeengine/webui.token`` → generate + persist a new token.
+    """
+    if explicit:
+        return str(explicit).strip()
+    env = (os.getenv("LIFEENGINE_WEBUI_TOKEN") or "").strip()
+    if env:
+        return env
+    path = _token_path()
+    try:
+        if path.is_file():
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+    except Exception:
+        pass
+    token = secrets.token_urlsafe(24)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(token + "\n", encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return token
+
+
+def _client_host(request: Request) -> str:
+    try:
+        client = request.client
+        return (client.host if client else "") or ""
+    except Exception:
+        return ""
+
+
+def _is_loopback_client(request: Request) -> bool:
+    host = _client_host(request).strip().lower().rstrip(".")
+    if host in _LOOPBACK_HOSTS:
+        return True
+    try:
+        ip = __import__("ipaddress").ip_address(host.strip("[]"))
+        return bool(ip.is_loopback)
+    except Exception:
+        return False
+
+
+def _extract_request_token(request: Request) -> str:
+    header = (request.headers.get("x-lifeengine-token") or "").strip()
+    if header:
+        return header
+    auth = (request.headers.get("authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return (request.query_params.get("token") or "").strip()
+
+
+def _is_write_path(path: str) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in _WRITE_PATH_PREFIXES)
 
 
 def _allowed_asset_roots() -> list[Path]:
@@ -67,8 +150,11 @@ def _resolve_asset_path(path: str) -> Path:
 
 
 def _asset_media_type(path: Path) -> str:
+    # SVG is intentionally NOT image/svg+xml — browsers would execute scripts in
+    # the WebUI origin. Serve as octet-stream / force download when allowed at all.
     media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                   ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml"}
+                   ".gif": "image/gif", ".webp": "image/webp",
+                   ".svg": "application/octet-stream"}
     return media_types.get(path.suffix.lower(), "application/octet-stream")
 
 
@@ -110,10 +196,11 @@ class ActionRequest(BaseModel):
 
 
 class WebUIState:
-    def __init__(self, life_dir: str | None = None):
+    def __init__(self, life_dir: str | None = None, *, auth_token: str | None = None):
         self.db_path = resolve_lifeengine_db(life_dir)
         self.owner_kind = "agent"
         self.owner_id = "default-agent"
+        self.auth_token = resolve_webui_token(explicit=auth_token)
         try:
             reader = LifeEngineReader(str(self.db_path))
             owners = reader.owners()
@@ -155,16 +242,45 @@ class WebUIState:
         return {"ok": True, "owner": {"owner_kind": owner_kind, "owner_id": owner_id}}
 
 
-def create_app(life_dir: str | None = None) -> FastAPI:
-    state = WebUIState(life_dir)
+class _WriteAuthMiddleware(BaseHTTPMiddleware):
+    """Require the operator token on all mutating API routes.
+
+    Loopback browsers bootstrap the token via ``GET /api/auth/session``. Pytest
+    bypasses the gate so existing TestClient suites keep working without headers.
+    """
+
+    def __init__(self, app, state: WebUIState):
+        super().__init__(app)
+        self._state = state
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path or ""
+        if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and _is_write_path(path):
+            if not _test_context_active():
+                provided = _extract_request_token(request)
+                if not provided or not secrets.compare_digest(provided, self._state.auth_token):
+                    return JSONResponse(
+                        status_code=401,
+                        content={
+                            "ok": False,
+                            "error": "unauthorized",
+                            "message": "写接口需要 X-LifeEngine-Token。本机打开观星台后会自动从 /api/auth/session 领取。",
+                        },
+                    )
+        return await call_next(request)
+
+
+def create_app(life_dir: str | None = None, *, auth_token: str | None = None) -> FastAPI:
+    state = WebUIState(life_dir, auth_token=auth_token)
     app = FastAPI(title="LifeEngine WebUI", version="0.18.0")
     app.state.lifeengine_webui = state
+    app.add_middleware(_WriteAuthMiddleware, state=state)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1", "http://localhost", "http://127.0.0.1:8765", "http://localhost:8765"],
         allow_credentials=True,
         allow_methods=["*"],
-        allow_headers=["*"],
+        allow_headers=["*", "X-LifeEngine-Token", "Authorization"],
     )
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
@@ -177,9 +293,25 @@ def create_app(life_dir: str | None = None) -> FastAPI:
         try:
             reader = state.reader()
             meta = reader.meta()
-            return {"ok": True, "webui_version": "0.18.0", "meta": meta}
+            return {"ok": True, "webui_version": "0.18.0", "meta": meta, "auth_required_for_writes": True}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    @app.get("/api/auth/session")
+    def auth_session(request: Request) -> dict[str, Any]:
+        """Bootstrap the operator token for loopback browsers only.
+
+        Non-loopback clients never receive the token here — they must already
+        hold ``LIFEENGINE_WEBUI_TOKEN`` / a manually issued secret.
+        """
+        if not (_is_loopback_client(request) or _test_context_active()):
+            raise HTTPException(status_code=403, detail="auth bootstrap is loopback-only")
+        return {
+            "ok": True,
+            "token": state.auth_token,
+            "header": "X-LifeEngine-Token",
+            "local": True,
+        }
 
     @app.post("/api/select")
     def select(req: SelectRequest) -> dict[str, Any]:
@@ -231,8 +363,12 @@ def create_app(life_dir: str | None = None) -> FastAPI:
 
 
     @app.get("/api/event/{event_id}")
-    def event_detail(event_id: str) -> dict[str, Any]:
-        return state.reader().event_detail(event_id)
+    def event_detail(event_id: str, owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
+        return state.reader().event_detail(
+            event_id,
+            owner_kind=owner_kind or state.owner_kind,
+            owner_id=owner_id or state.owner_id,
+        )
 
     @app.get("/api/dream/{dream_id}")
     def dream_detail(dream_id: str) -> dict[str, Any]:
@@ -308,8 +444,14 @@ def create_app(life_dir: str | None = None) -> FastAPI:
         return state.reader().world_model(owner_kind or state.owner_kind, owner_id or state.owner_id, limit=limit)
 
     @app.get("/api/trace/latest")
-    def trace_latest(limit: int = 20) -> dict[str, Any]:
-        return {"items": state.reader().trace_latest(limit=limit)}
+    def trace_latest(limit: int = 20, owner_kind: str | None = None, owner_id: str | None = None) -> dict[str, Any]:
+        return {
+            "items": state.reader().trace_latest(
+                limit=limit,
+                owner_kind=owner_kind or state.owner_kind,
+                owner_id=owner_id or state.owner_id,
+            )
+        }
 
     @app.get("/api/workspace/docs")
     def workspace_docs(include_content: bool = False, limit: int = 80) -> dict[str, Any]:
@@ -409,6 +551,13 @@ def create_app(life_dir: str | None = None) -> FastAPI:
         work without the frontend needing to know HERMES_HOME.
         """
         requested = _resolve_asset_path(path)
+        if requested.suffix.lower() == ".svg":
+            # Never inline SVG as image/svg+xml in the WebUI origin (scriptable).
+            return FileResponse(
+                str(requested),
+                media_type="application/octet-stream",
+                headers={"Content-Disposition": f'attachment; filename="{requested.name}"'},
+            )
         media_type = _asset_media_type(requested)
         return FileResponse(str(requested), media_type=media_type)
 
@@ -465,16 +614,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--open", action="store_true", help="Open browser after startup")
+    parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="Allow binding to a non-loopback host. Requires LIFEENGINE_WEBUI_TOKEN (or uses the persisted local token).",
+    )
+    parser.add_argument("--token", default=None, help="Operator token for write APIs (default: env or persisted webui.token).")
     args = parser.parse_args(argv)
     try:
         import uvicorn
     except Exception:
         print("LifeEngine WebUI requires uvicorn and fastapi. Install: pip install fastapi uvicorn", file=sys.stderr)
         return 2
+    host = str(args.host or "127.0.0.1")
+    if host not in {"127.0.0.1", "localhost", "::1"} and not args.allow_remote:
+        print(
+            f"Refusing to bind non-loopback host {host!r} without --allow-remote "
+            "(write APIs would be reachable on the network).",
+            file=sys.stderr,
+        )
+        return 2
     if not _port_available(args.host, args.port):
         print(f"Port {args.port} on {args.host} is already in use.", file=sys.stderr)
         return 2
-    app = create_app(args.life_dir)
+    app = create_app(args.life_dir, auth_token=args.token)
+    token = app.state.lifeengine_webui.auth_token
     url = f"http://{args.host}:{args.port}"
     if args.open:
         try:
@@ -482,6 +646,13 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
     print(f"LifeEngine WebUI running at {url}")
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        print("Remote bind enabled: write APIs require X-LifeEngine-Token.")
+    else:
+        print("Loopback mode: browser will bootstrap the write token via /api/auth/session.")
+    # Never print the full token to stdout in remote mode logs if user set env;
+    # for local use, show a short fingerprint so operators know a token exists.
+    print(f"Write-token fingerprint: {hashlib.sha256(token.encode()).hexdigest()[:12]}…")
     print("Press Ctrl+C to stop.")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0

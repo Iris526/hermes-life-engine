@@ -368,6 +368,26 @@ def _compose_sleep_iso(date_key: str | None, time_value: str | None, *, default_
 
 
 
+def _local_date_key(timezone: str = "UTC") -> str:
+    """Calendar date in the agent's timezone (not UTC now_iso()[:10])."""
+    try:
+        return datetime.now(ZoneInfo(timezone)).date().isoformat()
+    except Exception:
+        return now_iso()[:10]
+
+
+def _normalize_clock(value: str, default_clock: str) -> str:
+    """Normalize HH:MM or HH:MM:SS to HH:MM. Avoid value[-5:] which turns 07:00:00 into 00:00."""
+    import re
+    text = str(value or "").strip()
+    m = re.match(r"^(\d{1,2}):(\d{2})(?::\d{2})?$", text)
+    if m:
+        return f"{int(m.group(1)):02d}:{m.group(2)}"
+    if re.match(r"^\d{1,2}:\d{2}$", default_clock):
+        return default_clock
+    return "23:30"
+
+
 def _compose_sleep_datetime(date_key: str | None, clock_value: str | None, *, default_clock: str, timezone: str = "UTC", roll_after: str | None = None) -> str:
     """Compose an ISO datetime from either a full ISO string or a HH:MM clock.
 
@@ -380,8 +400,8 @@ def _compose_sleep_datetime(date_key: str | None, clock_value: str | None, *, de
     if "T" in value:
         iso = normalized_iso(value, default_tz=timezone) or value
     else:
-        date = (date_key or now_iso()[:10])[:10]
-        clock = value[-5:] if len(value) >= 5 else default_clock
+        date = (date_key or _local_date_key(timezone))[:10]
+        clock = _normalize_clock(value, default_clock)
         iso = normalized_iso(f"{date}T{clock}:00", default_tz=timezone)
     if roll_after and iso:
         start_ts = to_epoch(roll_after, default_tz=timezone)

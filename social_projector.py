@@ -29,9 +29,12 @@ from .social_world import (
 )
 from .trace import append_journal, new_id
 
+# Character-agnostic commerce/service signals. World-specific tokens (归明观/净符/…)
+# are layered on from the active Canon skin's evidence/context keywords so a
+# modern-illustrator agent is not classified by temple vocabulary.
 _STALL_SIGNALS = {
     "stall", "venture", "sale", "shop", "business", "customer",
-    "摆摊", "摊", "归明观", "净符", "卖符", "经营", "营业", "售出", "买卖",
+    "摆摊", "摊", "经营", "营业", "售出", "买卖", "卖", "摊位", "市集",
 }
 
 _COMMISSION_SIGNALS = {
@@ -60,6 +63,48 @@ _SOCIAL_PROJECTION_RUMOR_SCHEMA: dict[str, Any] = {
     },
     "required": ["content"],
 }
+
+
+def _active_skin_projection_signals(conn, owner_kind: str, owner_id: str) -> set[str]:
+    """Collect worldview-specific stall/commission keywords from the active skin.
+
+    Only the active Canon skin contributes (e.g. 归明观/净符 from guimingguan).
+    Modern no-skin owners get an empty set — classification falls back to the
+    character-agnostic base signal tables.
+    """
+    out: set[str] = set()
+    try:
+        canon = get_active_canon(conn, owner_kind, owner_id)
+        skin = _skin_data(canon)
+    except Exception:
+        return out
+    if not isinstance(skin, dict) or not skin:
+        return out
+    evidence = skin.get("evidence") if isinstance(skin.get("evidence"), dict) else {}
+    groups = evidence.get("object_groups") if isinstance(evidence.get("object_groups"), dict) else {}
+    for values in groups.values():
+        if isinstance(values, (list, tuple)):
+            out.update(str(v).strip() for v in values if str(v).strip())
+    context = skin.get("context") if isinstance(skin.get("context"), dict) else {}
+    keywords = context.get("intent_keywords") if isinstance(context.get("intent_keywords"), dict) else {}
+    for values in keywords.values():
+        if isinstance(values, (list, tuple)):
+            out.update(str(v).strip() for v in values if str(v).strip())
+    # Living rhythm tags often encode place/activity words the projector should know.
+    living = skin.get("living") if isinstance(skin.get("living"), dict) else {}
+    for item in living.get("rhythm_templates") or []:
+        if not isinstance(item, dict):
+            continue
+        for tag in item.get("tags") or []:
+            if str(tag).strip():
+                out.add(str(tag).strip())
+        title = str(item.get("title") or "").strip()
+        if title:
+            # Only short tokens from title words — full titles are too long to match as signals.
+            for part in title.replace("与", " ").replace("并", " ").split():
+                if 1 < len(part) <= 6:
+                    out.add(part)
+    return out
 
 
 def _guimingguan_social_slots_for_active_canon(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
@@ -118,7 +163,10 @@ def project_completed_event(conn, owner_kind: str, owner_id: str, event_id: str,
 
     occurrence = _occurrence_for_event(conn, owner_kind, owner_id, event_id)
     activity = _activity_for_occurrence(conn, owner_kind, owner_id, occurrence)
-    kind = _classify_event(event, summary=summary, activity=activity, force_stall=False)
+    kind = _classify_event(
+        event, summary=summary, activity=activity, force_stall=False,
+        extra_signals=_active_skin_projection_signals(conn, owner_kind, owner_id),
+    )
     if kind == "stall" and _activity_has_supply(activity) and occurrence and not int(occurrence.get("sale_settled") or 0):
         return {"projected": False, "reason": "awaiting_sale_settlement", "event_id": event_id}
     if kind is None:
@@ -175,7 +223,10 @@ def project_venture_sale_settlement(conn, owner_kind: str, owner_id: str, occurr
     if not _activity_has_supply(activity) and sold <= 0 and income <= 0:
         return {"projected": False, "reason": "no_sale_social_signal", "occurrence_id": occurrence_id}
 
-    kind = _classify_event(event, activity=activity, force_stall=True)
+    kind = _classify_event(
+        event, activity=activity, force_stall=True,
+        extra_signals=_active_skin_projection_signals(conn, owner_kind, owner_id),
+    )
     if kind is None:
         return {"projected": False, "reason": "no_social_projection_signal", "occurrence_id": occurrence_id}
     evidence = _evidence(event=event, occurrence=occurrence, activity=activity,
@@ -1002,13 +1053,17 @@ def prepare_venture_sale_settlement_authoring_for_tick(
 
 
 def _classify_event(event: dict[str, Any], *, summary: str | None = None,
-                    activity: dict[str, Any] | None = None, force_stall: bool = False) -> str | None:
+                    activity: dict[str, Any] | None = None, force_stall: bool = False,
+                    extra_signals: set[str] | None = None) -> str | None:
     text = _text_blob(event.get("event_type"), event.get("activity_domain"), event.get("title"),
                       event.get("description"), event.get("tags"), event.get("attributes"),
                       event.get("location"), summary, activity)
     if _has_signal(text, _COMMISSION_SIGNALS):
         return "commission"
-    if force_stall or _has_signal(text, _STALL_SIGNALS):
+    stall_signals = set(_STALL_SIGNALS)
+    if extra_signals:
+        stall_signals |= {s for s in extra_signals if s}
+    if force_stall or _has_signal(text, stall_signals):
         return "stall"
     return None
 

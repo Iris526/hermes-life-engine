@@ -569,25 +569,77 @@ def _authored_serendipity_texts(authored: dict[str, Any] | None, event: dict[str
     return fallback
 
 
-def _serendipity_payload_shape(event: dict[str, Any]) -> dict[str, Any] | None:
+def _serendipity_payload_shape(event: dict[str, Any], *, drama_level: str = "low") -> dict[str, Any] | None:
     """返回 serendipity 非文本字段的确定性形状。
 
     输入是已满足 completed/importance 门的事件；输出是旧版 payload 中除
     `title` / `description` 外的字段，或在事件类型不触发小意外时返回 `None`。
     调用方是事务内 `_serendipity_for` 和事务外 authoring context。无副作用；
     本函数集中保留 roll/gate/resource 以外的确定性字段，避免文案改造误改事件形状。
+    ``drama_level`` (Canon serendipity.dramaLevel) scales intensity only.
     """
     event_type = str(event.get("event_type") or "other")
     if _serendipity_text_fallback(event) is None:
         return None
     importance = int(event.get("importance") or 50)
+    intensity = min(80, max(20, importance - 15))
+    drama = str(drama_level or "low").strip().lower()
+    if drama in {"high", "dramatic", "loud"}:
+        intensity = min(95, intensity + 15)
+    elif drama in {"medium", "normal", "moderate"}:
+        intensity = min(88, intensity + 5)
+    # low / quiet: keep historical intensity band
+    mood_delta = 2 if event_type != "study" else 0
+    if drama in {"high", "dramatic", "loud"}:
+        mood_delta = min(6, mood_delta + 2)
     return {
         "serendipity_type": "minor_discovery" if event_type not in {"study", "fitness", "health"} else "minor_problem",
-        "intensity": min(80, max(20, importance - 15)),
+        "intensity": intensity,
         "trigger_event_id": event.get("id"),
-        "emotional_impact": {"mood_delta": 2 if event_type != "study" else 0, "insight": 1},
+        "emotional_impact": {"mood_delta": mood_delta, "insight": 1},
         "source": "serendipity",
     }
+
+
+def _serendipity_canon_policy(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
+    """Read Canon serendipity knobs (probability / drama / weekly cap)."""
+    try:
+        from .canon import get_active_canon
+        canon = get_active_canon(conn, owner_kind, owner_id) or {}
+        policy = canon.get("serendipity") if isinstance(canon.get("serendipity"), dict) else {}
+        return dict(policy or {})
+    except Exception:
+        return {}
+
+
+def _serendipity_week_count(conn, owner_kind: str, owner_id: str) -> int:
+    try:
+        row = conn.execute(
+            """SELECT COUNT(*) AS c FROM serendipity_events
+                 WHERE owner_kind=? AND owner_id=?
+                   AND created_at >= datetime('now', '-7 days')""",
+            (owner_kind, owner_id),
+        ).fetchone()
+        return int(row["c"] if row else 0)
+    except Exception:
+        return 0
+
+
+def _serendipity_probability_allows(event: dict[str, Any], probability: float) -> bool:
+    """Deterministic roll in [0,1) from event id so replays stay stable."""
+    import hashlib
+    try:
+        p = float(probability)
+    except (TypeError, ValueError):
+        p = 1.0
+    if p >= 1.0:
+        return True
+    if p <= 0.0:
+        return False
+    seed = str(event.get("id") or event.get("title") or "serendipity")
+    digest = hashlib.blake2b(seed.encode("utf-8"), digest_size=4).digest()
+    roll = int.from_bytes(digest, "big") / 0xFFFFFFFF
+    return roll < p
 
 
 def _serendipity_for(
@@ -595,6 +647,10 @@ def _serendipity_for(
     decision_type: str,
     serendipity_authoring: dict[str, Any] | None = None,
     allow_authoring: bool = False,
+    *,
+    conn=None,
+    owner_kind: str | None = None,
+    owner_id: str | None = None,
 ) -> dict[str, Any] | None:
     """生成完成事件后的 serendipity LifeOp。
 
@@ -602,13 +658,40 @@ def _serendipity_for(
     `CREATE_SERENDIPITY_EVENT` proposed op 或 `None`。调用方式是事务内同步消费；
     `allow_authoring` 只保留调用合同标记，本函数不会访问宿主模型。副作用为零；
     completed/importance/event_type 门和非文本 payload 与旧版保持一致。
+    When ``conn`` is provided, Canon ``serendipity`` knobs
+    (dailyMinorEventProbability / dramaLevel / maxSignificantSurprisesPerWeek)
+    are finally consumed.
     """
     _ = allow_authoring
-    importance = int(event.get("importance") or 50)
-    if decision_type != "completed" or importance < 55:
+    if decision_type != "completed":
         return None
+    importance = int(event.get("importance") or 50)
+    policy: dict[str, Any] = {}
+    if conn is not None and owner_kind and owner_id:
+        policy = _serendipity_canon_policy(conn, owner_kind, owner_id)
+        max_week = policy.get("maxSignificantSurprisesPerWeek")
+        if max_week is not None:
+            try:
+                if _serendipity_week_count(conn, owner_kind, owner_id) >= int(max_week):
+                    return None
+            except (TypeError, ValueError):
+                pass
+    # Historical floor: importance ≥ 55 always eligible (byte-compat for no-host tests).
+    # Soft band 40–54: newly reads dailyMinorEventProbability as a deterministic roll
+    # so the Canon knob is no longer dead code without shrinking the old path.
+    if importance < 40:
+        return None
+    if importance < 55:
+        if conn is None or not owner_kind or not owner_id:
+            return None
+        prob = policy.get("dailyMinorEventProbability", 0.25)
+        try:
+            if not _serendipity_probability_allows(event, float(prob)):
+                return None
+        except (TypeError, ValueError):
+            return None
     text = _authored_serendipity_texts(serendipity_authoring, event)
-    shape = _serendipity_payload_shape(event)
+    shape = _serendipity_payload_shape(event, drama_level=str(policy.get("dramaLevel") or "low"))
     if text is None or shape is None:
         return None
     return {
@@ -649,7 +732,8 @@ def _serendipity_authoring_context(
     if importance < 55:
         return None
     fallback = _serendipity_text_fallback(event)
-    shape = _serendipity_payload_shape(event)
+    policy = _serendipity_canon_policy(conn, owner_kind, owner_id)
+    shape = _serendipity_payload_shape(event, drama_level=str(policy.get("dramaLevel") or "low"))
     if fallback is None or shape is None:
         return None
     context = {
@@ -662,6 +746,8 @@ def _serendipity_authoring_context(
             "serendipity_type": shape["serendipity_type"],
             "intensity": shape["intensity"],
             "emotional_impact": shape["emotional_impact"],
+            "drama_level": policy.get("dramaLevel") or "low",
+            "daily_minor_event_probability": policy.get("dailyMinorEventProbability"),
         },
     }
     if completion_context.get("authoring_now"):
@@ -1178,7 +1264,10 @@ def simulate_schedule_block_execution(
     ]
     if importance >= 50:
         ops.append({"type": "CREATE_MEMORY", "payload": {"memory_type": "episodic", "content": authored_completion["memory"], "event_id": event_id, "source": "execution_simulator", "importance": min(100, importance)}})
-    ser = _serendipity_for(event, "completed", serendipity_authoring=serendipity_authoring, allow_authoring=False)
+    ser = _serendipity_for(
+        event, "completed", serendipity_authoring=serendipity_authoring, allow_authoring=False,
+        conn=conn, owner_kind=owner_kind, owner_id=owner_id,
+    )
     if ser:
         ops.append(ser)
     if pushed_through_vital:

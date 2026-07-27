@@ -208,11 +208,10 @@ def _apply_op(rt, owner_kind: str, owner_id: str, op_type: str, payload: dict[st
     if op_type == "CREATE_EVENT":
         event = create_event(rt.conn, owner_kind, owner_id, canon_version=canon_version, **payload)
         if payload.get("goal_id"):
-            try:
-                link = link_event_to_goal(rt.conn, owner_kind, owner_id, payload["goal_id"], event["id"], role=payload.get("goal_role", "supports"), weight=float(payload.get("goal_weight", payload.get("weight", 1.0))), source=payload.get("source") or source)
-                event["goal_link"] = link
-            except Exception as exc:
-                event["goal_link_error"] = str(exc)
+            # Fail the whole LifeOp (savepoint) if the goal edge cannot be written —
+            # a committed event without its requested goal_link silently broke progress.
+            link = link_event_to_goal(rt.conn, owner_kind, owner_id, payload["goal_id"], event["id"], role=payload.get("goal_role", "supports"), weight=float(payload.get("goal_weight", payload.get("weight", 1.0))), source=payload.get("source") or source)
+            event["goal_link"] = link
         return event
     elif op_type == "UPDATE_EVENT_STATUS":
         return transition_event(rt.conn, owner_kind, owner_id, payload["event_id"], payload["status"], payload.get("reason"), source)

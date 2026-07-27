@@ -41,8 +41,23 @@ def _json_dict(value: str | None) -> dict[str, Any]:
         return {}
 
 
+def _ip_is_blocked(ip: object) -> bool:
+    return bool(
+        getattr(ip, "is_loopback", False)
+        or getattr(ip, "is_link_local", False)
+        or getattr(ip, "is_private", False)
+        or getattr(ip, "is_unspecified", False)
+        or getattr(ip, "is_multicast", False)
+        or getattr(ip, "is_reserved", False)
+    )
+
+
 def _webhook_url_error(url: str) -> str | None:
-    """Return a hardening error for a configured webhook URL, or None."""
+    """Return a hardening error for a configured webhook URL, or None.
+
+    Blocks private/loopback hosts both as literal IPs and after DNS resolution
+    so names that rebind to 127.0.0.1 / 10.x cannot SSRF the host.
+    """
     text = str(url or "").strip()
     if not text:
         return "empty"
@@ -55,21 +70,33 @@ def _webhook_url_error(url: str) -> str | None:
     host = (parsed.hostname or "").strip().lower().rstrip(".")
     if not host:
         return "missing_host"
-    if not _private_webhooks_allowed():
-        if host in _LOCAL_HOSTNAMES or host.endswith(".localhost"):
-            return "private_target"
+    if _private_webhooks_allowed():
+        return None
+    if host in _LOCAL_HOSTNAMES or host.endswith(".localhost"):
+        return "private_target"
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        ip = None
+    if ip is not None:
+        return "private_target" if _ip_is_blocked(ip) else None
+    # Hostname: resolve and reject if ANY answer is private/blocked.
+    try:
+        import socket
+        infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    except Exception:
+        return "resolve_failed"
+    if not infos:
+        return "resolve_failed"
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
         try:
-            ip = ipaddress.ip_address(host.strip("[]"))
+            resolved = ipaddress.ip_address(sockaddr[0])
         except ValueError:
-            ip = None
-        if ip is not None and (
-            ip.is_loopback
-            or ip.is_link_local
-            or ip.is_private
-            or ip.is_unspecified
-            or ip.is_multicast
-            or ip.is_reserved
-        ):
+            continue
+        if _ip_is_blocked(resolved):
             return "private_target"
     return None
 
@@ -384,25 +411,103 @@ def _dispatch_command(payload: dict[str, Any], command: str, timeout: float) -> 
     return {**result, "parsed": parsed}
 
 
+def _pin_public_endpoint(url: str) -> tuple[str, str, int, str, str]:
+    """Resolve ``url`` once and return a public IP pin for the TCP connect.
+
+    Returns ``(scheme, hostname, port, path_qs, pinned_ip)``. Raises RuntimeError
+    when the URL is invalid or every resolved address is private/blocked.
+    """
+    import socket
+
+    error = _webhook_url_error(url)
+    if error:
+        raise RuntimeError(f"delivery webhook url rejected: {error}")
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").strip()
+    scheme = (parsed.scheme or "https").lower()
+    port = int(parsed.port or (443 if scheme == "https" else 80))
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+        if _ip_is_blocked(ip):
+            raise RuntimeError("delivery webhook url rejected: private_target")
+        return scheme, host, port, path, str(ip)
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except Exception as exc:
+        raise RuntimeError(f"delivery webhook resolve failed: {exc}") from exc
+    public_ips: list[str] = []
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        try:
+            resolved = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            continue
+        if not _ip_is_blocked(resolved):
+            public_ips.append(str(resolved))
+    if not public_ips:
+        raise RuntimeError("delivery webhook url rejected: private_target")
+    return scheme, host, port, path, public_ips[0]
+
+
 def _dispatch_webhook(payload: dict[str, Any], url: str, timeout: float) -> dict[str, Any]:
     """通过 HTTP webhook 发送主动消息。
 
     输入是稳定 JSON 载荷、webhook URL 和秒级超时；输出保留 HTTP 状态和响应
     摘要。只有 2xx 被视为成功；其它状态或网络异常会抛出并保留 queued outbox。
+    连接固定到校验时解析出的公网 IP（DNS pin），Host/SNI 仍用原 hostname，
+    并禁止 redirect，降低 DNS rebinding / 跳转内网风险。
     """
+    import http.client
+    import socket
+    import ssl
+
     if not url:
         raise RuntimeError("delivery webhook url is not configured")
-    error = _webhook_url_error(url)
-    if error:
-        raise RuntimeError(f"delivery webhook url rejected: {error}")
+    scheme, host, port, path, pinned_ip = _pin_public_endpoint(url)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    headers = {
+        "Content-Type": "application/json",
+        "Host": host if (port in (80, 443) or (scheme == "https" and port == 443) or (scheme == "http" and port == 80)) else f"{host}:{port}",
+        "Content-Length": str(len(data)),
+    }
+
+    if scheme == "https":
+        context = ssl.create_default_context()
+        raw = socket.create_connection((pinned_ip, port), timeout=timeout)
+        try:
+            sock = context.wrap_socket(raw, server_hostname=host)
+        except Exception:
+            raw.close()
+            raise
+        conn: http.client.HTTPConnection = http.client.HTTPConnection(host, port, timeout=timeout)
+        conn.sock = sock
+    else:
+        conn = http.client.HTTPConnection(pinned_ip, port, timeout=timeout)
+
+    try:
+        conn.request("POST", path, body=data, headers=headers)
+        resp = conn.getresponse()
+        # Do not follow redirects — a 30x to an internal URL would bypass the pin.
+        if 300 <= int(resp.status) < 400:
+            location = resp.getheader("Location") or ""
+            raise RuntimeError(f"delivery webhook redirect blocked: {resp.status} -> {location}")
         body = resp.read(1024 * 256).decode("utf-8", errors="replace")
-        status = int(getattr(resp, "status", 200))
+        status = int(resp.status)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
     if status < 200 or status >= 300:
         raise RuntimeError(f"delivery webhook failed: HTTP {status}: {body[:500]}")
-    return {"status": status, "body": body[-4000:], "parsed": _json_dict(body)}
+    return {"status": status, "body": body[-4000:], "parsed": _json_dict(body), "pinned_ip": pinned_ip}
 
 
 def _dispatch(payload: dict[str, Any], *, mode: str, command: str, webhook_url: str, timeout: float) -> dict[str, Any]:

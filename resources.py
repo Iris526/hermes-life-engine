@@ -12,6 +12,25 @@ class ResourceError(ValueError):
     pass
 
 
+# Soft-clamp classes/keys: vitals may hit floor/ceiling without failing the op.
+# Hard (currency/inventory/ledger) refuse overdraft so "spend 100 with 10 left" cannot succeed as -10.
+_SOFT_CLAMP_CLASSES = frozenset({"capacity", "vital", "mood", "meter"})
+_SOFT_CLAMP_KEYS = frozenset({"energy", "mood", "fatigue", "sleep_debt", "stress", "focus"})
+_HARD_CLASSES = frozenset({"currency", "money", "inventory", "stock", "goods", "ledger", "item"})
+
+
+def _is_soft_clamp_resource(definition) -> bool:
+    """Return True when underflow/overflow should clamp instead of raise."""
+    key = str(definition["key"] if definition["key"] is not None else "")
+    rclass = str(definition["resource_class"] or "").lower()
+    if rclass in _HARD_CLASSES or key.startswith(("money.", "goods.", "stock.", "inv.")):
+        return False
+    if key in _SOFT_CLAMP_KEYS or rclass in _SOFT_CLAMP_CLASSES:
+        return True
+    # Default soft for legacy capacity-like keys; hard only for explicit ledger classes.
+    return True
+
+
 def list_resources(conn, owner_kind: str, owner_id: str) -> dict[str, Any]:
     defs = [dict(r) for r in conn.execute(
         "SELECT * FROM resource_definitions WHERE owner_kind=? AND owner_id=? ORDER BY key",
@@ -90,6 +109,45 @@ def get_resource(conn, owner_kind: str, owner_id: str, key: str) -> dict[str, An
     return {"definition": dict(d) if d else None, "account": dict(a) if a else None}
 
 
+def assert_deltas_affordable(conn, owner_kind: str, owner_id: str, deltas: dict[str, float] | None) -> None:
+    """Pre-check a multi-key delta map so complete_event does not half-apply.
+
+    Soft vitals may clamp; hard ledger resources that cannot cover a negative
+    delta raise ResourceError before any mutation.
+    """
+    if not deltas:
+        return
+    for key, raw in deltas.items():
+        try:
+            delta = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if delta >= 0:
+            continue
+        definition = conn.execute(
+            "SELECT * FROM resource_definitions WHERE owner_kind=? AND owner_id=? AND key=?",
+            (owner_kind, owner_id, key),
+        ).fetchone()
+        if not definition:
+            raise ResourceError(f"undefined resource: {key}")
+        if _is_soft_clamp_resource(definition):
+            continue
+        account = conn.execute(
+            "SELECT current_value FROM resource_accounts WHERE owner_kind=? AND owner_id=? AND resource_key=?",
+            (owner_kind, owner_id, key),
+        ).fetchone()
+        current = float(account["current_value"] if account else 0)
+        reserved = float(conn.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM resource_reservations WHERE owner_kind=? AND owner_id=? AND resource_key=? AND status='reserved'",
+            (owner_kind, owner_id, key),
+        ).fetchone()[0] or 0)
+        available = current - reserved
+        if -delta > available + 1e-9:
+            raise ResourceError(
+                f"resource {key} insufficient for batch: requested spend {-delta}, available {available}"
+            )
+
+
 def apply_delta(conn, owner_kind: str, owner_id: str, resource_key: str, delta: float,
                 operation: str = "adjust", reason: str = "resource delta", source: str = "life_event",
                 event_id: str | None = None, action_id: str | None = None,
@@ -123,15 +181,34 @@ def apply_delta(conn, owner_kind: str, owner_id: str, resource_key: str, delta: 
             (owner_kind, owner_id, resource_key),
         ).fetchone()
     current = float(account["current_value"])
-    new_value = current + float(delta)
+    requested_delta = float(delta)
     minv = definition["min_value"]
     maxv = definition["max_value"]
-    # Clamp to both bounds symmetrically. Previously min raised while max
-    # silently clamped, causing (a) fatigue heartbeat_recovery to crash when
-    # fatigue was already near 0, and (b) ledger/account drift on max clamp.
-    # Now both clamp, and the ledger records the *effective* delta so the
-    # account and ledger always reconcile.
+    soft = _is_soft_clamp_resource(definition)
+    reserved = float(conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM resource_reservations WHERE owner_kind=? AND owner_id=? AND resource_key=? AND status='reserved'",
+        (owner_kind, owner_id, resource_key),
+    ).fetchone()[0] or 0)
+    available = current - reserved
+
+    # Hard ledger resources refuse overdraft and refuse spending through reservations.
+    # Soft vitals (energy/mood/fatigue) still clamp so heartbeat recovery never crashes.
+    if requested_delta < 0:
+        spend = -requested_delta
+        if spend > available + 1e-9:
+            if not soft:
+                raise ResourceError(
+                    f"resource {resource_key} insufficient: requested spend {spend}, "
+                    f"available {available} (current {current}, reserved {reserved})"
+                )
+            requested_delta = -max(0.0, available)
+
+    new_value = current + requested_delta
     if minv is not None and new_value < float(minv):
+        if not soft:
+            raise ResourceError(
+                f"resource {resource_key} would go below min {minv}: current {current}, delta {requested_delta}"
+            )
         new_value = float(minv)
     if maxv is not None and new_value > float(maxv):
         new_value = float(maxv)
@@ -192,10 +269,18 @@ def reserve(conn, owner_kind: str, owner_id: str, resource_key: str, amount: flo
 
 
 def release_reservation(conn, owner_kind: str, owner_id: str, reservation_id: str) -> dict[str, Any]:
-    conn.execute(
-        "UPDATE resource_reservations SET status='released', released_at=datetime('now') WHERE id=? AND owner_kind=? AND owner_id=?",
+    cur = conn.execute(
+        "UPDATE resource_reservations SET status='released', released_at=datetime('now') WHERE id=? AND owner_kind=? AND owner_id=? AND status='reserved'",
         (reservation_id, owner_kind, owner_id),
     )
+    if not cur.rowcount:
+        row = conn.execute(
+            "SELECT status FROM resource_reservations WHERE id=? AND owner_kind=? AND owner_id=?",
+            (reservation_id, owner_kind, owner_id),
+        ).fetchone()
+        if not row:
+            raise ResourceError(f"reservation not found: {reservation_id}")
+        raise ResourceError(f"reservation not releasable (status={row['status']}): {reservation_id}")
     append_journal(conn, owner_kind, owner_id, "resource_reservation_released", {"reservation_id": reservation_id}, "resource")
     return {"reservation_id": reservation_id, "status": "released"}
 
